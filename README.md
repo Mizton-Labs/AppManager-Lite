@@ -1,0 +1,2 @@
+# AppManager-Lite
+AppManager-Lite
