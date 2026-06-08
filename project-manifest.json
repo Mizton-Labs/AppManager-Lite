@@ -5,7 +5,7 @@
   "version": "0.1.0",
   "description": "Self-hosted landing portal: a single home page with quick access to each team's applications, plus authentication, user and team management, and self-service application management with administrator approval.",
   "license": "See LICENSE",
-  "repository": "https://github.com/anomalyco/AppManager-Lite",
+  "repository": "https://github.com/Mizton-Labs/AppManager-Lite",
   "generatedFrom": "Hand-maintained from source; update alongside structural, API, config, or data-model changes.",
   "architecture": {
     "summary": "A FastAPI + SQLite backend exposes a JSON API under /api and also serves the built React single-page app. The frontend is a Vite-built SPA that uses relative URLs so one build runs at the site root or behind a subpath reverse proxy.",
