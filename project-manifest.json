@@ -137,6 +137,7 @@
     }
   },
   "commands": [
+    { "id": "install-prerequisites", "command": "sudo ./appmanager-lite install", "description": "Install the minimal prerequisites: uv (for the invoking user, via the official installer) and Node.js/npm (via the OS package manager). Requires root/sudo; the portal itself runs as a normal user.", "cwd": ".", "category": "setup" },
     { "id": "lifecycle-start", "command": "./appmanager-lite start", "description": "Provision, build, and start the server (default 127.0.0.1:8000).", "cwd": ".", "category": "lifecycle" },
     { "id": "lifecycle-dev", "command": "./appmanager-lite start --dev", "description": "Run in the foreground with auto-reload.", "cwd": ".", "category": "lifecycle" },
     { "id": "lifecycle-stop", "command": "./appmanager-lite stop", "description": "Stop the background server.", "cwd": ".", "category": "lifecycle" },
