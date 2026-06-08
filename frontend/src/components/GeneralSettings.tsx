@@ -4,15 +4,18 @@ import type { BrandingSettings, ReverseProxySettings } from "../types";
 import { setBranding } from "../branding";
 import { fileToLogoDataUrl } from "../lib/image";
 import { resolveIconSrc } from "../lib/links";
+import { PlusIcon, XIcon } from "./icons";
 
 /**
- * General Settings (admin). Two cards:
+ * General Settings (admin). Three cards:
  *
  * - **Application Basic Information** -- the configurable application name and
  *   logo (generic branding). Saving updates branding immediately and marks the
  *   deployment configured (which dismisses the first-login wizard).
  * - **Reverse Proxy Configuration** -- the nginx host, conf path, SSH key path,
  *   and alias template used to push application aliases.
+ * - **About Collaborators** -- an admin-managed list of names shown on the
+ *   About page (separate from the git-derived development team).
  *
  * The SSH key itself is never stored or shown here -- only the path to a key
  * file on the server.
@@ -22,6 +25,7 @@ export function GeneralSettings(props: { onConfigured?: () => void } = {}) {
     <>
       <ApplicationBasicInformation onSaved={props.onConfigured} />
       <ReverseProxyConfiguration />
+      <AboutCollaborators />
     </>
   );
 }
@@ -363,13 +367,182 @@ function ReverseProxyConfiguration() {
           {settings && settings.nginx_host && (
             <span className="muted">
               Current target:{" "}
-              {settings.nginx_user
-                ? `${settings.nginx_user}@${settings.nginx_host}`
-                : settings.nginx_host}
+               {settings.nginx_user
+                 ? `${settings.nginx_user}@${settings.nginx_host}`
+                 : settings.nginx_host}
             </span>
           )}
         </div>
       </form>
+    </section>
+  );
+}
+
+/**
+ * About Collaborators. An admin-managed list of names rendered on the About
+ * page under "Collaborators" (separate from the git-derived development team).
+ * Add a name with the textbox, remove with the x button, then Save.
+ */
+function AboutCollaborators() {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const [collaborators, setCollaborators] = useState<string[]>([]);
+  const [name, setName] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    api
+      .getBrandingSettings()
+      .then((result: BrandingSettings) => {
+        if (!active) return;
+        setCollaborators(result.collaborators);
+      })
+      .catch((err) => {
+        if (active) {
+          setError(
+            err instanceof ApiError
+              ? err.message
+              : "Failed to load collaborators.",
+          );
+        }
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  function addName() {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    // Ignore case-insensitive duplicates.
+    if (collaborators.some((c) => c.toLowerCase() === trimmed.toLowerCase())) {
+      setName("");
+      return;
+    }
+    setCollaborators((prev) => [...prev, trimmed]);
+    setName("");
+    setSaved(false);
+  }
+
+  function removeName(target: string) {
+    setCollaborators((prev) => prev.filter((c) => c !== target));
+    setSaved(false);
+  }
+
+  function onInputKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    // Enter adds the name without submitting any surrounding form.
+    if (event.key === "Enter") {
+      event.preventDefault();
+      addName();
+    }
+  }
+
+  async function onSave() {
+    setError(null);
+    setSaved(false);
+    setBusy(true);
+    try {
+      const result = await api.updateBrandingSettings({ collaborators });
+      setCollaborators(result.collaborators);
+      // Reflect on the About page immediately.
+      setBranding(result);
+      setSaved(true);
+    } catch (err) {
+      setError(
+        err instanceof ApiError ? err.message : "Failed to save collaborators.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (loading) {
+    return <p role="status">Loading collaborators…</p>;
+  }
+
+  return (
+    <section className="card">
+      <h2>About Collaborators</h2>
+      <p className="muted">
+        Names listed here appear under <strong>Collaborators</strong> on the
+        About page. This is separate from the development team, which comes from
+        the repository commit history.
+      </p>
+
+      {error && (
+        <p className="alert error" role="alert">
+          {error}
+        </p>
+      )}
+      {saved && (
+        <p className="alert success" role="status">
+          Collaborators saved.
+        </p>
+      )}
+
+      <div className="create-form">
+        <div className="collaborator-add">
+          <label className="field">
+            <span>Collaborator name</span>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={onInputKeyDown}
+              placeholder="e.g. Jane Doe"
+              maxLength={80}
+              aria-label="Collaborator name"
+            />
+          </label>
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={addName}
+            disabled={!name.trim()}
+          >
+            <PlusIcon />
+            <span className="btn-label">Add</span>
+          </button>
+        </div>
+
+        {collaborators.length === 0 ? (
+          <p className="muted">No collaborators added yet.</p>
+        ) : (
+          <ul className="collaborator-list" aria-label="Collaborators">
+            {collaborators.map((c) => (
+              <li key={c} className="collaborator-item">
+                <span>{c}</span>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  onClick={() => removeName(c)}
+                  aria-label={`Remove ${c}`}
+                  title="Remove"
+                >
+                  <XIcon />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <div className="row-actions">
+          <button
+            type="button"
+            className="btn primary"
+            onClick={onSave}
+            disabled={busy}
+          >
+            {busy ? "Saving…" : "Save collaborators"}
+          </button>
+        </div>
+      </div>
     </section>
   );
 }

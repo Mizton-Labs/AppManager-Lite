@@ -25,6 +25,8 @@ export interface SessionState {
   /** Configurable branding, present even before authentication. */
   app_name: string;
   app_logo: string;
+  /** Admin-managed About-page collaborators (separate from the dev team). */
+  collaborators: string[];
   /** One-time setup flag that drives the first-login wizard (admins only). */
   configured: boolean;
 }
@@ -90,12 +92,15 @@ export interface UpdateReverseProxySettingsInput {
 export interface BrandingSettings {
   app_name: string;
   app_logo: string;
+  /** Admin-managed About-page collaborators (separate from the dev team). */
+  collaborators: string[];
   configured: boolean;
 }
 
 export interface UpdateBrandingSettingsInput {
   app_name?: string;
   app_logo?: string;
+  collaborators?: string[];
   configured?: boolean;
 }
 

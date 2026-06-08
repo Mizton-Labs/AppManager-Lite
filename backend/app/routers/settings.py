@@ -6,6 +6,7 @@ returned here -- only the *path* to a key file on the server.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from typing import Any
 
@@ -43,6 +44,9 @@ def _branding_out(row: dict[str, Any]) -> BrandingSettingsOut:
     return BrandingSettingsOut(
         app_name=row.get("app_name", ""),
         app_logo=row.get("app_logo", ""),
+        collaborators=repository.parse_collaborators(
+            row.get("collaborators", "[]")
+        ),
         configured=bool(row.get("configured", 0)),
     )
 
@@ -111,11 +115,16 @@ def update_branding_settings(
         conn,
         app_name=payload.app_name,
         app_logo=payload.app_logo,
+        collaborators=(
+            None
+            if payload.collaborators is None
+            else json.dumps(payload.collaborators)
+        ),
         configured=payload.configured,
     )
     changed = [
         name
-        for name in ("app_name", "app_logo", "configured")
+        for name in ("app_name", "app_logo", "collaborators", "configured")
         if getattr(payload, name) is not None
     ]
     audit.record(

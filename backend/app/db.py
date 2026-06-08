@@ -103,6 +103,7 @@ CREATE TABLE IF NOT EXISTS settings (
     alias_template  TEXT    NOT NULL DEFAULT '',
     app_name        TEXT    NOT NULL DEFAULT '',
     app_logo        TEXT    NOT NULL DEFAULT '',
+    collaborators   TEXT    NOT NULL DEFAULT '[]',
     configured      INTEGER NOT NULL DEFAULT 0,
     updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
 );
@@ -231,6 +232,9 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     _add_column(conn, "settings", "app_name", "TEXT NOT NULL DEFAULT ''")
     _add_column(conn, "settings", "app_logo", "TEXT NOT NULL DEFAULT ''")
     _add_column(conn, "settings", "configured", "INTEGER NOT NULL DEFAULT 0")
+    # Admin-managed "Collaborators" shown on the About page, stored as a JSON
+    # array of names (distinct from the git-derived development team).
+    _add_column(conn, "settings", "collaborators", "TEXT NOT NULL DEFAULT '[]'")
 
     _add_column(conn, "teams", "sort_order", "INTEGER NOT NULL DEFAULT 0")
     # Teams gained an optional small icon (a bundled catalogue path or a capped

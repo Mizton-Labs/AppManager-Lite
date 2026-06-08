@@ -256,6 +256,9 @@ class SessionOut(BaseModel):
     # render the deployment's own name and logo.
     app_name: str = ""
     app_logo: str = ""
+    # Admin-managed About-page collaborators (distinct from the git development
+    # team); delivered with the session so the About page can render them.
+    collaborators: list[str] = Field(default_factory=list)
     # One-time setup flag that drives the first-login wizard (admins only).
     configured: bool = False
 
@@ -494,12 +497,47 @@ class UpdateReverseProxySettingsRequest(BaseModel):
 class BrandingSettingsOut(BaseModel):
     app_name: str = ""
     app_logo: str = ""
+    collaborators: list[str] = Field(default_factory=list)
     configured: bool = False
+
+
+# Admin-managed "Collaborators" shown on the About page. Each is a free-text
+# name; the list is bounded so it stays small and the stored JSON cannot grow
+# unbounded.
+COLLABORATOR_NAME_MAX_LEN = 80
+MAX_COLLABORATORS = 50
+
+
+def _validate_collaborators(value: list[str]) -> list[str]:
+    """Trim names, drop blanks, de-duplicate (case-insensitively, first wins),
+    and enforce per-name length and count caps."""
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError("Each collaborator must be a name (text).")
+        name = item.strip()
+        if not name:
+            continue
+        if len(name) > COLLABORATOR_NAME_MAX_LEN:
+            raise ValueError(
+                f"Collaborator name must be at most {COLLABORATOR_NAME_MAX_LEN} "
+                "characters."
+            )
+        key = name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(name)
+    if len(cleaned) > MAX_COLLABORATORS:
+        raise ValueError(f"At most {MAX_COLLABORATORS} collaborators are allowed.")
+    return cleaned
 
 
 class UpdateBrandingSettingsRequest(BaseModel):
     app_name: str | None = Field(default=None, max_length=128)
     app_logo: str | None = Field(default=None, max_length=ICON_FIELD_MAX_LEN)
+    collaborators: list[str] | None = None
     configured: bool | None = None
 
     @field_validator("app_name")
@@ -513,6 +551,11 @@ class UpdateBrandingSettingsRequest(BaseModel):
         # Reuse the application-logo policy: empty, a bundled relative path, an
         # absolute http(s) URL, or a capped raster data URI.
         return None if value is None else _validate_icon_value(value)
+
+    @field_validator("collaborators")
+    @classmethod
+    def _check_collaborators(cls, value: list[str] | None) -> list[str] | None:
+        return None if value is None else _validate_collaborators(value)
 
 
 class MessageOut(BaseModel):
