@@ -1,2 +1,354 @@
-# AppManager-Lite
-AppManager-Lite
+# AppManager Lite
+
+A self-hosted landing portal for your teams. It
+presents a single, modern home page with quick access to each team's
+applications, plus built-in authentication, self-service application management
+with administrator approval, and user management.
+
+The portal is mountable at the site root or behind a reverse proxy on a path
+prefix (for example `/home`), and ships with a single lifecycle script that
+bootstraps its own dependencies.
+
+## Status
+
+| Area | State |
+|---|---|
+| Authentication + session management | Implemented |
+| User management (admin) | Implemented |
+| Portal shell: header, collapsible sidebar, routing | Implemented |
+| Team sections + per-team application cards | Implemented |
+| Application management (self-service + admin approval) | Implemented |
+| Local-alias links for reverse-proxied applications | Implemented |
+| HTTP security headers (CSP, HSTS, frame/COOP) | Implemented |
+
+## Architecture
+
+- **Backend:** FastAPI (Python) with a SQLite datastore. Serves a JSON API
+  under `/api` and hosts the built frontend.
+- **Frontend:** React + TypeScript built with Vite. A single build runs under
+  any deployment prefix; the backend injects a matching `<base href>` at serve
+  time.
+- **Auth:** Argon2id password hashing, server-side sessions, and an
+  HttpOnly + SameSite=Strict + Secure session cookie. State-changing requests
+  require an `X-CSRF-Token` header. Roles (`admin`, `user`) and team membership
+  are enforced server-side, as are application ownership, team scope, and the
+  approval workflow.
+
+```text
+AppManager-Lite/
+|-- appmanager-lite           # lifecycle script (start/stop/status/restart)
+|-- backend/                   # FastAPI app, SQLite, auth, routers, tests
+|   `-- app/
+|-- frontend/                  # React + TS (Vite) single-page app
+|   |-- public/app-logo.svg    # fallback logo (branding is admin-configurable)
+|   `-- src/
+|-- scripts/                   # check.sh, test.sh, security-check.sh
+|-- NOTICE / THIRD-PARTY-NOTICES.md
+`-- README.md
+```
+
+## Quick start
+
+Prerequisites: [uv](https://docs.astral.sh/uv/) (backend Python environment),
+Node.js with npm (frontend), and Python 3.11+.
+
+The script uses uv to provision the backend environment, installs frontend
+dependencies, builds the frontend, and starts the server.
+
+```bash
+./appmanager-lite start                 # http://127.0.0.1:8000
+./appmanager-lite start --bind 127.0.0.1:8137
+./appmanager-lite start --dev           # foreground, auto-reload (Ctrl-C)
+./appmanager-lite status
+./appmanager-lite stop
+./appmanager-lite restart --bind 0.0.0.0:8000 --base-prefix /home
+```
+
+Useful start flags:
+
+- `--bind IP:PORT` — address to listen on (default `127.0.0.1:8000`).
+- `--base-prefix /path` — mount path when running behind a subpath proxy.
+- `--dev` — run in the foreground with auto-reload; Ctrl-C to stop.
+- `--rebuild` — force a frontend build even when it looks up to date.
+- `--reinstall` — force dependency reinstallation.
+
+On every `start`/`restart` the script keeps things current automatically: it
+runs `uv sync` for the backend (uv is the only Python dependency manager),
+reinstalls frontend dependencies when the lockfile changed, and **rebuilds the
+frontend whenever its sources, config, or the current commit changed** since the
+last build (use `--rebuild` only to force a build). It also **warns when the
+checked-out code advanced** since the last start — the database migrates
+automatically on start (additive, idempotent), but any destructive schema or
+dependency change may need manual follow-up.
+
+### First-run administrator
+
+On first start (with auth enabled), an `admin` account is created and its
+generated password is written to `data/first-run-admin-credentials.txt`
+(mode `0600`, git-ignored). The administrator must change this password at first
+sign-in. To reset it later:
+
+```bash
+./appmanager-lite reset-admin-password
+```
+
+The reset also forces a password change on the admin's next sign-in.
+
+### First-login setup wizard
+
+The very first time an administrator signs in to a freshly provisioned
+deployment (immediately after changing the initial password), they are taken
+once to **Settings → General Settings** to set the initial branding
+(application name and logo). Saving the **Application Basic Information** card
+marks the deployment as configured; subsequent sign-ins land on the Home page as
+usual. The "configured" state is stored server-side in the single settings row.
+
+## Application management
+
+A clean install starts with **no applications** — the Home and team sections are
+empty until an administrator or user adds applications from the Application
+Manager.
+
+Every signed-in user reaches **Settings** from the sidebar and can
+submit and edit applications for the teams they belong to. Administrators see the
+same area with every application (and its creator), a tab for user management,
+and a **General Settings** tab for branding (application name and logo) and
+reverse-proxy configuration.
+
+When an administrator creates a user they can set the user's **apps server**
+(host/IP) — the default host where that user runs their applications, used to
+render reverse-proxy aliases. Each application carries its **own port** (see
+below), so there is no per-user port.
+
+- **Approval workflow.** Submissions have one of three states: `pending`,
+  `approved`, or `rejected`. Only `approved` applications appear on the Home and
+  team pages. Administrators approve or reject from the management list while a
+  submission is `pending`; once an application is `approved` it can no longer be
+  rejected — only disabled or deleted. A `rejected` application is retained
+  (greyed out) rather than deleted. When a non-self-service owner substantively
+  edits an approved application it returns to `pending`.
+- **Alias-change approval.** Changing the **alias** of an approved application is
+  a special case: when a non-self-service owner edits the alias, the application
+  keeps serving its **current** alias and configuration while the new alias is
+  held as a pending change. An administrator approving the change applies the new
+  alias to the live URL and pushes it to the reverse proxy. Administrators and
+  self-service users apply alias changes immediately (no staging).
+- **Logos.** When creating an application you may upload a small logo (PNG, WebP,
+  or JPEG). The image is resized in the browser to a 64-pixel square and stored
+  inline (capped at 64 KB); you may instead paste an absolute image URL. If no
+  logo is provided, one is chosen from a bundled per-team default catalogue
+  (three variants per team, plus a neutral set for team-less apps). The logo
+  appears small on each application card.
+- **Self-service.** Each account has a `self_service` flag (administrator
+  managed, off by default). Self-service users — and all administrators —
+  publish applications immediately, bypassing approval. The flag is shown on the
+  Account page and toggled from User Management.
+- **Team scope.** Applications are team-scoped, and any signed-in user may share
+  an application with **any** team (the team picker lists all teams). A
+  non-administrator must scope a submission to at least one team. Sharing broadly
+  is still gated by approval: a non-administrator's submission stays `pending`
+  until an administrator approves it, so it only appears on another team's page
+  once approved (changing the teams of an approved application re-queues it).
+- **Link types.** The target type is chosen with radio buttons. A **local alias**
+  (the default for new applications) is a bare relative path stored verbatim and
+  resolved against the deployment base at render time, so an external reverse
+  proxy can map it to an internal service; the create form shows the server URL
+  prefix greyed-out before the input so the full resulting URL is visible. An
+  alias may contain only **letters, digits, and dashes** and is at most **30
+  characters** (the requirement is shown next to the field, and a leading slash
+  is stripped). A **full URL** is validated as `http`/`https`. Alias links are
+  not subject to `http`/`https` validation.
+- **Application port.** Each alias application has its **own port**, which **any**
+  user can set on the create/edit form (shown only for alias apps). The upstream
+  server host is resolved from the reverse-proxy settings (or the owner's apps
+  server) — it is not entered per application.
+- **Team selection.** The team picker offers a **Select all / Clear all** toggle
+  in addition to the individual checkboxes.
+
+The default teams are Detect and Response, Threat Hunting, Threat Intel,
+Forensics & BID, Advanced Analytics, Red Team, and Threat Detection Engineering.
+
+## Reverse proxy (nginx)
+
+When **Reverse Proxy Configuration** is set in Settings → General Settings, an
+approved **local-alias** application is published to a remote nginx server
+automatically. This runs both when an administrator approves a pending
+application and when an application is auto-approved on creation
+(administrators / self-service users).
+
+Configure in General Settings:
+
+- **NGINX Server Host/IP** — the host the backend connects to over SSH.
+- **SSH user** — optional login user; when set the backend connects as
+  `user@host`, otherwise as `host` (using the SSH config's default user).
+- **NGINX conf file path** — the config file (inside the 443 `server { … }`
+  block) where aliases are added.
+- **Local SSH key path** — path to a **private key file on this server** used for
+  key-based SSH. The key contents are never stored in the database or shown in
+  the UI; only the path is kept.
+- **Alias template** — the nginx `location` block (collapsed by default). The
+  placeholders `APPS_SERVER`, `APPS_PORT` and `ALIAS` are substituted on push.
+  `APPS_PORT` is the application's own port (falling back to the owner's record);
+  `APPS_SERVER` is resolved as the application's own server (administrator-set,
+  if any), then the **NGINX Server Host/IP** from these settings, then the
+  **owning user's** apps server.
+
+On approval the backend (using the system `ssh`/`scp`, key-based, non-interactive,
+with timeouts) verifies SSH access, that the conf file exists, that nginx is
+running, and that the file is writable; then it backs the file up
+(`<conf>-<epoch>-<alias>`), wraps the rendered block in a unique per-application
+marker (`# >>> appmanager-lite-app:<id> >>>` … `# <<< appmanager-lite-app:<id> <<<`), injects it before
+the file's last `}`, reloads nginx with `docker exec nginx nginx -s reload` (this
+version assumes nginx runs in a docker container named `nginx`), and verifies the
+reload. **If any step fails the original file is restored from the backup and the
+nginx error is captured.** The full transcript is stored on the application and
+copied to the audit log (no secrets). On the expanded application card
+administrators see the push status and a **View push log** button; if the push
+**failed** (or was reverted) a green **Retry push** button re-runs it while the
+failed indicator remains until a retry succeeds. After a push runs (create,
+approve, or retry) a transient **proxy: …** notice also appears next to the
+application name in the manager; it is shown once and clears when you navigate
+away (it is independent of the persistent indicator on the expanded card).
+
+**Deleting an application** removes its alias block from the nginx config: the
+backend finds the block by its `appmanager-lite-app:<id>` marker, excises it (backup →
+remove → reload → verify, reverting on failure), and audits the result as
+`nginx_remove`. Aliases pushed before markers existed have no marker and are
+reported as skipped on removal.
+
+## Home
+
+The Home page shows two groups of applications:
+
+- **Available shared applications** — everything visible to the account by team
+  scope (created by administrators or other users), excluding the account's own
+  apps.
+- **My Applications** — the apps the account itself published.
+
+Each card shows a small team-scope badge for the team(s) the application belongs
+to, so it is clear where a tool comes from.
+
+## About
+
+The **About** page (sidebar, after Settings) shows the application
+name, a link to the source repository on GitHub, the build version with its
+commit hash, and the development team. The version, commit, and contributor list
+are injected at build time from `package.json` and the git history; because the
+lifecycle script rebuilds the frontend when the commit changes, a `start`/
+`restart` after a new commit refreshes them automatically (or use `--rebuild`).
+
+## Audit log
+
+Administrators get an **Audit log** in the sidebar (after Settings)
+that records actions performed in the portal, grouped into three tabs:
+
+- **Application Management** — application create/request, approve, reject,
+  update, and delete.
+- **User activity** — sign-in (success and failure), sign-out, password changes,
+  and user create/update/delete/password-reset.
+- **System** — backend lifecycle (startup, shutdown, first-run administrator
+  creation, authentication disabled).
+
+Events are stored in the `audit_log` table (created automatically on startup),
+so they survive restarts; the view shows the most recent entries per category.
+The text log (`logs/app.log`) is retained separately for operations. As with all
+logging, secrets (passwords, hashes, session identifiers, CSRF tokens) are never
+recorded in audit entries.
+
+## Configuration
+
+All settings are environment variables with the `APP_` prefix:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `APP_BASE_PREFIX` | _(empty)_ | Mount path prefix, e.g. `/home`. |
+| `APP_ENABLE_AUTH` | `1` | Enable authentication and access control. |
+| `APP_DEV` | `0` | Dev mode (enables API docs; relaxes cookie security). |
+| `APP_SECURE_COOKIES` | `1` (off in dev) | Set the `Secure` flag on the session cookie. |
+| `APP_SESSION_TTL_SECONDS` | `43200` | Session lifetime (12 hours). |
+| `APP_DATA_DIR` | `./data` | SQLite database and runtime data location. |
+| `APP_DB_PATH` | `./data/app.db` | SQLite database file. |
+| `APP_FRONTEND_DIST` | `./frontend/dist` | Built frontend to serve. |
+| `APP_LOG_DIR` | `./logs` | Directory for the consolidated log file. |
+| `APP_LOG_FILE` | `app.log` | Consolidated log file name. |
+| `APP_LOG_LEVEL` | `INFO` | Log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`). |
+| `APP_LOG_TO_FILE` | `1` | Write logs to the file (the console is always on). |
+
+The startup script sets `APP_BASE_PREFIX` from `--base-prefix` for you.
+
+## Logging
+
+The application writes a single consolidated log to `logs/app.log` (override the
+location with `APP_LOG_DIR` / `APP_LOG_FILE`). The same records are produced
+however the server is launched — backgrounded by the lifecycle script, in the
+foreground via `start --dev`, or under a bare `uvicorn` — because uvicorn's
+access and error logs are routed through the application's handlers. The file
+rotates at 5 MiB and keeps five backups. Logs also go to the console; in
+background mode the script discards the process's own streams so lines are not
+duplicated.
+
+Sign-in success and failure, logout, password changes, user and application
+create/update/delete, and CSRF/authorization failures are recorded. Secrets —
+passwords, generated passwords, hashes, session identifiers, and CSRF tokens —
+are never logged.
+
+## Deployment behind a reverse proxy
+
+Run the app bound to a private address and place it behind a proxy that strips
+the path prefix before forwarding. For a portal served at
+`https://<server>/home/`:
+
+```bash
+./appmanager-lite start --bind 0.0.0.0:8000 --base-prefix /home
+```
+
+The proxy must forward `/home/...` to the app as `/...`. The frontend's API and
+asset URLs are all relative, so the same build works at the root or under any
+prefix.
+
+## Development
+
+```bash
+scripts/check.sh           # backend byte-compile + frontend type-check
+scripts/test.sh            # backend pytest + frontend vitest
+scripts/security-check.sh  # brand-genericization, ignore hygiene, dep audits
+```
+
+Backend-only commands (run inside `backend/`):
+
+```bash
+uv sync                                  # install/refresh deps from uv.lock
+uv run pytest                            # backend tests
+uv run uvicorn app.main:app --reload     # dev server with autoreload
+```
+
+Frontend-only commands (run inside `frontend/`):
+
+```bash
+npm run dev        # Vite dev server, proxies /api to 127.0.0.1:8000
+npm run typecheck
+npm test
+npm run build
+```
+
+## Branding
+
+The application name and logo are **configured by an administrator** in
+**Settings → General Settings → Application Basic Information**. The name and
+logo are stored in the deployment's settings and are delivered with every
+session response, so the sign-in page, header, favicon, and About page all use
+the deployment's own branding (even before authentication).
+
+- **Name** — free text shown in the header, sign-in page, and About page.
+- **Logo** — upload a PNG, WebP, or JPEG; it is resized in the browser and
+  stored inline (capped, raster only). Until a logo is configured, a neutral
+  bundled fallback asset (`frontend/public/app-logo.svg`) is used.
+
+The first-login setup wizard prompts a new deployment's administrator to set
+these values before continuing.
+
+## Attribution
+
+Portions of the authentication and user-management design reuse patterns from an
+Apache-2.0 licensed open-source project. See `NOTICE` and
+`THIRD-PARTY-NOTICES.md` for details.

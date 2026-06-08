@@ -1,0 +1,807 @@
+"""Application catalogue listing and server-side team gating."""
+
+from __future__ import annotations
+
+from fastapi.testclient import TestClient
+
+
+def _create_member(client, csrf, username, teams):
+    """Create a standard user via the admin client; return their password."""
+    resp = client.post(
+        "/api/users",
+        json={"username": username, "role": "user", "teams": teams},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()["password"]
+
+
+def _seed_app(client, csrf, name, url, teams):
+    """Admin-create an application (auto-approved and visible)."""
+    resp = client.post(
+        "/api/applications",
+        json={"name": name, "url": url, "teams": teams},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+def test_clean_install_has_no_applications(admin) -> None:
+    # A fresh database starts with no applications (no placeholder seed).
+    client, _csrf, _ = admin
+    resp = client.get("/api/applications")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == []
+
+
+def test_member_sees_only_their_team_apps(admin) -> None:
+    client, csrf, _ = admin
+    _seed_app(client, csrf, "Red Tool", "https://example.com/red", ["Red Team"])
+    _seed_app(client, csrf, "Hunt Tool", "https://example.com/hunt", ["Threat Hunting"])
+    password = _create_member(client, csrf, "redder", ["Red Team"])
+    with TestClient(client.app) as member:
+        member.post(
+            "/api/auth/login", json={"username": "redder", "password": password}
+        )
+        names = {a["name"] for a in member.get("/api/applications").json()}
+    assert names == {"Red Tool"}
+
+
+def test_member_with_no_teams_sees_nothing(admin) -> None:
+    client, csrf, _ = admin
+    password = _create_member(client, csrf, "loner", [])
+    with TestClient(client.app) as member:
+        member.post(
+            "/api/auth/login", json={"username": "loner", "password": password}
+        )
+        resp = member.get("/api/applications")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+def test_member_team_query_returns_team_apps(admin) -> None:
+    client, csrf, _ = admin
+    _seed_app(client, csrf, "Hunt One", "https://example.com/h1", ["Threat Hunting"])
+    _seed_app(
+        client,
+        csrf,
+        "Shared Case",
+        "https://example.com/case",
+        ["Detect and Response", "Threat Hunting"],
+    )
+    _seed_app(client, csrf, "Red Only", "https://example.com/red", ["Red Team"])
+    password = _create_member(client, csrf, "hunter", ["Threat Hunting"])
+    with TestClient(client.app) as member:
+        member.post(
+            "/api/auth/login", json={"username": "hunter", "password": password}
+        )
+        resp = member.get("/api/applications", params={"team": "Threat Hunting"})
+    assert resp.status_code == 200, resp.text
+    names = {a["name"] for a in resp.json()}
+    assert names == {"Hunt One", "Shared Case"}
+
+
+def test_member_forbidden_for_other_team(admin) -> None:
+    client, csrf, _ = admin
+    password = _create_member(client, csrf, "redder2", ["Red Team"])
+    with TestClient(client.app) as member:
+        member.post(
+            "/api/auth/login", json={"username": "redder2", "password": password}
+        )
+        resp = member.get("/api/applications", params={"team": "Threat Hunting"})
+    assert resp.status_code == 403
+
+
+def test_unknown_team_returns_404(admin) -> None:
+    client, _csrf, _ = admin
+    resp = client.get("/api/applications", params={"team": "Nonexistent Team"})
+    assert resp.status_code == 404
+
+
+def test_admin_can_query_any_team(admin) -> None:
+    client, csrf, _ = admin
+    _seed_app(client, csrf, "Hunt One", "https://example.com/h1", ["Threat Hunting"])
+    _seed_app(
+        client,
+        csrf,
+        "Shared Case",
+        "https://example.com/case",
+        ["Detect and Response", "Threat Hunting"],
+    )
+    resp = client.get("/api/applications", params={"team": "Threat Hunting"})
+    assert resp.status_code == 200, resp.text
+    names = {a["name"] for a in resp.json()}
+    assert names == {"Hunt One", "Shared Case"}
+
+
+def test_applications_require_authentication(client: TestClient) -> None:
+    # No login performed: the listing must not be readable anonymously.
+    assert client.get("/api/applications").status_code == 401
+
+
+def test_applications_open_when_auth_disabled(client_no_auth: TestClient) -> None:
+    # Auth disabled => caller is treated as admin; with no seed the catalogue
+    # starts empty and a created app is immediately visible.
+    resp = client_no_auth.get("/api/applications")
+    assert resp.status_code == 200
+    assert resp.json() == []
+    client_no_auth.post(
+        "/api/applications",
+        json={
+            "name": "Open Tool",
+            "url": "https://example.com/open",
+            "teams": ["Red Team"],
+        },
+    )
+    scoped = client_no_auth.get("/api/applications", params={"team": "Red Team"})
+    assert scoped.status_code == 200
+    assert {a["name"] for a in scoped.json()} == {"Open Tool"}
+
+
+# ---------------------------------------------------------------------------
+# Administrator CRUD (Phase 4)
+# ---------------------------------------------------------------------------
+
+
+def _create_app(client, csrf, **overrides):
+    payload = {
+        "name": "New Tool",
+        "url": "https://example.com/new-tool",
+        "description": "A brand new tool.",
+        "teams": ["Red Team"],
+    }
+    payload.update(overrides)
+    return client.post(
+        "/api/applications", json=payload, headers={"X-CSRF-Token": csrf}
+    )
+
+
+def test_admin_create_application(admin) -> None:
+    client, csrf, _ = admin
+    resp = _create_app(client, csrf)
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["name"] == "New Tool"
+    assert body["teams"] == ["Red Team"]
+    assert body["is_active"] is True
+    # The new app is now visible to a Red Team member.
+    password = _create_member(client, csrf, "newredder", ["Red Team"])
+    with TestClient(client.app) as member:
+        member.post(
+            "/api/auth/login", json={"username": "newredder", "password": password}
+        )
+        names = {a["name"] for a in member.get("/api/applications").json()}
+    assert "New Tool" in names
+
+
+def test_create_rejects_non_http_url(admin) -> None:
+    client, csrf, _ = admin
+    resp = _create_app(client, csrf, url="javascript:alert(1)")
+    assert resp.status_code == 422
+
+
+def test_create_rejects_unknown_team(admin) -> None:
+    client, csrf, _ = admin
+    resp = _create_app(client, csrf, teams=["Nonexistent Team"])
+    assert resp.status_code == 400
+
+
+def test_create_requires_csrf(admin) -> None:
+    client, _csrf, _ = admin
+    resp = client.post(
+        "/api/applications",
+        json={"name": "No CSRF", "url": "https://example.com/x", "teams": []},
+    )
+    assert resp.status_code == 403
+
+
+def test_admin_update_application(admin) -> None:
+    client, csrf, _ = admin
+    app_id = _create_app(client, csrf).json()["id"]
+    resp = client.patch(
+        f"/api/applications/{app_id}",
+        json={"is_active": False, "teams": ["Threat Hunting"], "name": "Renamed"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["name"] == "Renamed"
+    assert body["is_active"] is False
+    assert body["teams"] == ["Threat Hunting"]
+
+
+def test_update_missing_application_returns_404(admin) -> None:
+    client, csrf, _ = admin
+    resp = client.patch(
+        "/api/applications/999999",
+        json={"name": "Ghost"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 404
+
+
+def test_inactive_app_hidden_from_members_but_visible_to_admin(admin) -> None:
+    client, csrf, _ = admin
+    _create_app(client, csrf, name="Hidden Tool", is_active=False, teams=["Red Team"])
+
+    password = _create_member(client, csrf, "redder3", ["Red Team"])
+    with TestClient(client.app) as member:
+        member.post(
+            "/api/auth/login", json={"username": "redder3", "password": password}
+        )
+        visible = {a["name"] for a in member.get("/api/applications").json()}
+        scoped = member.get("/api/applications", params={"team": "Red Team"})
+    assert "Hidden Tool" not in visible
+    assert "Hidden Tool" not in {a["name"] for a in scoped.json()}
+
+    # Admin default listing also excludes it; include_inactive reveals it.
+    default = {a["name"] for a in client.get("/api/applications").json()}
+    assert "Hidden Tool" not in default
+    with_inactive = client.get(
+        "/api/applications", params={"include_inactive": "true"}
+    )
+    assert "Hidden Tool" in {a["name"] for a in with_inactive.json()}
+
+
+def test_member_cannot_request_inactive(admin) -> None:
+    client, csrf, _ = admin
+    password = _create_member(client, csrf, "redder4", ["Red Team"])
+    with TestClient(client.app) as member:
+        member.post(
+            "/api/auth/login", json={"username": "redder4", "password": password}
+        )
+        resp = member.get(
+            "/api/applications", params={"include_inactive": "true"}
+        )
+    assert resp.status_code == 403
+
+
+def test_non_admin_create_empty_teams_rejected(admin) -> None:
+    client, csrf, _ = admin
+    password = _create_member(client, csrf, "redder5", ["Red Team"])
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login", json={"username": "redder5", "password": password}
+        )
+        member_csrf = login.json()["csrf_token"]
+        resp = member.post(
+            "/api/applications",
+            json={"name": "Sneaky", "url": "https://example.com/s", "teams": []},
+            headers={"X-CSRF-Token": member_csrf},
+        )
+    # Members must scope a submission to at least one team.
+    assert resp.status_code == 400
+
+
+def test_non_admin_can_share_with_other_team(admin) -> None:
+    # Any signed-in user may share an application with any team (not just their
+    # own). The submission is still queued for approval (pending).
+    client, csrf, _ = admin
+    password = _create_member(client, csrf, "redder6", ["Red Team"])
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login", json={"username": "redder6", "password": password}
+        )
+        member_csrf = login.json()["csrf_token"]
+        resp = member.post(
+            "/api/applications",
+            json={
+                "name": "Cross Team",
+                "url": "https://example.com/x",
+                "teams": ["Threat Hunting"],
+            },
+            headers={"X-CSRF-Token": member_csrf},
+        )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["teams"] == ["Threat Hunting"]
+    assert body["approval_status"] == "pending"
+
+
+def test_non_admin_can_add_foreign_team_on_update(admin) -> None:
+    # A non-admin owner may broaden an app to another team on edit; the
+    # substantive change re-queues it for approval.
+    client, csrf, _ = admin
+    password = _create_member(client, csrf, "redder7", ["Red Team"])
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login", json={"username": "redder7", "password": password}
+        )
+        member_csrf = login.json()["csrf_token"]
+        app_id = member.post(
+            "/api/applications",
+            json={
+                "name": "Shareable",
+                "url": "https://example.com/share",
+                "teams": ["Red Team"],
+            },
+            headers={"X-CSRF-Token": member_csrf},
+        ).json()["id"]
+        resp = member.patch(
+            f"/api/applications/{app_id}",
+            json={"teams": ["Red Team", "Threat Hunting"]},
+            headers={"X-CSRF-Token": member_csrf},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert sorted(body["teams"]) == ["Red Team", "Threat Hunting"]
+    assert body["approval_status"] == "pending"
+
+
+def test_member_submission_is_pending_and_hidden(admin) -> None:
+    client, csrf, _ = admin
+    password = _create_member(client, csrf, "subm1", ["Red Team"])
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login", json={"username": "subm1", "password": password}
+        )
+        member_csrf = login.json()["csrf_token"]
+        created = member.post(
+            "/api/applications",
+            json={
+                "name": "Pending Tool",
+                "url": "https://example.com/pending",
+                "teams": ["Red Team"],
+            },
+            headers={"X-CSRF-Token": member_csrf},
+        )
+        assert created.status_code == 201, created.text
+        body = created.json()
+        assert body["approval_status"] == "pending"
+        assert body["created_by"] == "subm1"
+
+        # Hidden from the member's own catalogue until approved...
+        home = {a["name"] for a in member.get("/api/applications").json()}
+        assert "Pending Tool" not in home
+        # ...but visible in their own management list with its status.
+        mine = member.get("/api/applications/mine").json()
+        mine_by_name = {a["name"]: a for a in mine}
+        assert mine_by_name["Pending Tool"]["approval_status"] == "pending"
+        assert mine_by_name["Pending Tool"]["created_by"] == "subm1"
+
+    # The admin sees it in the management view and on Home it stays hidden.
+    manage = {a["name"] for a in client.get("/api/applications/manage").json()}
+    assert "Pending Tool" in manage
+    assert "Pending Tool" not in {
+        a["name"] for a in client.get("/api/applications").json()
+    }
+
+
+def test_self_service_member_submission_auto_approved(admin) -> None:
+    client, csrf, _ = admin
+    password = _create_member(client, csrf, "selfsvc", ["Red Team"])
+    # Grant self-service so the submission bypasses approval.
+    users = client.get("/api/users").json()
+    uid = next(u["id"] for u in users if u["username"] == "selfsvc")
+    patched = client.patch(
+        f"/api/users/{uid}",
+        json={"self_service": True},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["self_service"] is True
+
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login", json={"username": "selfsvc", "password": password}
+        )
+        member_csrf = login.json()["csrf_token"]
+        created = member.post(
+            "/api/applications",
+            json={
+                "name": "Auto Tool",
+                "url": "https://example.com/auto",
+                "teams": ["Red Team"],
+            },
+            headers={"X-CSRF-Token": member_csrf},
+        )
+        assert created.status_code == 201, created.text
+        assert created.json()["approval_status"] == "approved"
+        # Immediately visible to the member on Home.
+        assert "Auto Tool" in {
+            a["name"] for a in member.get("/api/applications").json()
+        }
+
+
+def test_admin_approve_makes_app_visible(admin) -> None:
+    client, csrf, _ = admin
+    password = _create_member(client, csrf, "subm2", ["Red Team"])
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login", json={"username": "subm2", "password": password}
+        )
+        member_csrf = login.json()["csrf_token"]
+        app_id = member.post(
+            "/api/applications",
+            json={
+                "name": "To Approve",
+                "url": "https://example.com/approve",
+                "teams": ["Red Team"],
+            },
+            headers={"X-CSRF-Token": member_csrf},
+        ).json()["id"]
+
+    resp = client.patch(
+        f"/api/applications/{app_id}",
+        json={"approval_status": "approved"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["approval_status"] == "approved"
+
+    with TestClient(client.app) as member:
+        member.post(
+            "/api/auth/login", json={"username": "subm2", "password": password}
+        )
+        assert "To Approve" in {
+            a["name"] for a in member.get("/api/applications").json()
+        }
+
+
+def test_admin_reject_keeps_app_hidden_but_listed(admin) -> None:
+    client, csrf, _ = admin
+    password = _create_member(client, csrf, "subm3", ["Red Team"])
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login", json={"username": "subm3", "password": password}
+        )
+        member_csrf = login.json()["csrf_token"]
+        app_id = member.post(
+            "/api/applications",
+            json={
+                "name": "To Reject",
+                "url": "https://example.com/reject",
+                "teams": ["Red Team"],
+            },
+            headers={"X-CSRF-Token": member_csrf},
+        ).json()["id"]
+
+    resp = client.patch(
+        f"/api/applications/{app_id}",
+        json={"approval_status": "rejected"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 200, resp.text
+    # Rejected apps are retained (not deleted) and remain in management views.
+    manage = {a["name"]: a for a in client.get("/api/applications/manage").json()}
+    assert manage["To Reject"]["approval_status"] == "rejected"
+    assert "To Reject" not in {
+        a["name"] for a in client.get("/api/applications").json()
+    }
+
+
+def test_member_cannot_set_approval_status(admin) -> None:
+    client, csrf, _ = admin
+    password = _create_member(client, csrf, "subm4", ["Red Team"])
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login", json={"username": "subm4", "password": password}
+        )
+        member_csrf = login.json()["csrf_token"]
+        app_id = member.post(
+            "/api/applications",
+            json={
+                "name": "Self Approve",
+                "url": "https://example.com/self",
+                "teams": ["Red Team"],
+            },
+            headers={"X-CSRF-Token": member_csrf},
+        ).json()["id"]
+        # The owner may not approve their own submission.
+        resp = member.patch(
+            f"/api/applications/{app_id}",
+            json={"approval_status": "approved"},
+            headers={"X-CSRF-Token": member_csrf},
+        )
+    assert resp.status_code == 403
+
+
+def test_owner_substantive_edit_resubmits_to_pending(admin) -> None:
+    client, csrf, _ = admin
+    password = _create_member(client, csrf, "subm5", ["Red Team"])
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login", json={"username": "subm5", "password": password}
+        )
+        member_csrf = login.json()["csrf_token"]
+        app_id = member.post(
+            "/api/applications",
+            json={
+                "name": "Editable",
+                "url": "https://example.com/editable",
+                "teams": ["Red Team"],
+            },
+            headers={"X-CSRF-Token": member_csrf},
+        ).json()["id"]
+
+    # Admin approves it.
+    client.patch(
+        f"/api/applications/{app_id}",
+        json={"approval_status": "approved"},
+        headers={"X-CSRF-Token": csrf},
+    )
+
+    # A substantive owner edit knocks a non-self-service app back to pending.
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login", json={"username": "subm5", "password": password}
+        )
+        member_csrf = login.json()["csrf_token"]
+        resp = member.patch(
+            f"/api/applications/{app_id}",
+            json={"name": "Editable v2"},
+            headers={"X-CSRF-Token": member_csrf},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["approval_status"] == "pending"
+
+
+def test_owner_can_delete_but_not_foreign(admin) -> None:
+    client, csrf, _ = admin
+    pw_a = _create_member(client, csrf, "owner_a", ["Red Team"])
+    pw_b = _create_member(client, csrf, "owner_b", ["Red Team"])
+    with TestClient(client.app) as member_a:
+        login = member_a.post(
+            "/api/auth/login", json={"username": "owner_a", "password": pw_a}
+        )
+        a_csrf = login.json()["csrf_token"]
+        app_id = member_a.post(
+            "/api/applications",
+            json={
+                "name": "A's App",
+                "url": "https://example.com/a",
+                "teams": ["Red Team"],
+            },
+            headers={"X-CSRF-Token": a_csrf},
+        ).json()["id"]
+
+    # Another member may not delete it.
+    with TestClient(client.app) as member_b:
+        login = member_b.post(
+            "/api/auth/login", json={"username": "owner_b", "password": pw_b}
+        )
+        b_csrf = login.json()["csrf_token"]
+        forbidden = member_b.request(
+            "DELETE",
+            f"/api/applications/{app_id}",
+            headers={"X-CSRF-Token": b_csrf},
+        )
+    assert forbidden.status_code == 403
+
+    # The owner can.
+    with TestClient(client.app) as member_a:
+        login = member_a.post(
+            "/api/auth/login", json={"username": "owner_a", "password": pw_a}
+        )
+        a_csrf = login.json()["csrf_token"]
+        ok = member_a.request(
+            "DELETE",
+            f"/api/applications/{app_id}",
+            headers={"X-CSRF-Token": a_csrf},
+        )
+    assert ok.status_code == 200
+
+
+def test_manage_endpoint_requires_admin(admin) -> None:
+    client, csrf, _ = admin
+    password = _create_member(client, csrf, "peeker", ["Red Team"])
+    with TestClient(client.app) as member:
+        member.post(
+            "/api/auth/login", json={"username": "peeker", "password": password}
+        )
+        resp = member.get("/api/applications/manage")
+    assert resp.status_code == 403
+
+
+def test_alias_application_round_trips_verbatim(admin) -> None:
+    client, csrf, _ = admin
+    resp = _create_app(
+        client,
+        csrf,
+        name="Local Grafana",
+        url="/grafana",
+        url_type="alias",
+        teams=["Red Team"],
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["url_type"] == "alias"
+    # Leading slash is stripped; the relative path is stored verbatim.
+    assert body["url"] == "grafana"
+
+
+def test_alias_rejects_path_separators(admin) -> None:
+    client, csrf, _ = admin
+    # Aliases are a single URL-safe segment: separators are rejected.
+    resp = _create_app(
+        client, csrf, url="tools/grafana", url_type="alias"
+    )
+    assert resp.status_code == 422
+
+
+def test_alias_rejects_over_length(admin) -> None:
+    client, csrf, _ = admin
+    resp = _create_app(client, csrf, url="a" * 31, url_type="alias")
+    assert resp.status_code == 422
+
+
+def test_alias_rejects_protocol_relative(admin) -> None:
+    client, csrf, _ = admin
+    resp = _create_app(
+        client, csrf, url="//evil.example.com/x", url_type="alias"
+    )
+    assert resp.status_code == 422
+
+
+def test_url_mode_rejects_relative_path(admin) -> None:
+    client, csrf, _ = admin
+    resp = _create_app(client, csrf, url="tools/grafana", url_type="url")
+    assert resp.status_code == 422
+
+
+def test_home_listing_never_exposes_creator(admin) -> None:
+    client, csrf, _ = admin
+    _create_app(client, csrf, name="Owned", teams=["Red Team"])
+    password = _create_member(client, csrf, "viewer", ["Red Team"])
+    with TestClient(client.app) as member:
+        member.post(
+            "/api/auth/login", json={"username": "viewer", "password": password}
+        )
+        apps = member.get("/api/applications").json()
+    assert apps, "expected at least one visible app"
+    assert all(a["created_by"] is None for a in apps)
+
+
+
+def test_admin_delete_application(admin) -> None:
+    client, csrf, _ = admin
+    app_id = _create_app(client, csrf).json()["id"]
+    resp = client.request(
+        "DELETE",
+        f"/api/applications/{app_id}",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 200
+    # A second delete now reports not-found.
+    again = client.request(
+        "DELETE",
+        f"/api/applications/{app_id}",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert again.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Approved applications can no longer be rejected (issue_005)
+# ---------------------------------------------------------------------------
+
+
+def test_reject_approved_application_conflicts(admin) -> None:
+    client, csrf, _ = admin
+    # An admin-created app is auto-approved.
+    created = _create_app(client, csrf, name="Already Approved")
+    assert created.json()["approval_status"] == "approved"
+    app_id = created.json()["id"]
+
+    resp = client.patch(
+        f"/api/applications/{app_id}",
+        json={"approval_status": "rejected"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 409, resp.text
+    # The status is unchanged.
+    manage = {a["name"]: a for a in client.get("/api/applications/manage").json()}
+    assert manage["Already Approved"]["approval_status"] == "approved"
+
+
+def test_approved_application_can_still_be_disabled_and_deleted(admin) -> None:
+    client, csrf, _ = admin
+    app_id = _create_app(client, csrf, name="Approved Toggle").json()["id"]
+
+    disabled = client.patch(
+        f"/api/applications/{app_id}",
+        json={"is_active": False},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert disabled.status_code == 200, disabled.text
+    assert disabled.json()["is_active"] is False
+    assert disabled.json()["approval_status"] == "approved"
+
+    deleted = client.request(
+        "DELETE",
+        f"/api/applications/{app_id}",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert deleted.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Inline (uploaded) logo data URIs (issue_005)
+# ---------------------------------------------------------------------------
+
+_SMALL_PNG_DATA_URI = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ"
+    "/1Z/AAAAAElFTkSuQmCC"
+)
+
+
+def test_create_accepts_small_png_data_uri(admin) -> None:
+    client, csrf, _ = admin
+    resp = _create_app(client, csrf, name="With Logo", icon_url=_SMALL_PNG_DATA_URI)
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["icon_url"] == _SMALL_PNG_DATA_URI
+
+
+def test_create_rejects_svg_data_uri(admin) -> None:
+    client, csrf, _ = admin
+    svg = "data:image/svg+xml;base64,PHN2Zy8+"
+    resp = _create_app(client, csrf, icon_url=svg)
+    assert resp.status_code == 422
+
+
+def test_create_rejects_html_data_uri(admin) -> None:
+    client, csrf, _ = admin
+    resp = _create_app(client, csrf, icon_url="data:text/html;base64,PGgxPg==")
+    assert resp.status_code == 422
+
+
+def test_create_rejects_oversized_logo_data_uri(admin) -> None:
+    client, csrf, _ = admin
+    # Base64 payload large enough to exceed the decoded-size cap.
+    oversized = "data:image/png;base64," + ("A" * 120_000)
+    resp = _create_app(client, csrf, icon_url=oversized)
+    assert resp.status_code == 422
+
+
+def test_create_still_accepts_absolute_icon_url(admin) -> None:
+    client, csrf, _ = admin
+    resp = _create_app(
+        client, csrf, icon_url="https://example.com/icon.png"
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["icon_url"] == "https://example.com/icon.png"
+
+
+def test_create_accepts_relative_default_logo(admin) -> None:
+    # Regression: the frontend assigns a bundled default logo as a relative
+    # path (e.g. "logos/red-team-2.svg") when none is uploaded. This must be
+    # accepted (previously rejected with 422).
+    client, csrf, _ = admin
+    resp = _create_app(client, csrf, name="Defaulted", icon_url="logos/red-team-2.svg")
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["icon_url"] == "logos/red-team-2.svg"
+
+
+def test_update_accepts_relative_default_logo(admin) -> None:
+    client, csrf, _ = admin
+    app_id = _create_app(client, csrf, name="To Relogo").json()["id"]
+    resp = client.patch(
+        f"/api/applications/{app_id}",
+        json={"icon_url": "logos/generic-1.svg"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["icon_url"] == "logos/generic-1.svg"
+
+
+def test_create_rejects_logo_path_traversal(admin) -> None:
+    # The relative-logo allow-list is intentionally narrow: only the bundled
+    # catalogue shape is accepted, never an arbitrary relative path.
+    client, csrf, _ = admin
+    for bad in (
+        "logos/../secret.svg",
+        "/logos/generic-1.svg",
+        "logos//generic-1.svg",
+        "logos/generic-1.png",
+        "logos/generic-4.svg",
+        "logos/Generic-1.svg",
+        "logos/a/b-1.svg",
+        "logos/generic.svg",
+    ):
+        resp = _create_app(client, csrf, icon_url=bad)
+        assert resp.status_code == 422, f"expected 422 for {bad!r}, got {resp.status_code}"
+
+
+

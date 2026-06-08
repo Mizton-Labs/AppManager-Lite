@@ -1,0 +1,1125 @@
+:root {
+  color-scheme: dark;
+  --bg: #0e1117;
+  --bg-elevated: #161b22;
+  --bg-card: #1b212b;
+  --border: #2b3340;
+  --border-strong: #3a4452;
+  --text: #e6edf3;
+  --muted: #9aa7b4;
+  --accent: #3b82f6;
+  --accent-hover: #2f6fd6;
+  --danger: #ef4444;
+  --danger-hover: #d83a3a;
+  --success: #22c55e;
+  --warn: #f59e0b;
+  /* Brand accent palette */
+  --brand-primary: #3b82f6;
+  --brand-primary-hover: #2f6fd6;
+  --brand-secondary: #f59e0b;
+  --brand-secondary-hover: #d98c06;
+  --radius: 10px;
+  --gap: 16px;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+h1,
+h2 {
+  margin: 0 0 0.5rem;
+  font-weight: 600;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.app-loading,
+.center-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--gap);
+}
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.25rem 1.5rem;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.brand {
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+/* Logo shown above the name on the sign-in card. */
+.auth-logo {
+  align-self: center;
+  border-radius: 8px;
+}
+
+/* Layout */
+.layout {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+  padding: 0.75rem 1.5rem;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.brand-row {
+  display: flex;
+  align-items: center;
+}
+
+.tabs {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Audit log table */
+.audit-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.audit-table th,
+.audit-table td {
+  text-align: left;
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.audit-table th {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.audit-table tr:last-child td {
+  border-bottom: none;
+}
+
+.audit-time {
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.audit-detail {
+  color: var(--muted);
+  word-break: break-word;
+}
+
+/* Reverse-proxy push log (admin, expanded app card) */
+.push-log-block {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.6rem;
+  margin-bottom: 0.5rem;
+}
+
+.push-log {
+  margin: 0.5rem 0 0;
+  max-height: 16rem;
+  overflow: auto;
+  padding: 0.6rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.topbar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.user-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.content {
+  padding: 1.5rem;
+  max-width: 980px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+/* Buttons */
+.btn {
+  font: inherit;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  padding: 0.5rem 0.9rem;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn.primary {
+  background: var(--accent);
+  color: white;
+}
+
+.btn.primary:not(:disabled):hover {
+  background: var(--accent-hover);
+}
+
+.btn.ghost {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.btn.ghost:not(:disabled):hover {
+  background: var(--bg-elevated);
+}
+
+.btn.danger {
+  background: transparent;
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.btn.danger:not(:disabled):hover {
+  background: var(--danger);
+  color: white;
+}
+
+/* Accent-yellow call to action (e.g. "New application"). */
+.btn.accent {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 600;
+  background: var(--brand-secondary);
+  color: #1b1b1b;
+  border-color: var(--brand-secondary);
+}
+
+.btn.accent:not(:disabled):hover {
+  background: var(--brand-secondary-hover);
+  border-color: var(--brand-secondary-hover);
+}
+
+.btn.approve {
+  background: transparent;
+  color: var(--success);
+  border-color: var(--success);
+}
+
+.btn.approve:not(:disabled):hover {
+  background: var(--success);
+  color: #07210f;
+}
+
+/* Coloured enable/disable actions for clearer emphasis. */
+.btn.enable {
+  background: transparent;
+  color: var(--success);
+  border-color: var(--success);
+  font-weight: 600;
+}
+
+.btn.enable:not(:disabled):hover {
+  background: var(--success);
+  color: #07210f;
+}
+
+.btn.disable {
+  background: transparent;
+  color: var(--warn);
+  border-color: var(--warn);
+  font-weight: 600;
+}
+
+.btn.disable:not(:disabled):hover {
+  background: var(--warn);
+  color: #211a00;
+}
+
+.btn-sm {
+  padding: 0.2rem 0.55rem;
+  font-size: 0.8rem;
+}
+
+.tab {
+  font: inherit;
+  font-weight: 600;
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 8px 8px 0 0;
+  padding: 0.5rem 1rem;
+  margin-bottom: -1px;
+  cursor: pointer;
+}
+
+.tab.active {
+  background: var(--bg-card);
+  color: var(--text);
+  border-bottom-color: var(--brand-secondary);
+}
+
+.tab:not(.active):hover {
+  color: var(--text);
+  background: var(--bg-elevated);
+}
+
+/* Forms */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.field > span {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.field.inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+input[type="text"],
+input[type="password"],
+input[type="url"],
+select,
+textarea {
+  font: inherit;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 0.5rem 0.6rem;
+}
+
+.settings-template {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  white-space: pre;
+  overflow-wrap: normal;
+  resize: vertical;
+}
+
+input:focus,
+select:focus,
+textarea:focus,
+.btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.stack.wide {
+  gap: 1.25rem;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--gap);
+  align-items: start;
+}
+
+.form-row {
+  display: flex;
+  gap: var(--gap);
+  flex-wrap: wrap;
+}
+
+.form-row .field {
+  flex: 1;
+  min-width: 160px;
+}
+
+.create-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+/* Target-type radios + alias prefix */
+.url-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.radio-group {
+  display: flex;
+  gap: 1.25rem;
+  align-items: center;
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.radio-group legend {
+  font-size: 0.85rem;
+  color: var(--muted);
+  padding: 0;
+  margin-bottom: 0.3rem;
+}
+
+.radio-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+}
+
+.radio-option input {
+  accent-color: var(--brand-primary);
+}
+
+.input-group {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.input-prefix {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.5rem 0.5rem;
+  background: var(--bg-elevated);
+  color: var(--muted);
+  font-size: 0.85rem;
+  white-space: nowrap;
+  border-right: 1px solid var(--border-strong);
+}
+
+.input-group-field {
+  flex: 1;
+  min-width: 0;
+  border: 0 !important;
+  border-radius: 0 !important;
+}
+
+/* Alerts and hints */
+.alert {
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.alert.error {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid var(--danger);
+  color: #fca5a5;
+}
+
+.alert.success {
+  background: rgba(34, 197, 94, 0.12);
+  border: 1px solid var(--success);
+  color: #86efac;
+}
+
+.hint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--warn);
+}
+
+.hint-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  color: var(--warn);
+  font-size: 0.85rem;
+}
+
+/* Badges and tags */
+.role-badge {
+  text-transform: uppercase;
+  font-size: 0.68rem;
+  letter-spacing: 0.05em;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  color: var(--muted);
+}
+
+.status-badge {
+  font-size: 0.7rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+}
+
+.status-badge.off {
+  background: rgba(239, 68, 68, 0.15);
+  color: #fca5a5;
+}
+
+.status-badge.warn {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fcd34d;
+}
+
+.status-badge.ok {
+  background: rgba(34, 197, 94, 0.15);
+  color: #86efac;
+}
+
+.status-badge.rejected {
+  background: rgba(221, 29, 33, 0.18);
+  border: 1px solid var(--brand-primary);
+  color: #fca5a5;
+}
+
+.tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.tag {
+  font-size: 0.78rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+/* Detail list */
+.detail-list {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.detail-list > div {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.detail-list dt {
+  width: 90px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.detail-list dd {
+  margin: 0;
+}
+
+/* About page */
+.about-card .detail-list dt {
+  width: 130px;
+}
+
+.about-github {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.about-github:hover {
+  color: var(--brand-primary);
+}
+
+.about-contributors {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+/* Users */
+.user-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.user-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.9rem 1rem;
+  background: var(--bg-elevated);
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.user-card.inactive {
+  opacity: 0.7;
+}
+
+.user-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--gap);
+  flex-wrap: wrap;
+}
+
+.user-identity {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.user-name {
+  font-weight: 600;
+}
+
+.row-actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.user-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.9rem;
+}
+
+.confirm-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-size: 0.9rem;
+}
+
+/* Application manager */
+.manager-toolbar {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.approval-actions {
+  border-top: 1px dashed var(--border);
+  padding-top: 0.6rem;
+}
+
+.approval-actions .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.created-by {
+  font-size: 0.8rem;
+}
+
+/* Team picker */
+.team-picker {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  margin: 0;
+}
+
+.team-picker legend {
+  font-size: 0.82rem;
+  color: var(--muted);
+  padding: 0 0.3rem;
+}
+
+.team-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.4rem;
+}
+
+.team-picker-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 0.4rem;
+}
+
+/* A transient reverse-proxy push result shown once next to an app name. */
+.push-notice {
+  animation: push-notice-fade 0.3s ease-in;
+}
+
+@keyframes push-notice-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Emphasised enabled/disabled status indicator. */
+.status-indicator {
+  font-weight: 600;
+}
+
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.9rem;
+}
+
+/* Credentials banner */
+.credential {
+  border-color: var(--accent);
+}
+
+.credential-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--gap);
+  flex-wrap: wrap;
+}
+
+.credential-value {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 0.2rem 0.5rem;
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  user-select: all;
+  cursor: pointer;
+}
+
+.credential-copy-error {
+  margin: 0.5rem 0 0;
+  font-size: 0.85rem;
+}
+
+/* ---- Portal shell ---- */
+.app-shell {
+  --sidebar-w: 264px;
+  --header-h: 57px;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-shell.collapsed {
+  --sidebar-w: 64px;
+}
+
+.shell-header {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  height: var(--header-h);
+  padding: 0 1rem;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+/* Brand accent line beneath the header. */
+.shell-header::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  background: linear-gradient(90deg, var(--brand-primary), var(--brand-secondary));
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  flex: none;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.icon-btn:hover {
+  background: var(--bg-card);
+}
+
+.brand-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.brand-logo {
+  display: block;
+  flex: none;
+}
+
+.brand-title {
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.header-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.header-right .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  text-decoration: none;
+}
+
+.shell-body {
+  flex: 1;
+  display: flex;
+  align-items: stretch;
+  min-height: 0;
+}
+
+.sidebar {
+  flex: none;
+  width: var(--sidebar-w);
+  background: var(--bg-elevated);
+  border-right: 1px solid var(--border);
+  padding: 1rem 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.2rem;
+  position: sticky;
+  top: var(--header-h);
+  height: calc(100vh - var(--header-h));
+  overflow-y: auto;
+  transition: width 0.15s ease;
+}
+
+.sidebar-heading {
+  margin: 0 0 0.4rem;
+  padding: 0 0.6rem;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.sidebar-links {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  min-height: 3.6rem;
+  padding: 0.85rem 0.7rem;
+  border-radius: 8px;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 1rem;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+
+.nav-item:hover {
+  background: var(--bg-card);
+  color: var(--text);
+}
+
+.nav-item.active {
+  background: var(--bg-card);
+  color: var(--text);
+}
+
+/* Teams render as button-cards with their own glyph and a brand accent. */
+.nav-item.team-card {
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  margin-bottom: 0.1rem;
+}
+
+.nav-item.team-card .nav-icon {
+  color: var(--brand-primary);
+}
+
+.nav-item.team-card:hover {
+  border-color: var(--brand-secondary);
+}
+
+.nav-item.team-card.active {
+  border-color: var(--brand-primary);
+}
+
+.nav-item.team-card.active .nav-icon {
+  color: var(--brand-secondary);
+}
+
+.nav-icon {
+  display: inline-flex;
+  flex: none;
+}
+
+.nav-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar-empty {
+  margin: 0;
+  padding: 0 0.6rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.app-shell.collapsed .sidebar-heading,
+.app-shell.collapsed .nav-label,
+.app-shell.collapsed .sidebar-empty {
+  display: none;
+}
+
+.app-shell.collapsed .nav-item {
+  justify-content: center;
+  padding: 0.85rem;
+}
+
+.shell-main {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+.view-head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.view-head h1 {
+  margin: 0;
+}
+
+.section-title {
+  margin: 0 0 0.75rem;
+}
+
+.home-hero h1 {
+  margin-bottom: 0.4rem;
+}
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--gap);
+}
+
+.app-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 1.1rem 1.2rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  text-decoration: none;
+  transition: border-color 0.15s, transform 0.15s;
+}
+
+.app-card:hover {
+  border-color: var(--brand-primary);
+  transform: translateY(-2px);
+}
+
+.app-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  color: var(--brand-primary);
+}
+
+.app-card-monogram {
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.app-card-icon img {
+  display: block;
+  object-fit: contain;
+}
+
+.app-card-title {
+  font-weight: 600;
+}
+
+.app-card-desc {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.app-card-teams {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: auto;
+  padding-top: 0.5rem;
+}
+
+.app-card-team {
+  font-size: 0.72rem;
+  padding: 0.1rem 0.5rem;
+  border-color: var(--brand-primary);
+  color: var(--muted);
+}
+
+.app-url {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.85rem;
+}
+
+/* Logo chooser (create form + row edit) */
+.logo-field-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.logo-preview {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  color: var(--muted);
+  overflow: hidden;
+}
+
+.logo-preview img {
+  display: block;
+  object-fit: contain;
+}
+
+.logo-field-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.logo-field input[type="file"] {
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.logo-hint {
+  font-size: 0.78rem;
+  margin: 0.1rem 0 0;
+}
+
+@media (max-width: 720px) {
+  .brand-title,
+  .header-right .btn-label {
+    display: none;
+  }
+}

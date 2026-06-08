@@ -1,0 +1,23 @@
+[project]
+name = "appmanager-lite"
+version = "0.1.0"
+description = "AppManager Lite portal backend."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.116",
+    # Direct floor to clear Starlette advisories pulled in transitively via
+    # FastAPI (CVE-2025-54121, CVE-2025-62727, PYSEC-2026-161).
+    "starlette>=1.0.1",
+    "uvicorn[standard]>=0.30,<0.35",
+    "argon2-cffi>=23.1,<24",
+    "pydantic>=2.7,<3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3,<10",
+    "httpx>=0.27,<0.29",
+]
+
+[tool.uv]
+package = false
