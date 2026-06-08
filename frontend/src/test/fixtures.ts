@@ -1,4 +1,4 @@
-import type { ApiUser, Application } from "../types";
+import type { ApiUser, Application, Team } from "../types";
 
 /** Build an {@link Application} for tests; override only what a case cares about. */
 export function makeApp(overrides: Partial<Application> = {}): Application {
@@ -29,6 +29,17 @@ export function makeUser(overrides: Partial<ApiUser> = {}): ApiUser {
     self_service: false,
     apps_server: "",
     teams: [],
+    ...overrides,
+  };
+}
+
+/** Build a {@link Team} for tests; override only what a case cares about. */
+export function makeTeam(overrides: Partial<Team> = {}): Team {
+  return {
+    id: 1,
+    name: "Red Team",
+    sort_order: 0,
+    icon: "",
     ...overrides,
   };
 }

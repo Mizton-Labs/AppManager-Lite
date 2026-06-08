@@ -2,15 +2,17 @@ import { useState } from "react";
 import type { ApiUser } from "../types";
 import { ApplicationManager } from "./ApplicationManager";
 import { UserManagement } from "./UserManagement";
+import { TeamManagement } from "./TeamManagement";
 import { GeneralSettings } from "./GeneralSettings";
 
-type Tab = "apps" | "users" | "general";
+type Tab = "apps" | "users" | "teams" | "general";
 
 /**
  * Settings area. Every signed-in user can submit and manage applications for
  * their own teams here; administrators additionally see every application (with
- * its creator and approval state), a tab for user management, and a tab for
- * general settings (branding + reverse-proxy configuration).
+ * its creator and approval state), a tab for user management, a tab to manage
+ * teams, and a tab for general settings (branding + reverse-proxy
+ * configuration).
  *
  * On first run (a fresh deployment that has not been configured yet) an
  * administrator lands here with the General Settings tab open and a short setup
@@ -26,11 +28,14 @@ export function SettingsView(props: {
   firstRun?: boolean;
   /** Called after the deployment is configured (refreshes the session). */
   onConfigured?: () => void | Promise<void>;
+  /** Called after teams change so the sidebar/pickers refresh. */
+  onTeamsChanged?: () => void | Promise<void>;
 }) {
   const { isAdmin, currentUser, appTeamOptions, firstRun } = props;
   // On first run, open the General Settings tab so setup is front-and-centre.
   const [tab, setTab] = useState<Tab>(firstRun ? "general" : "apps");
   const showUsers = isAdmin && tab === "users";
+  const showTeams = isAdmin && tab === "teams";
   const showGeneral = isAdmin && tab === "general";
 
   return (
@@ -39,7 +44,7 @@ export function SettingsView(props: {
         <h1>Settings</h1>
         <p className="muted">
           {isAdmin
-            ? "Configure applications, user access, branding, and reverse-proxy settings."
+            ? "Configure applications, user access, teams, branding, and reverse-proxy settings."
             : "Submit and manage applications for your teams."}
         </p>
       </header>
@@ -71,6 +76,14 @@ export function SettingsView(props: {
           </button>
           <button
             type="button"
+            className={tab === "teams" ? "tab active" : "tab"}
+            aria-current={tab === "teams"}
+            onClick={() => setTab("teams")}
+          >
+            Teams
+          </button>
+          <button
+            type="button"
             className={tab === "general" ? "tab active" : "tab"}
             aria-current={tab === "general"}
             onClick={() => setTab("general")}
@@ -82,6 +95,8 @@ export function SettingsView(props: {
 
       {showUsers ? (
         <UserManagement currentUser={currentUser} />
+      ) : showTeams ? (
+        <TeamManagement onTeamsChanged={props.onTeamsChanged} />
       ) : showGeneral ? (
         <GeneralSettings onConfigured={props.onConfigured} />
       ) : (

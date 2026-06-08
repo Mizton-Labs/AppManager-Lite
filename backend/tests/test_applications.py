@@ -2,7 +2,24 @@
 
 from __future__ import annotations
 
+import inspect
+
+import pytest
 from fastapi.testclient import TestClient
+
+
+@pytest.fixture(autouse=True)
+def _seed_teams(request, admin, make_team):
+    client, csrf, _ = admin
+    for _name in ("Red Team", "Threat Hunting", "Detect and Response"):
+        make_team(_name)
+    # ``make_team`` seeds via the admin-authenticated shared ``client``. A few
+    # tests intentionally exercise the unauthenticated/auth-disabled path using
+    # the bare ``client``/``client_no_auth`` fixtures and never request
+    # ``admin`` themselves; for those, drop the admin session this fixture
+    # established so the caller is observed as anonymous.
+    if "admin" not in inspect.signature(request.function).parameters:
+        client.post("/api/auth/logout", headers={"X-CSRF-Token": csrf})
 
 
 def _create_member(client, csrf, username, teams):

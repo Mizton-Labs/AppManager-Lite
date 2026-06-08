@@ -2,17 +2,18 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, ApiError } from "../api";
 import type { Application } from "../types";
-import { ALL_TEAMS, teamFromSlug } from "../teams";
+import { teamFromSlug } from "../teams";
 import { AppCard } from "./AppCard";
 
 /**
  * Per-team view: the applications configured for a single team. The team is
- * resolved from the URL slug; a client-side membership check mirrors the
- * server-side gate (which also returns 403) for a clearer message.
+ * resolved from the URL slug against the teams the account can see; a
+ * membership check mirrors the server-side gate (which also returns 403) for a
+ * clearer message.
  */
 export function TeamView(props: { teams: readonly string[] }) {
   const { slug } = useParams();
-  const team = slug ? teamFromSlug(slug, ALL_TEAMS) : null;
+  const team = slug ? teamFromSlug(slug, props.teams) : null;
   const isMember = team !== null && props.teams.includes(team);
 
   if (!team) {

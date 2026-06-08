@@ -12,7 +12,6 @@ from contextlib import contextmanager
 
 from .config import get_settings
 from .reverse_proxy import DEFAULT_ALIAS_TEMPLATE
-from .teams import DEFAULT_TEAMS
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -32,7 +31,8 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS teams (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     name       TEXT    NOT NULL UNIQUE,
-    sort_order INTEGER NOT NULL DEFAULT 0
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    icon       TEXT    NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS user_teams (
@@ -139,25 +139,14 @@ def get_connection() -> Iterator[sqlite3.Connection]:
 
 
 def init_db() -> None:
-    """Create tables (idempotent) and seed canonical teams.
+    """Create tables (idempotent) and seed the singleton settings row.
 
-    Applications are not seeded: a clean install starts with no applications.
+    Teams are administrator-managed; none are seeded, so a clean install starts
+    with no teams (and no applications).
     """
     with get_connection() as conn:
         conn.executescript(_SCHEMA)
         _migrate_schema(conn)
-        # Seed and (re)sequence canonical teams. The list position in
-        # DEFAULT_TEAMS is authoritative for display order, so this also inserts
-        # newly added teams at the right place in existing databases.
-        for order, name in enumerate(DEFAULT_TEAMS):
-            conn.execute(
-                "INSERT OR IGNORE INTO teams (name, sort_order) VALUES (?, ?)",
-                (name, order),
-            )
-            conn.execute(
-                "UPDATE teams SET sort_order = ? WHERE name = ?",
-                (order, name),
-            )
         # Seed the single settings row (id = 1) with the default alias template
         # if it does not exist yet. Never overwrites operator edits.
         conn.execute(
@@ -244,4 +233,7 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     _add_column(conn, "settings", "configured", "INTEGER NOT NULL DEFAULT 0")
 
     _add_column(conn, "teams", "sort_order", "INTEGER NOT NULL DEFAULT 0")
+    # Teams gained an optional small icon (a bundled catalogue path or a capped
+    # raster data URI), shown on the sidebar team button.
+    _add_column(conn, "teams", "icon", "TEXT NOT NULL DEFAULT ''")
 

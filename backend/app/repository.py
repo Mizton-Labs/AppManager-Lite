@@ -10,6 +10,20 @@ import sqlite3
 from typing import Any
 
 from . import security
+from .teams import slugify
+
+
+class TeamConflictError(ValueError):
+    """Raised when a team name (or its derived slug) collides with another."""
+
+
+def _row_to_team(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "sort_order": row["sort_order"],
+        "icon": row["icon"],
+    }
 
 
 def _row_to_user(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
@@ -32,6 +46,124 @@ def list_team_names(conn: sqlite3.Connection) -> list[str]:
         "SELECT name FROM teams ORDER BY sort_order, id"
     ).fetchall()
     return [r["name"] for r in rows]
+
+
+def list_teams(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """All teams as dicts ``{id, name, sort_order, icon}`` in display order."""
+    rows = conn.execute(
+        "SELECT id, name, sort_order, icon FROM teams ORDER BY sort_order, id"
+    ).fetchall()
+    return [_row_to_team(r) for r in rows]
+
+
+def get_team(conn: sqlite3.Connection, team_id: int) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT id, name, sort_order, icon FROM teams WHERE id = ?",
+        (team_id,),
+    ).fetchone()
+    return _row_to_team(row) if row is not None else None
+
+
+def _team_name_conflict(
+    conn: sqlite3.Connection, name: str, *, exclude_id: int | None = None
+) -> bool:
+    """True when ``name`` (case-insensitively) or its slug matches another team.
+
+    The unique index already guards exact names; this additionally rejects
+    case-only differences and names that would collapse to an existing team's
+    URL slug (e.g. ``Red-Team`` vs ``Red Team``).
+    """
+    slug = slugify(name)
+    rows = conn.execute(
+        "SELECT id, name FROM teams WHERE id IS NOT ?",
+        (exclude_id,),
+    ).fetchall()
+    lowered = name.strip().lower()
+    for r in rows:
+        if r["name"].strip().lower() == lowered or slugify(r["name"]) == slug:
+            return True
+    return False
+
+
+def create_team(
+    conn: sqlite3.Connection,
+    *,
+    name: str,
+    icon: str = "",
+    sort_order: int | None = None,
+) -> dict[str, Any]:
+    """Create a team, appended to the end of the sidebar order by default."""
+    name = name.strip()
+    if _team_name_conflict(conn, name):
+        raise TeamConflictError(f"A team named '{name}' already exists.")
+    if sort_order is None:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM teams"
+        ).fetchone()
+        sort_order = row["next"]
+    cur = conn.execute(
+        "INSERT INTO teams (name, sort_order, icon) VALUES (?, ?, ?)",
+        (name, sort_order, icon),
+    )
+    created = get_team(conn, cur.lastrowid)
+    assert created is not None  # just inserted
+    return created
+
+
+def update_team(
+    conn: sqlite3.Connection,
+    team_id: int,
+    *,
+    name: str | None = None,
+    icon: str | None = None,
+) -> dict[str, Any] | None:
+    """Rename a team and/or change its icon, in place (id stable).
+
+    Renaming by id preserves every user/application membership, which is stored
+    by ``team_id``.
+    """
+    existing = get_team(conn, team_id)
+    if existing is None:
+        return None
+    if name is not None:
+        name = name.strip()
+        if _team_name_conflict(conn, name, exclude_id=team_id):
+            raise TeamConflictError(f"A team named '{name}' already exists.")
+        conn.execute(
+            "UPDATE teams SET name = ? WHERE id = ?", (name, team_id)
+        )
+    if icon is not None:
+        conn.execute(
+            "UPDATE teams SET icon = ? WHERE id = ?", (icon, team_id)
+        )
+    return get_team(conn, team_id)
+
+
+def delete_team(conn: sqlite3.Connection, team_id: int) -> bool:
+    """Delete a team. Membership rows cascade away. Returns True if removed."""
+    cur = conn.execute("DELETE FROM teams WHERE id = ?", (team_id,))
+    return cur.rowcount > 0
+
+
+def reorder_teams(
+    conn: sqlite3.Connection, ordered_ids: list[int]
+) -> list[dict[str, Any]]:
+    """Set ``sort_order`` to the given id sequence (0-based).
+
+    ``ordered_ids`` must be exactly the current set of team ids (no missing or
+    unknown ids); otherwise a ``ValueError`` is raised and nothing changes.
+    """
+    existing = {r["id"] for r in conn.execute("SELECT id FROM teams").fetchall()}
+    provided = set(ordered_ids)
+    if len(ordered_ids) != len(provided):
+        raise ValueError("Duplicate team ids in reorder request.")
+    if provided != existing:
+        raise ValueError("Reorder must list every existing team exactly once.")
+    for order, team_id in enumerate(ordered_ids):
+        conn.execute(
+            "UPDATE teams SET sort_order = ? WHERE id = ?", (order, team_id)
+        )
+    return list_teams(conn)
 
 
 def list_user_teams(conn: sqlite3.Connection, user_id: int) -> list[str]:

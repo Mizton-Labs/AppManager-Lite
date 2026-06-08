@@ -4,13 +4,16 @@ import type {
   AuditEntry,
   BrandingSettings,
   CreateApplicationInput,
+  CreateTeamInput,
   CreateUserInput,
   GeneratedPassword,
   ReverseProxySettings,
   SessionState,
+  Team,
   UpdateApplicationInput,
   UpdateBrandingSettingsInput,
   UpdateReverseProxySettingsInput,
+  UpdateTeamInput,
   UpdateUserInput,
 } from "./types";
 
@@ -95,7 +98,7 @@ export const api = {
       body: { current_password, new_password, confirm_password },
     }),
 
-  listTeams: () => request<string[]>("teams"),
+  listTeams: () => request<Team[]>("teams"),
 
   listApplications: (team?: string) =>
     request<Application[]>(
@@ -167,5 +170,21 @@ export const api = {
     request<BrandingSettings>("settings/branding", {
       method: "PATCH",
       body: input,
+    }),
+
+  /** Team management (administrators only; reads are open to any signed-in user). */
+  createTeam: (input: CreateTeamInput) =>
+    request<Team>("settings/teams", { method: "POST", body: input }),
+
+  updateTeam: (id: number, input: UpdateTeamInput) =>
+    request<Team>(`settings/teams/${id}`, { method: "PATCH", body: input }),
+
+  deleteTeam: (id: number) =>
+    request<{ detail: string }>(`settings/teams/${id}`, { method: "DELETE" }),
+
+  reorderTeams: (teamIds: number[]) =>
+    request<Team[]>("settings/teams/reorder", {
+      method: "POST",
+      body: { team_ids: teamIds },
     }),
 };
