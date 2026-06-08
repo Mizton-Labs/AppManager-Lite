@@ -1,9 +1,9 @@
 # AppManager Lite
 
-A self-hosted landing portal for your teams. It
-presents a single, modern home page with quick access to each team's
-applications, plus built-in authentication, self-service application management
-with administrator approval, and user management.
+A self-hosted landing portal for your teams. It presents a single, modern home
+page with quick access to each team's applications, plus built-in
+authentication, self-service application management with administrator approval,
+and user management.
 
 The portal is mountable at the site root or behind a reverse proxy on a path
 prefix (for example `/home`), and ships with a single lifecycle script that
@@ -136,10 +136,12 @@ below), so there is no per-user port.
   self-service users apply alias changes immediately (no staging).
 - **Logos.** When creating an application you may upload a small logo (PNG, WebP,
   or JPEG). The image is resized in the browser to a 64-pixel square and stored
-  inline (capped at 64 KB); you may instead paste an absolute image URL. If no
-  logo is provided, one is chosen from a bundled per-team default catalogue
-  (three variants per team, plus a neutral set for team-less apps). The logo
-  appears small on each application card.
+  inline as a capped (64 KB) raster data URI (PNG or WebP — a JPEG is converted
+  on upload); you may instead paste an absolute image URL. If no logo is
+  provided, one is chosen from a small bundled default catalogue: three variants
+  for each of a fixed set of known team slugs, and a neutral `generic` set used
+  for every other team and for team-less apps. The logo appears small on each
+  application card.
 - **Self-service.** Each account has a `self_service` flag (administrator
   managed, off by default). Self-service users — and all administrators —
   publish applications immediately, bypassing approval. The flag is shown on the
@@ -182,10 +184,11 @@ has:
   them in the list (accessible **move up / down** buttons do the same); the new
   order is applied to every member's sidebar.
 - **Icon** — an optional small icon shown on the team's sidebar button. Pick one
-  from a bundled **generic-IT catalogue** (server, database, network, cloud,
-  dashboard, code, and more) or upload a small raster image (PNG, WebP, or JPEG,
-  resized and capped like the application logo). When no icon is chosen, a
-  neutral default is used.
+  from a bundled **generic-IT catalogue** of 12 icons (server, database, network,
+  cloud, security, dashboard, development, support, storage, containers,
+  automation, and team) or upload a small raster image (PNG, WebP, or JPEG,
+  resized and stored as a capped raster like the application logo). When no icon
+  is chosen, a neutral default is used.
 
 Renaming a team keeps all existing user and application memberships (they are
 stored by the team's stable id). Deleting a team removes it from every user and
@@ -271,11 +274,12 @@ Administrators get an **Audit log** in the sidebar (after Settings)
 that records actions performed in the portal, grouped into three tabs:
 
 - **Application Management** — application create/request, approve, reject,
-  update, and delete.
+  update, delete, alias-change request/approval, and reverse-proxy push/remove.
 - **User activity** — sign-in (success and failure), sign-out, password changes,
   and user create/update/delete/password-reset.
 - **System** — backend lifecycle (startup, shutdown, first-run administrator
-  creation, authentication disabled).
+  creation, authentication disabled), settings updates (branding and
+  reverse-proxy), and team management (create, update, delete, reorder).
 
 Events are stored in the `audit_log` table (created automatically on startup),
 so they survive restarts; the view shows the most recent entries per category.
@@ -289,6 +293,7 @@ All settings are environment variables with the `APP_` prefix:
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `APP_BASE_DIR` | _(project root)_ | Base directory for resolving relative data, frontend, and log paths. |
 | `APP_BASE_PREFIX` | _(empty)_ | Mount path prefix, e.g. `/home`. |
 | `APP_ENABLE_AUTH` | `1` | Enable authentication and access control. |
 | `APP_DEV` | `0` | Dev mode (enables API docs; relaxes cookie security). |
@@ -369,8 +374,9 @@ the deployment's own branding (even before authentication).
 
 - **Name** — free text shown in the header, sign-in page, and About page.
 - **Logo** — upload a PNG, WebP, or JPEG; it is resized in the browser and
-  stored inline (capped, raster only). Until a logo is configured, a neutral
-  bundled fallback asset (`frontend/public/app-logo.svg`) is used.
+  stored inline as a capped, raster-only data URI (PNG or WebP — a JPEG is
+  converted on upload). Until a logo is configured, a neutral bundled fallback
+  asset (`frontend/public/app-logo.svg`) is used.
 
 The first-login setup wizard prompts a new deployment's administrator to set
 these values before continuing.
