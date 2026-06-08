@@ -75,7 +75,9 @@ dependencies, builds the frontend, and starts the server.
 Useful start flags:
 
 - `--bind IP:PORT` — address to listen on (default `127.0.0.1:8000`).
-- `--base-prefix /path` — mount path when running behind a subpath proxy.
+- `--base-prefix /path` — optional subpath mount; usually unnecessary (the app
+  works behind a proxy via relative paths) and only needed for strict
+  reverse-proxy setups that require the app to emit its public subpath.
 - `--dev` — run in the foreground with auto-reload; Ctrl-C to stop.
 - `--rebuild` — force a frontend build even when it looks up to date.
 - `--reinstall` — force dependency reinstallation.
@@ -308,7 +310,7 @@ All settings are environment variables with the `APP_` prefix:
 | Variable | Default | Purpose |
 |---|---|---|
 | `APP_BASE_DIR` | _(project root)_ | Base directory for resolving relative data, frontend, and log paths. |
-| `APP_BASE_PREFIX` | _(empty)_ | Mount path prefix, e.g. `/home`. |
+| `APP_BASE_PREFIX` | _(empty)_ | Optional subpath prefix, e.g. `/home`; only needed for strict reverse-proxy setups (the app otherwise works behind a proxy via relative paths). |
 | `APP_ENABLE_AUTH` | `1` | Enable authentication and access control. |
 | `APP_DEV` | `0` | Dev mode (enables API docs; relaxes cookie security). |
 | `APP_SECURE_COOKIES` | `1` (off in dev) | Set the `Secure` flag on the session cookie. |
@@ -341,17 +343,24 @@ are never logged.
 
 ## Deployment behind a reverse proxy
 
-Run the app bound to a private address and place it behind a proxy that strips
-the path prefix before forwarding. For a portal served at
-`https://<server>/home/`:
+In most setups no special configuration is needed: the frontend's API and asset
+URLs are all relative, so the same build works at the site root or behind a
+reverse proxy on any subpath. Bind the app to a private address and forward to
+it from the proxy — that is usually enough.
+
+`--base-prefix` is **optional**. It is only needed for a strict reverse-proxy
+configuration that requires the app to know its public subpath so it can emit
+correct absolute links (for example server-side redirects or generated links).
+For a portal served at `https://<server>/home/` where the proxy forwards
+`/home/...` to the app as `/...`:
 
 ```bash
 ./appmanager-lite start --bind 0.0.0.0:8000 --base-prefix /home
 ```
 
-The proxy must forward `/home/...` to the app as `/...`. The frontend's API and
-asset URLs are all relative, so the same build works at the root or under any
-prefix.
+When set, the backend injects a matching `<base href>` so relative links resolve
+under the prefix. Without it, the application still works behind the proxy
+normally.
 
 ## Development
 
