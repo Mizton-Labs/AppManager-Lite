@@ -3,8 +3,20 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ApplicationManager } from "./ApplicationManager";
 import type { Application } from "../types";
-import { ALL_TEAMS } from "../teams";
 import { makeApp } from "../test/fixtures";
+
+// Team options the Application Manager renders in its picker. Previously this
+// mirrored the hardcoded ALL_TEAMS; teams are now admin-managed, so the test
+// supplies its own representative list.
+const ALL_TEAMS = [
+  "Detect and Response",
+  "Threat Hunting",
+  "Threat Intel",
+  "Forensics & BID",
+  "Advanced Analytics",
+  "Red Team",
+  "Threat Detection Engineering",
+] as const;
 
 function jsonResponse(payload: unknown, ok = true, status = 200): Response {
   return { ok, status, json: async () => payload } as Response;

@@ -46,13 +46,13 @@ describe("TeamView", () => {
     expect(String(url)).toContain("applications?team=Red%20Team");
   });
 
-  it("blocks non-members without calling the API", () => {
+  it("shows unknown team for a slug outside the visible team list", () => {
+    // Team visibility is data-driven: a slug not in the caller's team list is
+    // treated as unknown (the sidebar never links non-visible teams).
     const fetchMock = stubFetch([]);
     renderAt("/teams/threat-hunting", ["Red Team"]);
 
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      /not assigned to this team/i,
-    );
+    expect(screen.getByText(/Unknown team/i)).toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

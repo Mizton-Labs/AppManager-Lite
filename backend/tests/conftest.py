@@ -94,3 +94,27 @@ def admin(client: TestClient):
 
     csrf = client.get("/api/session").json()["csrf_token"]
     return client, csrf, new_pw
+
+
+@pytest.fixture
+def make_team(admin):
+    """Factory to create a team via the admin API and return its JSON.
+
+    Teams are no longer seeded, so tests that need named teams (e.g. for user
+    or application membership) create them explicitly. Usage::
+
+        def test_x(admin, make_team):
+            make_team("Red Team")
+    """
+    client, csrf, _ = admin
+
+    def _make(name: str, icon: str = "") -> dict:
+        resp = client.post(
+            "/api/settings/teams",
+            json={"name": name, "icon": icon},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert resp.status_code == 201, resp.text
+        return resp.json()
+
+    return _make

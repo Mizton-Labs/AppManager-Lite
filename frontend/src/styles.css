@@ -942,6 +942,28 @@ textarea:focus,
   flex: none;
 }
 
+/* Team icons rendered from the bundled catalogue are monochrome SVGs masked to
+   the current text colour so they tint with the brand/active state like the
+   other sidebar glyphs. Uploaded raster icons render as a plain image. */
+.team-icon-mask {
+  display: inline-block;
+  flex: none;
+  background-color: currentColor;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+}
+
+.team-icon-img {
+  display: inline-block;
+  flex: none;
+  object-fit: contain;
+  border-radius: 4px;
+}
+
 .nav-label {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1122,4 +1144,142 @@ textarea:focus,
   .header-right .btn-label {
     display: none;
   }
+}
+
+/* ---- Team management ---- */
+.team-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.team-list-item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+}
+
+.team-drag-handle {
+  cursor: grab;
+  color: var(--muted);
+  user-select: none;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.team-list-icon {
+  display: inline-flex;
+  color: var(--brand-primary);
+  flex: none;
+}
+
+.team-list-name {
+  font-weight: 600;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.team-edit {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.team-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-left: auto;
+}
+
+.btn.btn-sm {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.82rem;
+}
+
+/* Icon picker */
+.team-icon-picker {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.6rem;
+  margin: 0;
+}
+
+.team-icon-picker legend {
+  font-size: 0.82rem;
+  color: var(--muted);
+  padding: 0 0.3rem;
+}
+
+.team-icon-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 0.4rem;
+}
+
+.team-icon-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.45rem 0.3rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.team-icon-choice:hover {
+  border-color: var(--brand-secondary);
+}
+
+.team-icon-choice.selected {
+  border-color: var(--brand-primary);
+  color: var(--brand-primary);
+}
+
+.team-icon-label {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.team-icon-default {
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.team-icon-upload {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.team-icon-upload input[type="file"] {
+  font: inherit;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.team-icon-custom {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.82rem;
+  color: var(--text);
+}
+
+.team-icon-picker.compact .team-icon-grid {
+  grid-template-columns: repeat(auto-fill, minmax(60px, 1fr));
 }
