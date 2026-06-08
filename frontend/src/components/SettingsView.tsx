@@ -1,0 +1,92 @@
+import { useState } from "react";
+import type { ApiUser } from "../types";
+import { ApplicationManager } from "./ApplicationManager";
+import { UserManagement } from "./UserManagement";
+import { GeneralSettings } from "./GeneralSettings";
+
+type Tab = "apps" | "users" | "general";
+
+/**
+ * Settings area. Every signed-in user can submit and manage applications for
+ * their own teams here; administrators additionally see every application (with
+ * its creator and approval state), a tab for user management, and a tab for
+ * general settings (branding + reverse-proxy configuration).
+ *
+ * On first run (a fresh deployment that has not been configured yet) an
+ * administrator lands here with the General Settings tab open and a short setup
+ * prompt; saving the basic information completes setup.
+ */
+export function SettingsView(props: {
+  isAdmin: boolean;
+  currentUser: ApiUser | null;
+  /** Teams selectable when creating/editing an application (all teams: any
+   *  user may share an application with any team). */
+  appTeamOptions: readonly string[];
+  /** True when this is the one-time first-run setup visit (admins only). */
+  firstRun?: boolean;
+  /** Called after the deployment is configured (refreshes the session). */
+  onConfigured?: () => void | Promise<void>;
+}) {
+  const { isAdmin, currentUser, appTeamOptions, firstRun } = props;
+  // On first run, open the General Settings tab so setup is front-and-centre.
+  const [tab, setTab] = useState<Tab>(firstRun ? "general" : "apps");
+  const showUsers = isAdmin && tab === "users";
+  const showGeneral = isAdmin && tab === "general";
+
+  return (
+    <div className="stack wide">
+      <header className="view-head">
+        <h1>Settings</h1>
+        <p className="muted">
+          {isAdmin
+            ? "Configure applications, user access, branding, and reverse-proxy settings."
+            : "Submit and manage applications for your teams."}
+        </p>
+      </header>
+
+      {firstRun && (
+        <p className="alert success" role="status">
+          Welcome! Finish setup by setting your application name and logo under
+          General Settings, then save.
+        </p>
+      )}
+
+      {isAdmin && (
+        <nav className="tabs" aria-label="Settings sections">
+          <button
+            type="button"
+            className={tab === "apps" ? "tab active" : "tab"}
+            aria-current={tab === "apps"}
+            onClick={() => setTab("apps")}
+          >
+            Application Manager
+          </button>
+          <button
+            type="button"
+            className={tab === "users" ? "tab active" : "tab"}
+            aria-current={tab === "users"}
+            onClick={() => setTab("users")}
+          >
+            User Management
+          </button>
+          <button
+            type="button"
+            className={tab === "general" ? "tab active" : "tab"}
+            aria-current={tab === "general"}
+            onClick={() => setTab("general")}
+          >
+            General Settings
+          </button>
+        </nav>
+      )}
+
+      {showUsers ? (
+        <UserManagement currentUser={currentUser} />
+      ) : showGeneral ? (
+        <GeneralSettings onConfigured={props.onConfigured} />
+      ) : (
+        <ApplicationManager isAdmin={isAdmin} teamOptions={appTeamOptions} />
+      )}
+    </div>
+  );
+}
