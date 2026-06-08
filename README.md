@@ -44,9 +44,16 @@ AppManager-Lite/
 |   |-- public/app-logo.svg    # fallback logo (branding is admin-configurable)
 |   `-- src/
 |-- scripts/                   # check.sh, test.sh, security-check.sh
+|-- project-manifest.json      # machine-readable project structure/API/data model
 |-- NOTICE / THIRD-PARTY-NOTICES.md
 `-- README.md
 ```
+
+A machine-readable [`project-manifest.json`](project-manifest.json) (validated by
+[`project-manifest.schema.json`](project-manifest.schema.json)) describes the
+components, tech stack, commands, configuration, HTTP API, and data model for
+tooling and agents. Keep it in sync when structure, the API, configuration, or
+the schema changes.
 
 ## Quick start
 
