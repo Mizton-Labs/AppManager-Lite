@@ -64,7 +64,7 @@
         { "path": "frontend/src/types.ts", "role": "Shared TypeScript types for API entities." },
         { "path": "frontend/src/branding.ts", "role": "Configurable app name/logo and source repository URL." },
         { "path": "frontend/src/teams.ts", "role": "Team URL-slug helpers (team list is data-driven from the API)." },
-        { "path": "frontend/src/teamIcons.ts", "role": "Bundled generic-IT team-icon catalogue manifest and default." },
+        { "path": "frontend/src/teamIcons.ts", "role": "Bundled team-icon catalogue manifest (generic-IT and cybersecurity sets) and default." },
         { "path": "frontend/src/logos.ts", "role": "Default application-logo selection from the bundled catalogue." },
         { "path": "frontend/src/components/PortalShell.tsx", "role": "Authenticated shell: header, sidebar, routes; fetches teams." },
         { "path": "frontend/src/components/Sidebar.tsx", "role": "Primary navigation, including data-driven team buttons." },
@@ -77,7 +77,7 @@
         { "path": "frontend/src/components/GeneralSettings.tsx", "role": "Branding and reverse-proxy configuration forms." },
         { "path": "frontend/src/components/AuditView.tsx", "role": "Admin audit-log viewer." },
         { "path": "frontend/src/lib", "role": "Helpers: links, image resize, clipboard, password." },
-        { "path": "frontend/public/team-icons", "role": "Bundled generic-IT team-icon SVG catalogue." },
+        { "path": "frontend/public/team-icons", "role": "Bundled team-icon SVG catalogue (generic-IT and cybersecurity sets)." },
         { "path": "frontend/public/logos", "role": "Bundled default application-logo SVG catalogue." }
       ]
     },
