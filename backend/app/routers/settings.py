@@ -9,15 +9,21 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from .. import audit, repository
 from ..deps import get_db, require_admin, verify_csrf
+from ..repository import TeamConflictError
 from ..schemas import (
     BrandingSettingsOut,
+    CreateTeamRequest,
+    MessageOut,
+    ReorderTeamsRequest,
     ReverseProxySettingsOut,
+    TeamOut,
     UpdateBrandingSettingsRequest,
     UpdateReverseProxySettingsRequest,
+    UpdateTeamRequest,
 )
 
 router = APIRouter(tags=["settings"])
@@ -120,3 +126,129 @@ def update_branding_settings(
         detail=f"branding fields={','.join(changed) or 'none'}",
     )
     return _branding_out(row)
+
+
+# --- Team management (administrator-managed) --------------------------------
+
+
+@router.get("/settings/teams", response_model=list[TeamOut])
+def list_teams_admin(
+    _actor: dict[str, Any] = Depends(require_admin),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> list[TeamOut]:
+    return [TeamOut(**team) for team in repository.list_teams(conn)]
+
+
+@router.post(
+    "/settings/teams",
+    response_model=TeamOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_team(
+    payload: CreateTeamRequest,
+    actor: dict[str, Any] = Depends(require_admin),
+    __: None = Depends(verify_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> TeamOut:
+    try:
+        team = repository.create_team(
+            conn, name=payload.name, icon=payload.icon
+        )
+    except TeamConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    audit.record(
+        conn,
+        category=audit.CATEGORY_SYSTEM,
+        action="team_create",
+        actor=actor,
+        target_type="team",
+        target_id=team["id"],
+        target_name=team["name"],
+    )
+    return TeamOut(**team)
+
+
+@router.patch("/settings/teams/{team_id}", response_model=TeamOut)
+def update_team(
+    team_id: int,
+    payload: UpdateTeamRequest,
+    actor: dict[str, Any] = Depends(require_admin),
+    __: None = Depends(verify_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> TeamOut:
+    try:
+        team = repository.update_team(
+            conn, team_id, name=payload.name, icon=payload.icon
+        )
+    except TeamConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    if team is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Team not found"
+        )
+    changed = [
+        name for name in ("name", "icon") if getattr(payload, name) is not None
+    ]
+    audit.record(
+        conn,
+        category=audit.CATEGORY_SYSTEM,
+        action="team_update",
+        actor=actor,
+        target_type="team",
+        target_id=team["id"],
+        target_name=team["name"],
+        detail=f"fields={','.join(changed) or 'none'}",
+    )
+    return TeamOut(**team)
+
+
+@router.delete("/settings/teams/{team_id}", response_model=MessageOut)
+def delete_team(
+    team_id: int,
+    actor: dict[str, Any] = Depends(require_admin),
+    __: None = Depends(verify_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> MessageOut:
+    existing = repository.get_team(conn, team_id)
+    if existing is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Team not found"
+        )
+    repository.delete_team(conn, team_id)
+    audit.record(
+        conn,
+        category=audit.CATEGORY_SYSTEM,
+        action="team_delete",
+        actor=actor,
+        target_type="team",
+        target_id=existing["id"],
+        target_name=existing["name"],
+    )
+    return MessageOut(detail="Team deleted")
+
+
+@router.post("/settings/teams/reorder", response_model=list[TeamOut])
+def reorder_teams(
+    payload: ReorderTeamsRequest,
+    actor: dict[str, Any] = Depends(require_admin),
+    __: None = Depends(verify_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> list[TeamOut]:
+    try:
+        teams = repository.reorder_teams(conn, payload.team_ids)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    audit.record(
+        conn,
+        category=audit.CATEGORY_SYSTEM,
+        action="team_reorder",
+        actor=actor,
+        detail=f"count={len(teams)}",
+    )
+    return [TeamOut(**team) for team in teams]

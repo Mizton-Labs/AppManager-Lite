@@ -13,11 +13,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from .. import audit, repository, security, sessions
-from ..deps import get_db, require_admin, verify_csrf
+from ..deps import get_current_user, get_db, require_admin, verify_csrf
 from ..schemas import (
     CreateUserRequest,
     GeneratedPasswordOut,
     MessageOut,
+    TeamOut,
     UpdateUserRequest,
     UserOut,
 )
@@ -65,12 +66,15 @@ def _guard_last_admin(
         )
 
 
-@router.get("/teams", response_model=list[str])
+@router.get("/teams", response_model=list[TeamOut])
 def list_teams(
-    _: dict[str, Any] = Depends(require_admin),
+    _: dict[str, Any] = Depends(get_current_user),
     conn: sqlite3.Connection = Depends(get_db),
-) -> list[str]:
-    return repository.list_team_names(conn)
+) -> list[TeamOut]:
+    # Readable by any signed-in user so the sidebar and team pickers can be
+    # data-driven. Team names, order, and icons are not sensitive; mutations
+    # remain admin-only (see the settings router).
+    return [TeamOut(**team) for team in repository.list_teams(conn)]
 
 
 @router.get("/users", response_model=list[UserOut])

@@ -1,25 +1,26 @@
 import type { ReactNode } from "react";
 import { NavLink } from "react-router-dom";
+import type { Team } from "../types";
 import { teamSlug } from "../teams";
+import { TeamIcon } from "./TeamIcon";
 import {
   HomeIcon,
   InfoIcon,
   ListIcon,
   SlidersIcon,
   UserIcon,
-  teamIcon,
 } from "./icons";
 
 /**
  * Primary navigation. Sections mirror the product spec: Main, Teams (filtered to
  * the teams the account may see, each shown as a button-card with its own
- * glyph), and Config. When `collapsed`, labels and section headings are hidden
+ * icon), and Config. When `collapsed`, labels and section headings are hidden
  * by CSS, leaving icon-only navigation. Settings (application management) is
  * available to every signed-in user; administrators additionally manage other
- * users and reverse-proxy settings there, and get an Audit log link.
+ * users, teams, and reverse-proxy settings there, and get an Audit log link.
  */
 export function Sidebar(props: {
-  teams: readonly string[];
+  teams: readonly Team[];
   collapsed: boolean;
   isAdmin: boolean;
 }) {
@@ -37,19 +38,16 @@ export function Sidebar(props: {
         {teams.length === 0 ? (
           <p className="sidebar-empty">No teams assigned</p>
         ) : (
-          teams.map((team) => {
-            const Icon = teamIcon(team);
-            return (
-              <SideLink
-                key={team}
-                to={`/teams/${teamSlug(team)}`}
-                icon={<Icon />}
-                label={team}
-                collapsed={collapsed}
-                card
-              />
-            );
-          })
+          teams.map((team) => (
+            <SideLink
+              key={team.id}
+              to={`/teams/${teamSlug(team.name)}`}
+              icon={<TeamIcon icon={team.icon} size={18} />}
+              label={team.name}
+              collapsed={collapsed}
+              card
+            />
+          ))
         )}
       </Section>
 

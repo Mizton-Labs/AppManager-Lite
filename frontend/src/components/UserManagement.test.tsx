@@ -19,7 +19,7 @@ function stubUsers() {
       return json([makeUser({ id: 1, username: "admin", role: "admin" })]);
     }
     if (method === "GET" && url.endsWith("/api/teams")) {
-      return json(["Red Team"]);
+      return json([{ id: 1, name: "Red Team", sort_order: 0, icon: "" }]);
     }
     if (method === "POST" && url.endsWith("/api/users")) {
       return json({

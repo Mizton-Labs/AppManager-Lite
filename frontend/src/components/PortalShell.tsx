@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, Navigate, Route, Routes, useNavigate } from "react-router-dom";
-import type { SessionState } from "../types";
-import { ALL_TEAMS } from "../teams";
+import type { SessionState, Team } from "../types";
+import { api } from "../api";
 import { getAppName, getLogoSrc } from "../branding";
 import { Sidebar } from "./Sidebar";
 import { AccountPanel } from "./AccountPanel";
@@ -45,7 +45,30 @@ export function PortalShell(props: {
   const { session } = props;
   const user = session.user;
   const isAdmin = !session.enable_auth || user?.role === "admin";
-  const visibleTeams: readonly string[] = isAdmin ? ALL_TEAMS : user?.teams ?? [];
+
+  // Teams are administrator-managed and fetched from the backend, so the
+  // sidebar, routes, and pickers are data-driven (no hardcoded team list).
+  const [teams, setTeams] = useState<Team[]>([]);
+  const reloadTeams = useCallback(async () => {
+    try {
+      setTeams(await api.listTeams());
+    } catch {
+      // A failed fetch leaves the previous list in place; the sidebar simply
+      // shows no (or stale) teams rather than breaking the shell.
+    }
+  }, []);
+  useEffect(() => {
+    void reloadTeams();
+  }, [reloadTeams]);
+
+  // Admins see every team; members see only the teams they belong to, in the
+  // catalogue's sort order.
+  const memberTeamNames = new Set(user?.teams ?? []);
+  const visibleTeams: Team[] = isAdmin
+    ? teams
+    : teams.filter((team) => memberTeamNames.has(team.name));
+  const visibleTeamNames: readonly string[] = visibleTeams.map((t) => t.name);
+  const allTeamNames: readonly string[] = teams.map((t) => t.name);
 
   const [collapsed, setCollapsed] = useState<boolean>(readCollapsed);
 
@@ -124,10 +147,10 @@ export function PortalShell(props: {
         <Sidebar teams={visibleTeams} collapsed={collapsed} isAdmin={isAdmin} />
         <main className="shell-main">
           <Routes>
-            <Route path="/" element={<HomeView teams={visibleTeams} />} />
+            <Route path="/" element={<HomeView teams={visibleTeamNames} />} />
             <Route
               path="/teams/:slug"
-              element={<TeamView teams={visibleTeams} />}
+              element={<TeamView teams={visibleTeamNames} />}
             />
             <Route
               path="/account"
@@ -148,9 +171,10 @@ export function PortalShell(props: {
                 <SettingsView
                   isAdmin={isAdmin}
                   currentUser={user}
-                  appTeamOptions={ALL_TEAMS}
+                  appTeamOptions={isAdmin ? allTeamNames : visibleTeamNames}
                   firstRun={session.enable_auth && isAdmin && !session.configured}
                   onConfigured={props.onSessionRefresh}
+                  onTeamsChanged={reloadTeams}
                 />
               }
             />

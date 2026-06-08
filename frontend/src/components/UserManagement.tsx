@@ -24,7 +24,7 @@ export function UserManagement(props: { currentUser: ApiUser | null }) {
       api.listTeams(),
     ]);
     setUsers(nextUsers);
-    setTeams(nextTeams);
+    setTeams(nextTeams.map((team) => team.name));
   }, []);
 
   useEffect(() => {

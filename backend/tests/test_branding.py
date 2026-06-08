@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _seed_teams(admin, make_team):
+    for _name in ("Red Team",):
+        make_team(_name)
+
 
 def test_session_carries_branding_defaults(client) -> None:
     # Pre-authentication, the session exposes empty branding and configured=False

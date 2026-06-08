@@ -7,6 +7,8 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from .teams import slugify as _slugify_name
+
 ROLES = ("admin", "user")
 URL_TYPES = ("url", "alias")
 APPROVAL_STATES = ("pending", "approved", "rejected")
@@ -78,6 +80,11 @@ _ICON_DATA_RE = re.compile(
 # doubled slash can match.
 _ICON_PATH_RE = re.compile(r"^logos/[a-z0-9]+(?:-[a-z0-9]+)*-[1-3]\.svg$")
 
+# A relative reference to a bundled team-icon catalogue asset (see the frontend
+# `public/team-icons`). Same narrow shape as the logo catalogue: a lower-case
+# name under `team-icons/`, no scheme, traversal, or extra slashes.
+_TEAM_ICON_PATH_RE = re.compile(r"^team-icons/[a-z0-9]+(?:-[a-z0-9]+)*\.svg$")
+
 
 def _validate_icon_value(value: str) -> str:
     """Accept an empty value, a bundled relative logo path, an absolute http(s)
@@ -104,6 +111,45 @@ def _validate_icon_value(value: str) -> str:
         return value
     if _ICON_PATH_RE.match(value):
         # A bundled default-logo asset path (relative, resolved at render time).
+        return value
+    return _validate_http_url(value)
+
+
+# Team names are admin-defined and also generate the team's URL slug. Allow a
+# friendly character set (letters, digits, spaces, '&', '-') so names like
+# "Forensics & BID" remain expressible, with a hard length cap. Uniqueness and
+# slug-collision checks happen in the repository against the live team set.
+TEAM_NAME_MAX_LEN = 40
+_TEAM_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 &-]*$")
+
+
+def _validate_team_name(value: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValueError("Team name must not be empty.")
+    if len(value) > TEAM_NAME_MAX_LEN:
+        raise ValueError(
+            f"Team name must be at most {TEAM_NAME_MAX_LEN} characters."
+        )
+    if not _TEAM_NAME_RE.match(value):
+        raise ValueError(
+            "Team name may contain only letters, digits, spaces, '&', and '-'."
+        )
+    # The name must yield a non-empty URL slug (e.g. "&&&" or "---" is invalid).
+    if not _slugify_name(value):
+        raise ValueError("Team name must contain at least one letter or digit.")
+    return value
+
+
+def _validate_team_icon(value: str) -> str:
+    """Accept an empty value, a bundled team-icon path, an absolute http(s)
+    URL, or a capped raster data URI (same raster policy as app logos)."""
+    value = value.strip()
+    if not value:
+        return ""
+    if value.startswith("data:"):
+        return _validate_icon_value(value)
+    if _TEAM_ICON_PATH_RE.match(value):
         return value
     return _validate_http_url(value)
 
@@ -471,3 +517,44 @@ class UpdateBrandingSettingsRequest(BaseModel):
 
 class MessageOut(BaseModel):
     detail: str
+
+
+class TeamOut(BaseModel):
+    id: int
+    name: str
+    sort_order: int
+    icon: str = ""
+
+
+class CreateTeamRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=TEAM_NAME_MAX_LEN)
+    icon: str = Field(default="", max_length=ICON_FIELD_MAX_LEN)
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, value: str) -> str:
+        return _validate_team_name(value)
+
+    @field_validator("icon")
+    @classmethod
+    def _check_icon(cls, value: str) -> str:
+        return _validate_team_icon(value)
+
+
+class UpdateTeamRequest(BaseModel):
+    name: str | None = Field(default=None, max_length=TEAM_NAME_MAX_LEN)
+    icon: str | None = Field(default=None, max_length=ICON_FIELD_MAX_LEN)
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, value: str | None) -> str | None:
+        return None if value is None else _validate_team_name(value)
+
+    @field_validator("icon")
+    @classmethod
+    def _check_icon(cls, value: str | None) -> str | None:
+        return None if value is None else _validate_team_icon(value)
+
+
+class ReorderTeamsRequest(BaseModel):
+    team_ids: list[int] = Field(min_length=1)
