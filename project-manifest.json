@@ -1,0 +1,286 @@
+{
+  "$schema": "./project-manifest.schema.json",
+  "schemaVersion": "1.0",
+  "name": "appmanager-lite",
+  "version": "0.1.0",
+  "description": "Self-hosted landing portal: a single home page with quick access to each team's applications, plus authentication, user and team management, and self-service application management with administrator approval.",
+  "license": "See LICENSE",
+  "repository": "https://github.com/anomalyco/AppManager-Lite",
+  "generatedFrom": "Hand-maintained from source; update alongside structural, API, config, or data-model changes.",
+  "architecture": {
+    "summary": "A FastAPI + SQLite backend exposes a JSON API under /api and also serves the built React single-page app. The frontend is a Vite-built SPA that uses relative URLs so one build runs at the site root or behind a subpath reverse proxy.",
+    "style": "monorepo, single deployable (backend serves the frontend)",
+    "runtimeTopology": "One uvicorn process serves /api and the SPA; SQLite is the datastore; an optional remote nginx is configured over SSH to publish local-alias applications.",
+    "auth": "Argon2id password hashing, server-side sessions, HttpOnly + SameSite=Strict + Secure session cookie, and an X-CSRF-Token header on state-changing requests. Roles (admin, user) and team membership are enforced server-side."
+  },
+  "entrypoints": {
+    "backend": "backend/app/main.py:app (ASGI app via app.main:app)",
+    "frontend": "frontend/src/main.tsx",
+    "cli": "./appmanager-lite"
+  },
+  "components": [
+    {
+      "id": "backend",
+      "type": "backend",
+      "path": "backend",
+      "description": "FastAPI application: JSON API under /api, SQLite persistence, auth/sessions, audit log, reverse-proxy automation, and SPA hosting.",
+      "language": "Python",
+      "runtime": "Python >=3.11",
+      "framework": "FastAPI",
+      "entrypoint": "backend/app/main.py:app",
+      "keyModules": [
+        { "path": "backend/app/main.py", "role": "App factory, lifespan, security headers, SPA mounting, /api/health, router wiring." },
+        { "path": "backend/app/config.py", "role": "Runtime configuration from APP_* environment variables." },
+        { "path": "backend/app/db.py", "role": "SQLite connection, schema bootstrap, and additive idempotent migrations." },
+        { "path": "backend/app/repository.py", "role": "Parameterized data-access helpers for users, teams, applications, settings, audit." },
+        { "path": "backend/app/schemas.py", "role": "Pydantic request/response models and field validation (the API contract)." },
+        { "path": "backend/app/deps.py", "role": "Dependencies: get_db, get_current_user, require_admin, verify_csrf." },
+        { "path": "backend/app/sessions.py", "role": "Server-side session and CSRF token management." },
+        { "path": "backend/app/security.py", "role": "Argon2id hashing and password generation." },
+        { "path": "backend/app/audit.py", "role": "Audit-trail writer (categories: application, user, system)." },
+        { "path": "backend/app/teams.py", "role": "Team slug helper (teams are administrator-managed; none are seeded)." },
+        { "path": "backend/app/reverse_proxy.py", "role": "Render and push application aliases to a remote nginx over SSH." },
+        { "path": "backend/app/logging_config.py", "role": "Consolidated logging configuration." },
+        { "path": "backend/app/routers/auth.py", "role": "Session, login, logout, and own-password endpoints." },
+        { "path": "backend/app/routers/users.py", "role": "User management and the readable team list (GET /api/teams)." },
+        { "path": "backend/app/routers/applications.py", "role": "Application CRUD, approval workflow, and reverse-proxy push/retry." },
+        { "path": "backend/app/routers/settings.py", "role": "Reverse-proxy and branding settings plus team CRUD/reorder." },
+        { "path": "backend/app/routers/audit.py", "role": "Audit-log query endpoint." },
+        { "path": "backend/tests", "role": "pytest suite (API behavior, migrations, security, nginx)." }
+      ]
+    },
+    {
+      "id": "frontend",
+      "type": "frontend",
+      "path": "frontend",
+      "description": "React + TypeScript single-page app built with Vite. One build runs under any deployment prefix; the backend injects a matching <base href> at serve time.",
+      "language": "TypeScript",
+      "runtime": "Node.js + npm",
+      "framework": "React 18 + react-router",
+      "entrypoint": "frontend/src/main.tsx",
+      "keyModules": [
+        { "path": "frontend/src/App.tsx", "role": "Top-level auth/session bootstrap and routing shell selection." },
+        { "path": "frontend/src/api.ts", "role": "Typed API client; attaches CSRF on non-GET requests." },
+        { "path": "frontend/src/types.ts", "role": "Shared TypeScript types for API entities." },
+        { "path": "frontend/src/branding.ts", "role": "Configurable app name/logo and source repository URL." },
+        { "path": "frontend/src/teams.ts", "role": "Team URL-slug helpers (team list is data-driven from the API)." },
+        { "path": "frontend/src/teamIcons.ts", "role": "Bundled generic-IT team-icon catalogue manifest and default." },
+        { "path": "frontend/src/logos.ts", "role": "Default application-logo selection from the bundled catalogue." },
+        { "path": "frontend/src/components/PortalShell.tsx", "role": "Authenticated shell: header, sidebar, routes; fetches teams." },
+        { "path": "frontend/src/components/Sidebar.tsx", "role": "Primary navigation, including data-driven team buttons." },
+        { "path": "frontend/src/components/HomeView.tsx", "role": "Home page: shared vs. owned applications." },
+        { "path": "frontend/src/components/TeamView.tsx", "role": "Per-team application list resolved from the URL slug." },
+        { "path": "frontend/src/components/SettingsView.tsx", "role": "Settings tabs: Application Manager, User Management, Teams, General Settings." },
+        { "path": "frontend/src/components/ApplicationManager.tsx", "role": "Create/edit applications, approval actions, reverse-proxy push." },
+        { "path": "frontend/src/components/UserManagement.tsx", "role": "Admin user management and team assignment." },
+        { "path": "frontend/src/components/TeamManagement.tsx", "role": "Admin team management: create, rename, icon, reorder, delete." },
+        { "path": "frontend/src/components/GeneralSettings.tsx", "role": "Branding and reverse-proxy configuration forms." },
+        { "path": "frontend/src/components/AuditView.tsx", "role": "Admin audit-log viewer." },
+        { "path": "frontend/src/lib", "role": "Helpers: links, image resize, clipboard, password." },
+        { "path": "frontend/public/team-icons", "role": "Bundled generic-IT team-icon SVG catalogue." },
+        { "path": "frontend/public/logos", "role": "Bundled default application-logo SVG catalogue." }
+      ]
+    },
+    {
+      "id": "cli",
+      "type": "cli",
+      "path": "appmanager-lite",
+      "description": "Lifecycle manager: provisions deps (uv sync, npm install), builds the frontend when stale, and runs/stops/inspects the server.",
+      "language": "Bash",
+      "entrypoint": "./appmanager-lite"
+    },
+    {
+      "id": "scripts",
+      "type": "scripts",
+      "path": "scripts",
+      "description": "Developer verification scripts.",
+      "language": "Bash",
+      "keyModules": [
+        { "path": "scripts/check.sh", "role": "Backend byte-compile + frontend type-check." },
+        { "path": "scripts/test.sh", "role": "Backend pytest + frontend vitest." },
+        { "path": "scripts/security-check.sh", "role": "Brand-genericization scan, ignore hygiene, dependency audits." }
+      ]
+    }
+  ],
+  "techStack": {
+    "languages": ["Python", "TypeScript", "Bash"],
+    "datastore": "SQLite",
+    "backend": {
+      "runtime": "Python >=3.11",
+      "packageManager": "uv",
+      "dependencies": [
+        "fastapi>=0.116",
+        "starlette>=1.0.1",
+        "uvicorn[standard]>=0.30,<0.35",
+        "argon2-cffi>=23.1,<24",
+        "pydantic>=2.7,<3"
+      ],
+      "devDependencies": ["pytest>=9.0.3,<10", "httpx>=0.27,<0.29"]
+    },
+    "frontend": {
+      "runtime": "Node.js + npm",
+      "packageManager": "npm",
+      "buildTool": "Vite",
+      "dependencies": ["react@^18.3.1", "react-dom@^18.3.1", "react-router-dom@^6.26.2"],
+      "devDependencies": [
+        "typescript@^5.5.4",
+        "vite@^8.0.16",
+        "vitest@^4.1.8",
+        "@vitejs/plugin-react@^5.0.0",
+        "@testing-library/react@^16.0.1",
+        "@testing-library/jest-dom@^6.5.0",
+        "@testing-library/user-event@^14.5.2",
+        "jsdom@^25.0.1",
+        "@types/react@^18.3.5",
+        "@types/react-dom@^18.3.0"
+      ]
+    }
+  },
+  "commands": [
+    { "id": "lifecycle-start", "command": "./appmanager-lite start", "description": "Provision, build, and start the server (default 127.0.0.1:8000).", "cwd": ".", "category": "lifecycle" },
+    { "id": "lifecycle-dev", "command": "./appmanager-lite start --dev", "description": "Run in the foreground with auto-reload.", "cwd": ".", "category": "lifecycle" },
+    { "id": "lifecycle-stop", "command": "./appmanager-lite stop", "description": "Stop the background server.", "cwd": ".", "category": "lifecycle" },
+    { "id": "lifecycle-status", "command": "./appmanager-lite status", "description": "Report whether the server is running.", "cwd": ".", "category": "lifecycle" },
+    { "id": "check", "command": "scripts/check.sh", "description": "Backend byte-compile + frontend type-check.", "cwd": ".", "category": "typecheck" },
+    { "id": "test", "command": "scripts/test.sh", "description": "Backend pytest + frontend vitest.", "cwd": ".", "category": "test" },
+    { "id": "security-check", "command": "scripts/security-check.sh", "description": "Genericization scan, ignore hygiene, dependency audits.", "cwd": ".", "category": "security" },
+    { "id": "backend-sync", "command": "uv sync", "description": "Install/refresh backend dependencies from uv.lock.", "cwd": "backend", "category": "setup" },
+    { "id": "backend-test", "command": "uv run pytest", "description": "Run the backend test suite.", "cwd": "backend", "category": "test" },
+    { "id": "backend-dev", "command": "uv run uvicorn app.main:app --reload", "description": "Run the backend dev server with autoreload.", "cwd": "backend", "category": "run" },
+    { "id": "frontend-install", "command": "npm install", "description": "Install frontend dependencies.", "cwd": "frontend", "category": "setup" },
+    { "id": "frontend-dev", "command": "npm run dev", "description": "Vite dev server (proxies /api to 127.0.0.1:8000).", "cwd": "frontend", "category": "run" },
+    { "id": "frontend-typecheck", "command": "npm run typecheck", "description": "TypeScript type-check (tsc --noEmit).", "cwd": "frontend", "category": "typecheck" },
+    { "id": "frontend-test", "command": "npm test", "description": "Run the frontend test suite (vitest).", "cwd": "frontend", "category": "test" },
+    { "id": "frontend-build", "command": "npm run build", "description": "Type-check and build the production frontend.", "cwd": "frontend", "category": "build" }
+  ],
+  "configuration": {
+    "envVarPrefix": "APP_",
+    "envVars": [
+      { "name": "APP_BASE_DIR", "default": "project root", "type": "path", "purpose": "Base directory for resolving relative data, frontend, and log paths." },
+      { "name": "APP_BASE_PREFIX", "default": "", "type": "string", "purpose": "Mount path prefix when served behind a subpath proxy, e.g. /home." },
+      { "name": "APP_ENABLE_AUTH", "default": "1", "type": "boolean", "purpose": "Enable authentication and access control." },
+      { "name": "APP_DEV", "default": "0", "type": "boolean", "purpose": "Dev mode: enables interactive API docs and relaxes cookie security." },
+      { "name": "APP_SECURE_COOKIES", "default": "1 (off in dev)", "type": "boolean", "purpose": "Set the Secure flag on the session cookie." },
+      { "name": "APP_SESSION_TTL_SECONDS", "default": "43200", "type": "integer", "purpose": "Session lifetime in seconds (12 hours)." },
+      { "name": "APP_DATA_DIR", "default": "./data", "type": "path", "purpose": "SQLite database and runtime data location." },
+      { "name": "APP_DB_PATH", "default": "./data/app.db", "type": "path", "purpose": "SQLite database file path." },
+      { "name": "APP_FRONTEND_DIST", "default": "./frontend/dist", "type": "path", "purpose": "Built frontend directory to serve." },
+      { "name": "APP_LOG_DIR", "default": "./logs", "type": "path", "purpose": "Directory for the consolidated log file." },
+      { "name": "APP_LOG_FILE", "default": "app.log", "type": "string", "purpose": "Consolidated log file name." },
+      { "name": "APP_LOG_LEVEL", "default": "INFO", "type": "string", "purpose": "Log level (DEBUG, INFO, WARNING, ERROR)." },
+      { "name": "APP_LOG_TO_FILE", "default": "1", "type": "boolean", "purpose": "Write logs to the file (console output is always on)." }
+    ]
+  },
+  "api": {
+    "basePath": "/api",
+    "auth": "Session cookie set on login; access levels are anonymous, user (any signed-in account), and admin.",
+    "csrf": "State-changing requests (POST/PATCH/DELETE) require an X-CSRF-Token header matching the session token when auth is enabled.",
+    "docs": "Interactive docs at /docs and the schema at /openapi.json are exposed only when APP_DEV is enabled.",
+    "routes": [
+      { "method": "GET", "path": "/api/health", "auth": "anonymous", "csrf": false, "summary": "Liveness check." },
+      { "method": "GET", "path": "/api/session", "auth": "anonymous", "csrf": false, "summary": "Current session and branding (works before authentication)." },
+      { "method": "POST", "path": "/api/auth/login", "auth": "anonymous", "csrf": false, "summary": "Authenticate and start a session." },
+      { "method": "POST", "path": "/api/auth/logout", "auth": "user", "csrf": true, "summary": "End the current session." },
+      { "method": "POST", "path": "/api/account/password", "auth": "user", "csrf": true, "summary": "Change the signed-in user's own password." },
+      { "method": "GET", "path": "/api/teams", "auth": "user", "csrf": false, "summary": "List teams (name, order, icon) for any signed-in user." },
+      { "method": "GET", "path": "/api/users", "auth": "admin", "csrf": false, "summary": "List users." },
+      { "method": "POST", "path": "/api/users", "auth": "admin", "csrf": true, "summary": "Create a user (returns a generated password)." },
+      { "method": "PATCH", "path": "/api/users/{user_id}", "auth": "admin", "csrf": true, "summary": "Update a user's role, teams, active state, or flags." },
+      { "method": "POST", "path": "/api/users/{user_id}/reset-password", "auth": "admin", "csrf": true, "summary": "Reset a user's password (returns a generated password)." },
+      { "method": "DELETE", "path": "/api/users/{user_id}", "auth": "admin", "csrf": true, "summary": "Delete a user." },
+      { "method": "GET", "path": "/api/applications", "auth": "user", "csrf": false, "summary": "List applications visible to the caller (optional team filter)." },
+      { "method": "GET", "path": "/api/applications/mine", "auth": "user", "csrf": false, "summary": "List applications the caller created." },
+      { "method": "GET", "path": "/api/applications/manage", "auth": "admin", "csrf": false, "summary": "List every application with creator and status." },
+      { "method": "POST", "path": "/api/applications", "auth": "user", "csrf": true, "summary": "Create/submit an application (approval depends on role/self-service)." },
+      { "method": "PATCH", "path": "/api/applications/{application_id}", "auth": "user", "csrf": true, "summary": "Update an application; admins also approve/reject here." },
+      { "method": "DELETE", "path": "/api/applications/{application_id}", "auth": "user", "csrf": true, "summary": "Delete an application (removes its nginx alias when applicable)." },
+      { "method": "GET", "path": "/api/audit", "auth": "admin", "csrf": false, "summary": "Query audit-log entries (optional category filter)." },
+      { "method": "GET", "path": "/api/settings/reverse-proxy", "auth": "admin", "csrf": false, "summary": "Read reverse-proxy configuration." },
+      { "method": "PATCH", "path": "/api/settings/reverse-proxy", "auth": "admin", "csrf": true, "summary": "Update reverse-proxy configuration." },
+      { "method": "GET", "path": "/api/settings/branding", "auth": "admin", "csrf": false, "summary": "Read branding settings." },
+      { "method": "PATCH", "path": "/api/settings/branding", "auth": "admin", "csrf": true, "summary": "Update branding (app name, logo, configured flag)." },
+      { "method": "GET", "path": "/api/settings/teams", "auth": "admin", "csrf": false, "summary": "List teams (admin view)." },
+      { "method": "POST", "path": "/api/settings/teams", "auth": "admin", "csrf": true, "summary": "Create a team." },
+      { "method": "PATCH", "path": "/api/settings/teams/{team_id}", "auth": "admin", "csrf": true, "summary": "Rename a team and/or change its icon." },
+      { "method": "DELETE", "path": "/api/settings/teams/{team_id}", "auth": "admin", "csrf": true, "summary": "Delete a team." },
+      { "method": "POST", "path": "/api/settings/teams/reorder", "auth": "admin", "csrf": true, "summary": "Set the sidebar order of all teams." }
+    ]
+  },
+  "dataModel": {
+    "engine": "SQLite",
+    "migrations": "Schema created via CREATE TABLE IF NOT EXISTS; later columns added by additive, idempotent ALTER guarded by PRAGMA table_info. No version table.",
+    "tables": [
+      {
+        "name": "users",
+        "description": "Accounts with role, status, self-service flag, and per-user apps server/port.",
+        "columns": ["id", "username", "password_hash", "role", "is_active", "must_change_password", "self_service", "apps_server", "apps_port", "created_at", "updated_at"],
+        "primaryKey": ["id"]
+      },
+      {
+        "name": "teams",
+        "description": "Administrator-managed teams with sidebar order and optional icon.",
+        "columns": ["id", "name", "sort_order", "icon"],
+        "primaryKey": ["id"]
+      },
+      {
+        "name": "user_teams",
+        "description": "User-to-team membership (by id).",
+        "columns": ["user_id", "team_id"],
+        "primaryKey": ["user_id", "team_id"],
+        "foreignKeys": ["user_id -> users.id (cascade)", "team_id -> teams.id (cascade)"]
+      },
+      {
+        "name": "sessions",
+        "description": "Server-side sessions with CSRF token and expiry.",
+        "columns": ["id", "user_id", "csrf_token", "created_at", "expires_at"],
+        "primaryKey": ["id"],
+        "foreignKeys": ["user_id -> users.id (cascade)"]
+      },
+      {
+        "name": "applications",
+        "description": "Application entries with URL/alias, approval state, owner, port, and last reverse-proxy push result.",
+        "columns": ["id", "name", "description", "url", "url_type", "icon_url", "is_active", "approval_status", "created_by", "sort_order", "apps_server", "apps_port", "pending_alias", "last_push_status", "last_push_log", "last_push_at", "created_at", "updated_at"],
+        "primaryKey": ["id"],
+        "foreignKeys": ["created_by -> users.id (set null)"]
+      },
+      {
+        "name": "application_teams",
+        "description": "Application-to-team scope (by id).",
+        "columns": ["application_id", "team_id"],
+        "primaryKey": ["application_id", "team_id"],
+        "foreignKeys": ["application_id -> applications.id (cascade)", "team_id -> teams.id (cascade)"]
+      },
+      {
+        "name": "audit_log",
+        "description": "Audit trail of actions, grouped by category (application, user, system).",
+        "columns": ["id", "created_at", "category", "action", "actor_id", "actor_username", "target_type", "target_id", "target_name", "detail"],
+        "primaryKey": ["id"]
+      },
+      {
+        "name": "settings",
+        "description": "Single pinned row (id = 1) for reverse-proxy and branding configuration.",
+        "columns": ["id", "nginx_host", "nginx_user", "nginx_conf_path", "ssh_key_path", "alias_template", "app_name", "app_logo", "configured", "updated_at"],
+        "primaryKey": ["id"]
+      }
+    ]
+  },
+  "directories": [
+    { "path": "backend/app", "purpose": "FastAPI application package (routers, data access, schemas, auth)." },
+    { "path": "backend/tests", "purpose": "Backend pytest suite." },
+    { "path": "frontend/src", "purpose": "React + TypeScript source (components, lib, API client, types)." },
+    { "path": "frontend/public", "purpose": "Static assets: fallback logo and the logo/team-icon catalogues." },
+    { "path": "scripts", "purpose": "check.sh, test.sh, security-check.sh verification scripts." }
+  ],
+  "conventions": {
+    "testing": "Backend: pytest (backend/tests). Frontend: vitest + Testing Library (*.test.ts[x]).",
+    "lint": "Backend: ruff. Frontend: TypeScript compiler (tsc --noEmit).",
+    "commits": "Conventional Commits (feat:, fix:, docs:, chore:, refactor:, ...).",
+    "branching": "Feature branches with pull requests against main.",
+    "notes": [
+      "All API queries use bound parameters; no SQL is built from user input.",
+      "Secrets (passwords, hashes, session ids, CSRF tokens) are never logged or audited.",
+      "Teams are administrator-managed; a clean install starts with no teams and no applications.",
+      "A single frontend build runs at the site root or behind a subpath via an injected <base href>."
+    ]
+  }
+}
