@@ -27,27 +27,41 @@ function commitHash(): string {
 const BOT_AUTHORS = new Set(["cortex"]);
 
 /**
- * Build the development-team list from git authors with at least one commit:
- * trim, drop bots, and de-duplicate (case-insensitively), preserving discovery
- * order. This is purely the repository's commit authors; an administrator can
+ * Build the development-team list from the repository's commit authors.
+ *
+ * Identities are de-duplicated by author **email** (one entry per email), and
+ * each is displayed with the name from that email's most recent commit. This
+ * collapses an author who has committed under several different names (the same
+ * person, same email) into a single, current name. Bots are dropped. Order
+ * follows most-recent-commit order.
+ *
+ * This is purely the repository's commit authors; an administrator can
  * additionally configure "Collaborators" at runtime (shown separately on the
  * About page).
  */
 function contributors(): string[] {
-  const raw = git("log --format=%an")
+  // One record per commit, newest first (git log default order). Email and name
+  // are separated by a unit-separator that cannot appear in either field.
+  const SEP = "\x1f";
+  const lines = git(`log --format=%ae${SEP}%an`)
     .split("\n")
-    .map((n) => n.trim())
+    .map((line) => line.trim())
     .filter(Boolean);
 
-  const seen = new Set<string>();
-  const names: string[] = [];
-  for (const author of raw) {
-    const key = author.toLowerCase();
-    if (BOT_AUTHORS.has(key) || seen.has(key)) continue;
-    seen.add(key);
-    names.push(author);
+  const byEmail = new Map<string, string>();
+  for (const line of lines) {
+    const idx = line.indexOf(SEP);
+    if (idx < 0) continue;
+    const email = line.slice(0, idx).trim().toLowerCase();
+    const name = line.slice(idx + 1).trim();
+    if (!email || !name) continue;
+    if (BOT_AUTHORS.has(name.toLowerCase())) continue;
+    // First occurrence wins -> the name from this email's most recent commit.
+    if (!byEmail.has(email)) {
+      byEmail.set(email, name);
+    }
   }
-  return names;
+  return [...byEmail.values()];
 }
 
 // Relative base so the built assets resolve under any deployment path prefix.
