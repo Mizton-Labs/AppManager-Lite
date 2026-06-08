@@ -68,6 +68,9 @@ def _branding(conn: sqlite3.Connection) -> dict[str, Any]:
     return {
         "app_name": row.get("app_name", "") or "",
         "app_logo": row.get("app_logo", "") or "",
+        "collaborators": repository.parse_collaborators(
+            row.get("collaborators", "[]")
+        ),
         "configured": bool(row.get("configured", 0)),
     }
 

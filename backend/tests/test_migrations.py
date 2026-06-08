@@ -122,7 +122,7 @@ def test_init_db_migrates_legacy_database(legacy_db: Path) -> None:
         # The settings table gained an optional SSH user column plus branding.
         scols = {r["name"] for r in conn.execute("PRAGMA table_info(settings)")}
         assert "nginx_user" in scols
-        assert {"app_name", "app_logo", "configured"} <= scols
+        assert {"app_name", "app_logo", "configured", "collaborators"} <= scols
         # The settings row is seeded with a non-empty default alias template.
         template = conn.execute(
             "SELECT alias_template FROM settings WHERE id = 1"

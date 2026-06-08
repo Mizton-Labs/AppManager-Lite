@@ -16,6 +16,7 @@ function makeSession(
     csrf_token: "csrf",
     app_name: "",
     app_logo: "",
+    collaborators: [],
     configured: true,
     user: makeUser({ username: "tester", ...user }),
     ...overrides,
@@ -60,6 +61,7 @@ beforeEach(() => {
               ? {
                   app_name: "",
                   app_logo: "",
+                  collaborators: [],
                   configured: false,
                   nginx_host: "",
                   nginx_user: "",

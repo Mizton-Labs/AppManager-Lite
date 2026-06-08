@@ -270,10 +270,17 @@ to, so it is clear where a tool comes from.
 
 The **About** page (sidebar, after Settings) shows the application
 name, a link to the source repository on GitHub, the build version with its
-commit hash, and the development team. The version, commit, and contributor list
-are injected at build time from `package.json` and the git history; because the
+commit hash, the development team, and any administrator-configured
+collaborators. The version, commit, and development-team list are injected at
+build time from `package.json` and the git commit history; because the
 lifecycle script rebuilds the frontend when the commit changes, a `start`/
 `restart` after a new commit refreshes them automatically (or use `--rebuild`).
+
+The **development team** is derived only from the repository's commit authors.
+**Collaborators** are a separate, internal list set by administrators in
+**Settings → General Settings → About Collaborators** (a name textbox with Add,
+each entry removable, then Save) and are shown as their own row beneath the
+development team. They are stored server-side and update immediately on save.
 
 ## Audit log
 
