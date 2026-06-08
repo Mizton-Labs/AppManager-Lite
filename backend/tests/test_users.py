@@ -2,7 +2,17 @@
 
 from __future__ import annotations
 
-from app.teams import DEFAULT_TEAMS
+import pytest
+
+# Team names referenced by the membership tests in this file. Teams are no
+# longer seeded, so they are created via the admin API before each test.
+_TEAMS = ("Threat Hunting", "Red Team", "Threat Intel")
+
+
+@pytest.fixture(autouse=True)
+def _seed_teams(admin, make_team):
+    for name in _TEAMS:
+        make_team(name)
 
 
 def _create(client, csrf, username, role="user", teams=None):
@@ -81,11 +91,12 @@ def test_create_user_rejects_duplicate_username(admin) -> None:
     assert _create(client, csrf, "carol").status_code == 409
 
 
-def test_teams_endpoint_returns_canonical_set(admin) -> None:
+def test_teams_endpoint_returns_created_teams(admin) -> None:
     client, _csrf, _ = admin
     resp = client.get("/api/teams")
     assert resp.status_code == 200
-    assert resp.json() == list(DEFAULT_TEAMS)
+    # The endpoint now returns team objects in creation/sidebar order.
+    assert [t["name"] for t in resp.json()] == list(_TEAMS)
 
 
 def test_list_users_includes_admin_and_created(admin) -> None:

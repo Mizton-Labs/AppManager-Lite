@@ -34,6 +34,25 @@ export interface GeneratedPassword {
   password: string;
 }
 
+/** An administrator-managed team (sidebar section + membership scope). */
+export interface Team {
+  id: number;
+  name: string;
+  sort_order: number;
+  /** Optional small icon: a bundled catalogue path or a raster data URI. */
+  icon: string;
+}
+
+export interface CreateTeamInput {
+  name: string;
+  icon?: string;
+}
+
+export interface UpdateTeamInput {
+  name?: string;
+  icon?: string;
+}
+
 export interface CreateUserInput {
   username: string;
   role: Role;

@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app import reverse_proxy
 from app.reverse_proxy import _Run
+
+
+@pytest.fixture(autouse=True)
+def _seed_teams(admin, make_team):
+    for _name in ("Red Team",):
+        make_team(_name)
 
 
 def _create_member(client, csrf, username, **extra):

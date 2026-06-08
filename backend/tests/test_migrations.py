@@ -109,6 +109,7 @@ def test_init_db_migrates_legacy_database(legacy_db: Path) -> None:
         assert {"apps_server", "apps_port", "pending_alias"} <= acols
         tcols = {r["name"] for r in conn.execute("PRAGMA table_info(teams)")}
         assert "sort_order" in tcols
+        assert "icon" in tcols
         # The audit_log and settings tables are created on a legacy database too.
         tables = {
             r["name"]
@@ -157,16 +158,16 @@ def test_legacy_application_gets_safe_defaults(legacy_db: Path) -> None:
     assert app["created_by"] is None
 
 
-def test_new_team_inserted_in_order(legacy_db: Path) -> None:
+def test_legacy_team_preserved_and_not_reseeded(legacy_db: Path) -> None:
     from app import db
-    from app.teams import DEFAULT_TEAMS
 
     db.init_db()
     with db.get_connection() as conn:
         rows = conn.execute(
-            "SELECT name FROM teams ORDER BY sort_order, id"
+            "SELECT name, sort_order, icon FROM teams ORDER BY sort_order, id"
         ).fetchall()
     names = [r["name"] for r in rows]
-    # The canonical ordering is fully reconstructed, including the legacy team.
-    assert names == list(DEFAULT_TEAMS)
-    assert "Forensics & BID" in names
+    # Teams are administrator-managed and no longer seeded: the legacy team is
+    # preserved as-is and no canonical defaults are inserted.
+    assert names == ["Threat Intel"]
+    assert rows[0]["icon"] == ""

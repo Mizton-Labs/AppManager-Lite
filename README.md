@@ -15,6 +15,7 @@ bootstraps its own dependencies.
 |---|---|
 | Authentication + session management | Implemented |
 | User management (admin) | Implemented |
+| Team management (admin): create, reorder, icon | Implemented |
 | Portal shell: header, collapsible sidebar, routing | Implemented |
 | Team sections + per-team application cards | Implemented |
 | Application management (self-service + admin approval) | Implemented |
@@ -111,9 +112,9 @@ Manager.
 
 Every signed-in user reaches **Settings** from the sidebar and can
 submit and edit applications for the teams they belong to. Administrators see the
-same area with every application (and its creator), a tab for user management,
-and a **General Settings** tab for branding (application name and logo) and
-reverse-proxy configuration.
+same area with every application (and its creator), a tab for user management, a
+**Teams** tab for managing teams, and a **General Settings** tab for branding
+(application name and logo) and reverse-proxy configuration.
 
 When an administrator creates a user they can set the user's **apps server**
 (host/IP) — the default host where that user runs their applications, used to
@@ -165,8 +166,35 @@ below), so there is no per-user port.
 - **Team selection.** The team picker offers a **Select all / Clear all** toggle
   in addition to the individual checkboxes.
 
-The default teams are Detect and Response, Threat Hunting, Threat Intel,
-Forensics & BID, Advanced Analytics, Red Team, and Threat Detection Engineering.
+There are no built-in teams: a clean install starts with **no teams**, and an
+administrator creates them under **Settings → Teams** (see below).
+
+## Teams
+
+Teams are administrator-managed from **Settings → Teams** (admin only). Each team
+has:
+
+- **Name** — shown on its sidebar button and used to generate its URL slug
+  (`/teams/<slug>`). Names allow letters, digits, spaces, `&`, and `-`, are at
+  most 40 characters, and must be unique (a name that would collapse to an
+  existing team's slug is rejected).
+- **Position** — the order in the left sidebar. Reorder teams by **dragging**
+  them in the list (accessible **move up / down** buttons do the same); the new
+  order is applied to every member's sidebar.
+- **Icon** — an optional small icon shown on the team's sidebar button. Pick one
+  from a bundled **generic-IT catalogue** (server, database, network, cloud,
+  dashboard, code, and more) or upload a small raster image (PNG, WebP, or JPEG,
+  resized and capped like the application logo). When no icon is chosen, a
+  neutral default is used.
+
+Renaming a team keeps all existing user and application memberships (they are
+stored by the team's stable id). Deleting a team removes it from every user and
+application that referenced it.
+
+The team list (names, order, and icons) drives the sidebar, the team pages, and
+the team pickers in User Management and the Application Manager; it is readable
+by any signed-in user, while creating, editing, reordering, and deleting teams
+require an administrator.
 
 ## Reverse proxy (nginx)
 

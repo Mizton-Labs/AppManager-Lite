@@ -37,30 +37,37 @@ function renderShell(session: SessionState) {
 
 beforeEach(() => {
   localStorage.clear();
-  // HomeView fetches the application list on mount; Settings (first-run) fetches
-  // branding + reverse-proxy settings. Return shapes that match each endpoint so
-  // these structural tests do not hit the network.
+  // HomeView fetches the application list on mount; the sidebar fetches the
+  // team list (/api/teams); Settings (first-run) fetches branding +
+  // reverse-proxy settings. Return shapes that match each endpoint so these
+  // structural tests do not hit the network.
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: string) => {
       const url = String(input);
       const isSettings = /\/api\/settings\//.test(url);
+      const isTeams = /\/api\/teams\b/.test(url);
       return {
         ok: true,
         status: 200,
         json: async () =>
-          isSettings
-            ? {
-                app_name: "",
-                app_logo: "",
-                configured: false,
-                nginx_host: "",
-                nginx_user: "",
-                nginx_conf_path: "",
-                ssh_key_path: "",
-                alias_template: "",
-              }
-            : [],
+          isTeams
+            ? [
+                { id: 1, name: "Threat Hunting", sort_order: 0, icon: "" },
+                { id: 2, name: "Red Team", sort_order: 1, icon: "" },
+              ]
+            : isSettings
+              ? {
+                  app_name: "",
+                  app_logo: "",
+                  configured: false,
+                  nginx_host: "",
+                  nginx_user: "",
+                  nginx_conf_path: "",
+                  ssh_key_path: "",
+                  alias_template: "",
+                }
+              : [],
       } as Response;
     }),
   );
@@ -79,8 +86,9 @@ describe("PortalShell", () => {
 
     const nav = screen.getByRole("navigation", { name: "Primary" });
     expect(within(nav).getByRole("link", { name: "Home" })).toBeInTheDocument();
+    // Team links are fetched from /api/teams and appear asynchronously.
     expect(
-      within(nav).getByRole("link", { name: "Threat Hunting" }),
+      await within(nav).findByRole("link", { name: "Threat Hunting" }),
     ).toBeInTheDocument();
     expect(
       within(nav).getByRole("link", { name: "Red Team" }),
@@ -107,7 +115,7 @@ describe("PortalShell", () => {
 
     const nav = screen.getByRole("navigation", { name: "Primary" });
     expect(
-      within(nav).getByRole("link", { name: "Red Team" }),
+      await within(nav).findByRole("link", { name: "Red Team" }),
     ).toBeInTheDocument();
     expect(
       within(nav).queryByRole("link", { name: "Threat Hunting" }),

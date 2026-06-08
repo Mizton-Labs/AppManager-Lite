@@ -10,12 +10,17 @@ describe("defaultLogoFor", () => {
     expect(a).toMatch(/^logos\/threat-hunting-[1-3]\.svg$/);
   });
 
-  it("uses the first team in canonical order when several are present", () => {
-    // "Threat Intel" precedes "Red Team" in ALL_TEAMS, so its set is chosen
-    // regardless of the order the teams are listed on the app.
+  it("uses the first listed team whose slug matches a bundled set", () => {
+    // Both teams have a bundled set; the first one listed on the app wins.
     const url = defaultLogoFor("Some App", ["Red Team", "Threat Intel"]);
-    expect(url).toBe(`logos/${teamSlug("Threat Intel")}-${url.slice(-5, -4)}.svg`);
-    expect(url).toContain(`logos/${teamSlug("Threat Intel")}-`);
+    expect(url).toBe(`logos/${teamSlug("Red Team")}-${url.slice(-5, -4)}.svg`);
+    expect(url).toContain(`logos/${teamSlug("Red Team")}-`);
+  });
+
+  it("skips teams without a bundled set and uses the next matching one", () => {
+    // "Platform" has no bundled set, so the bundled "Red Team" set is used.
+    const url = defaultLogoFor("Some App", ["Platform", "Red Team"]);
+    expect(url).toMatch(/^logos\/red-team-[1-3]\.svg$/);
   });
 
   it("falls back to the generic set when the app has no team", () => {
