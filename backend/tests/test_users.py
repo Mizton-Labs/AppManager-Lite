@@ -1,0 +1,225 @@
+"""Administrator user-management behavior and guardrails."""
+
+from __future__ import annotations
+
+from app.teams import DEFAULT_TEAMS
+
+
+def _create(client, csrf, username, role="user", teams=None):
+    return client.post(
+        "/api/users",
+        json={"username": username, "role": role, "teams": teams or []},
+        headers={"X-CSRF-Token": csrf},
+    )
+
+
+def test_create_user_returns_password_and_forces_change(admin) -> None:
+    client, csrf, _ = admin
+    resp = _create(client, csrf, "alice", teams=["Threat Hunting"])
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert isinstance(body["password"], str) and len(body["password"]) >= 12
+    assert body["user"]["must_change_password"] is True
+    assert body["user"]["teams"] == ["Threat Hunting"]
+    assert body["user"]["role"] == "user"
+    assert body["user"]["self_service"] is False
+
+
+def test_create_user_with_self_service(admin) -> None:
+    client, csrf, _ = admin
+    resp = client.post(
+        "/api/users",
+        json={
+            "username": "olive",
+            "role": "user",
+            "teams": ["Red Team"],
+            "self_service": True,
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["user"]["self_service"] is True
+
+
+def test_update_user_toggles_self_service(admin) -> None:
+    client, csrf, _ = admin
+    user_id = _create(client, csrf, "peggy", teams=["Red Team"]).json()["user"][
+        "id"
+    ]
+    on = client.patch(
+        f"/api/users/{user_id}",
+        json={"self_service": True},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert on.status_code == 200, on.text
+    assert on.json()["self_service"] is True
+    off = client.patch(
+        f"/api/users/{user_id}",
+        json={"self_service": False},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert off.json()["self_service"] is False
+
+
+def test_admin_is_self_service_by_default(admin) -> None:
+    client, _csrf, _ = admin
+    admin_row = next(
+        u for u in client.get("/api/users").json() if u["username"] == "admin"
+    )
+    assert admin_row["self_service"] is True
+
+
+def test_create_user_rejects_unknown_team(admin) -> None:
+    client, csrf, _ = admin
+    resp = _create(client, csrf, "bob", teams=["Nonexistent Team"])
+    assert resp.status_code == 400
+
+
+def test_create_user_rejects_duplicate_username(admin) -> None:
+    client, csrf, _ = admin
+    assert _create(client, csrf, "carol").status_code == 201
+    assert _create(client, csrf, "carol").status_code == 409
+
+
+def test_teams_endpoint_returns_canonical_set(admin) -> None:
+    client, _csrf, _ = admin
+    resp = client.get("/api/teams")
+    assert resp.status_code == 200
+    assert resp.json() == list(DEFAULT_TEAMS)
+
+
+def test_list_users_includes_admin_and_created(admin) -> None:
+    client, csrf, _ = admin
+    _create(client, csrf, "dave")
+    usernames = {u["username"] for u in client.get("/api/users").json()}
+    assert {"admin", "dave"} <= usernames
+
+
+def test_update_user_role_teams_and_active(admin) -> None:
+    client, csrf, _ = admin
+    user_id = _create(client, csrf, "erin").json()["user"]["id"]
+    resp = client.patch(
+        f"/api/users/{user_id}",
+        json={"role": "admin", "teams": ["Red Team", "Threat Intel"], "is_active": False},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["role"] == "admin"
+    assert set(body["teams"]) == {"Red Team", "Threat Intel"}
+    assert body["is_active"] is False
+
+
+def test_disabled_user_cannot_login(admin) -> None:
+    client, csrf, _ = admin
+    created = _create(client, csrf, "frank").json()
+    user_id = created["user"]["id"]
+    password = created["password"]
+    client.patch(
+        f"/api/users/{user_id}",
+        json={"is_active": False},
+        headers={"X-CSRF-Token": csrf},
+    )
+    # A second client (same database) attempts to authenticate.
+    from fastapi.testclient import TestClient
+
+    with TestClient(client.app) as other:
+        resp = other.post(
+            "/api/auth/login", json={"username": "frank", "password": password}
+        )
+    assert resp.status_code == 401
+
+
+def test_cannot_demote_last_admin(admin) -> None:
+    client, csrf, _ = admin
+    admin_id = next(u["id"] for u in client.get("/api/users").json() if u["username"] == "admin")
+    resp = client.patch(
+        f"/api/users/{admin_id}", json={"role": "user"}, headers={"X-CSRF-Token": csrf}
+    )
+    assert resp.status_code == 400
+
+
+def test_cannot_disable_last_admin(admin) -> None:
+    client, csrf, _ = admin
+    admin_id = next(u["id"] for u in client.get("/api/users").json() if u["username"] == "admin")
+    resp = client.patch(
+        f"/api/users/{admin_id}", json={"is_active": False}, headers={"X-CSRF-Token": csrf}
+    )
+    assert resp.status_code == 400
+
+
+def test_cannot_delete_self(admin) -> None:
+    client, csrf, _ = admin
+    admin_id = next(u["id"] for u in client.get("/api/users").json() if u["username"] == "admin")
+    resp = client.request(
+        "DELETE", f"/api/users/{admin_id}", headers={"X-CSRF-Token": csrf}
+    )
+    assert resp.status_code == 400
+
+
+def test_second_admin_allows_demoting_first(admin) -> None:
+    client, csrf, _ = admin
+    # Promote a second admin, then the original may be demoted.
+    other_id = _create(client, csrf, "grace", role="admin").json()["user"]["id"]
+    assert other_id
+    admin_id = next(u["id"] for u in client.get("/api/users").json() if u["username"] == "admin")
+    resp = client.patch(
+        f"/api/users/{admin_id}", json={"role": "user"}, headers={"X-CSRF-Token": csrf}
+    )
+    assert resp.status_code == 200
+
+
+def test_reset_password_changes_value_and_forces_change(admin) -> None:
+    client, csrf, _ = admin
+    created = _create(client, csrf, "heidi").json()
+    user_id = created["user"]["id"]
+    original = created["password"]
+    resp = client.post(
+        f"/api/users/{user_id}/reset-password", headers={"X-CSRF-Token": csrf}
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["password"] != original
+    assert body["user"]["must_change_password"] is True
+
+
+def test_delete_user_removes_it(admin) -> None:
+    client, csrf, _ = admin
+    user_id = _create(client, csrf, "ivan").json()["user"]["id"]
+    resp = client.request(
+        "DELETE", f"/api/users/{user_id}", headers={"X-CSRF-Token": csrf}
+    )
+    assert resp.status_code == 200
+    usernames = {u["username"] for u in client.get("/api/users").json()}
+    assert "ivan" not in usernames
+
+
+def test_non_admin_cannot_manage_users(admin) -> None:
+    client, csrf, _ = admin
+    created = _create(client, csrf, "judy").json()
+    password = created["password"]
+    user_id = created["user"]["id"]
+    # The new standard user changes their password, then tries to list users.
+    from fastapi.testclient import TestClient
+
+    with TestClient(client.app) as user_client:
+        login = user_client.post(
+            "/api/auth/login", json={"username": "judy", "password": password}
+        )
+        user_csrf = login.json()["csrf_token"]
+        new_pw = "JudyStrongPass123"
+        user_client.post(
+            "/api/account/password",
+            json={
+                "current_password": password,
+                "new_password": new_pw,
+                "confirm_password": new_pw,
+            },
+            headers={"X-CSRF-Token": user_csrf},
+        )
+        listing = user_client.get("/api/users")
+        delete = user_client.request(
+            "DELETE", f"/api/users/{user_id}", headers={"X-CSRF-Token": user_csrf}
+        )
+    assert listing.status_code == 403
+    assert delete.status_code == 403

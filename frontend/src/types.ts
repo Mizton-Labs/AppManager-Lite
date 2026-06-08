@@ -1,0 +1,147 @@
+export type Role = "admin" | "user";
+
+/** How an application's link is interpreted. */
+export type UrlType = "url" | "alias";
+
+/** Lifecycle state of a submitted application. */
+export type ApprovalStatus = "pending" | "approved" | "rejected";
+
+export interface ApiUser {
+  id: number;
+  username: string;
+  role: Role;
+  is_active: boolean;
+  must_change_password: boolean;
+  self_service: boolean;
+  apps_server: string;
+  teams: string[];
+}
+
+export interface SessionState {
+  authenticated: boolean;
+  enable_auth: boolean;
+  user: ApiUser | null;
+  csrf_token: string | null;
+  /** Configurable branding, present even before authentication. */
+  app_name: string;
+  app_logo: string;
+  /** One-time setup flag that drives the first-login wizard (admins only). */
+  configured: boolean;
+}
+
+export interface GeneratedPassword {
+  user: ApiUser;
+  password: string;
+}
+
+export interface CreateUserInput {
+  username: string;
+  role: Role;
+  teams: string[];
+  self_service?: boolean;
+  apps_server?: string;
+}
+
+export interface UpdateUserInput {
+  role?: Role;
+  teams?: string[];
+  is_active?: boolean;
+  self_service?: boolean;
+  apps_server?: string;
+}
+
+/** Reverse-proxy (nginx) configuration in General Settings (admin only). */
+export interface ReverseProxySettings {
+  nginx_host: string;
+  nginx_user: string;
+  nginx_conf_path: string;
+  ssh_key_path: string;
+  alias_template: string;
+}
+
+export interface UpdateReverseProxySettingsInput {
+  nginx_host?: string;
+  nginx_user?: string;
+  nginx_conf_path?: string;
+  ssh_key_path?: string;
+  alias_template?: string;
+}
+
+/** Configurable branding in General Settings (admin only). */
+export interface BrandingSettings {
+  app_name: string;
+  app_logo: string;
+  configured: boolean;
+}
+
+export interface UpdateBrandingSettingsInput {
+  app_name?: string;
+  app_logo?: string;
+  configured?: boolean;
+}
+
+export interface Application {
+  id: number;
+  name: string;
+  description: string;
+  url: string;
+  url_type: UrlType;
+  icon_url: string;
+  teams: string[];
+  is_active: boolean;
+  approval_status: ApprovalStatus;
+  sort_order: number;
+  /** Creator's username; only populated in own-app and management responses. */
+  created_by: string | null;
+  /** Last reverse-proxy push status; only in management/own-app responses. */
+  last_push_status?: string | null;
+  last_push_log?: string;
+  last_push_at?: string | null;
+  /** Per-app apps server/port (alias apps); management/own-app responses only. */
+  apps_server?: string;
+  apps_port?: string;
+  /** A staged alias change awaiting approval; management/own-app responses only. */
+  pending_alias?: string;
+}
+
+export interface CreateApplicationInput {
+  name: string;
+  url: string;
+  url_type?: UrlType;
+  description?: string;
+  icon_url?: string;
+  teams: string[];
+  is_active?: boolean;
+  sort_order?: number;
+  apps_server?: string;
+  apps_port?: string;
+}
+
+export interface UpdateApplicationInput {
+  name?: string;
+  url?: string;
+  url_type?: UrlType;
+  description?: string;
+  icon_url?: string;
+  teams?: string[];
+  is_active?: boolean;
+  approval_status?: ApprovalStatus;
+  sort_order?: number;
+  apps_server?: string;
+  apps_port?: string;
+}
+
+/** Which subsystem an audit entry belongs to (one per audit-view tab). */
+export type AuditCategory = "application" | "user" | "system";
+
+export interface AuditEntry {
+  id: number;
+  created_at: string;
+  category: AuditCategory;
+  action: string;
+  actor_username: string | null;
+  target_type: string | null;
+  target_id: number | null;
+  target_name: string | null;
+  detail: string;
+}

@@ -1,0 +1,46 @@
+# Local coding-agent and AI assistant workspace
+.coding_agent/
+AGENTS.md
+CLAUDE.md
+
+# Local OpenCode / Claude / assistant config and history
+.opencode/
+.claude/
+*.session
+*.history
+
+# Temporary, testing, and local junk files
+tmp/
+temp/
+*.tmp
+*.log
+*.bak
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Python (backend)
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / frontend build artifacts
+node_modules/
+frontend/dist/
+*.tsbuildinfo
+
+# Runtime data, secrets, logs, and process state
+data/
+logs/
+.pids/
+*.db
+*.db-wal
+*.db-shm
+first-run-admin-credentials.txt
+.env
+*.env
+

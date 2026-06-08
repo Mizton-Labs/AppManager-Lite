@@ -1,0 +1,473 @@
+"""Pydantic request/response models (API contract)."""
+
+from __future__ import annotations
+
+import re
+from urllib.parse import urlparse
+
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+ROLES = ("admin", "user")
+URL_TYPES = ("url", "alias")
+APPROVAL_STATES = ("pending", "approved", "rejected")
+
+# A local alias becomes part of a URL path, so it is restricted to URL-safe
+# characters: letters, digits, and dashes only, with a hard length cap. This
+# keeps it safe to substitute into a reverse-proxy location and link as a bare
+# relative path (no scheme, host, traversal, or separators possible).
+ALIAS_MAX_LEN = 30
+_ALIAS_RE = re.compile(r"^[A-Za-z0-9-]+$")
+
+# A bare hostname or IPv4 address used as the user's apps server. Restricted to
+# DNS/IP characters so it can be safely substituted into an nginx proxy_pass and
+# never used for command/config injection.
+_HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
+
+# An optional SSH login user (ssh user@host). Restricted so it cannot inject a
+# host or shell content when composed into "user@host" / used as an argv element.
+_SSH_USER_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _validate_apps_server(value: str) -> str:
+    """An optional bare host/IP where a user runs their applications."""
+    value = value.strip()
+    if not value:
+        return ""
+    if len(value) > 253 or not _HOST_RE.match(value):
+        raise ValueError(
+            "Apps server must be a bare hostname or IP (letters, digits, '.', '-')."
+        )
+    return value
+
+
+def _validate_apps_port(value: str) -> str:
+    """An optional TCP port (1-65535) as a string."""
+    value = value.strip()
+    if not value:
+        return ""
+    if not value.isdigit() or not (1 <= int(value) <= 65535):
+        raise ValueError("Apps port must be a number between 1 and 65535.")
+    return value
+
+
+def _validate_http_url(value: str) -> str:
+    """Require an absolute http(s) URL; reject other schemes (e.g. javascript:)."""
+    value = value.strip()
+    parsed = urlparse(value)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError("URL must be an absolute http(s) URL.")
+    return value
+
+
+# An uploaded logo is carried inline as a small base64 data URI. Only raster
+# images are accepted (SVG is excluded to avoid script-in-SVG vectors); the
+# bundled default-logo catalogue is served as static files, never as user
+# input. The decoded image is capped to keep request bodies and the stored
+# value small.
+MAX_ICON_DATA_BYTES = 64 * 1024
+# base64 encodes 3 bytes as 4 chars; allow the prefix plus a little slack.
+ICON_FIELD_MAX_LEN = (MAX_ICON_DATA_BYTES * 4 // 3) + 64
+_ICON_DATA_RE = re.compile(
+    r"^data:image/(?:png|webp);base64,(?P<b64>[A-Za-z0-9+/]+={0,2})$"
+)
+# A relative reference to a bundled default-logo asset (see the frontend
+# `defaultLogoFor`/`public/logos`). Stored verbatim and resolved against the
+# deployment base at render time. The shape is intentionally narrow -- a lower
+# case catalogue name plus a 1-3 variant suffix under `logos/` -- so this is not
+# a general relative-path field: no scheme, no parent traversal, no leading or
+# doubled slash can match.
+_ICON_PATH_RE = re.compile(r"^logos/[a-z0-9]+(?:-[a-z0-9]+)*-[1-3]\.svg$")
+
+
+def _validate_icon_value(value: str) -> str:
+    """Accept an empty value, a bundled relative logo path, an absolute http(s)
+    URL, or a capped raster data URI."""
+    value = value.strip()
+    if not value:
+        return ""
+    if value.startswith("data:"):
+        match = _ICON_DATA_RE.match(value)
+        if match is None:
+            raise ValueError(
+                "Inline logo must be a base64 data URI of type image/png or "
+                "image/webp."
+            )
+        b64 = match.group("b64")
+        # 4 base64 chars decode to 3 bytes (minus padding); estimate the size
+        # without decoding the whole payload.
+        padding = b64.count("=")
+        decoded_bytes = (len(b64) // 4) * 3 - padding
+        if decoded_bytes > MAX_ICON_DATA_BYTES:
+            raise ValueError(
+                f"Inline logo must be at most {MAX_ICON_DATA_BYTES} bytes."
+            )
+        return value
+    if _ICON_PATH_RE.match(value):
+        # A bundled default-logo asset path (relative, resolved at render time).
+        return value
+    return _validate_http_url(value)
+
+
+def _validate_alias(value: str) -> str:
+    """Validate a local alias: a bare relative path the portal links to.
+
+    The alias is rendered as a link relative to the deployment base URL and is
+    resolved by an upstream reverse proxy. To keep it URL-safe and prevent open
+    redirects or injection it must be letters, digits, and dashes only, at most
+    ``ALIAS_MAX_LEN`` characters. A single leading slash is accepted and
+    stripped (so ``/grafana`` and ``grafana`` are equivalent).
+    """
+    value = value.strip().lstrip("/")
+    if not value:
+        raise ValueError("Alias must not be empty.")
+    if len(value) > ALIAS_MAX_LEN:
+        raise ValueError(
+            f"Alias must be at most {ALIAS_MAX_LEN} characters."
+        )
+    if not _ALIAS_RE.match(value):
+        raise ValueError(
+            "Alias may contain only letters, digits, and dashes (e.g. my-app)."
+        )
+    return value
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=1, max_length=1024)
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=1024)
+    new_password: str = Field(min_length=1, max_length=1024)
+    confirm_password: str = Field(min_length=1, max_length=1024)
+
+
+class CreateUserRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=128)
+    role: str = "user"
+    teams: list[str] = Field(default_factory=list)
+    self_service: bool = False
+    apps_server: str = Field(default="", max_length=253)
+
+    @field_validator("username")
+    @classmethod
+    def _clean_username(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Username must not be empty.")
+        return value
+
+    @field_validator("role")
+    @classmethod
+    def _check_role(cls, value: str) -> str:
+        if value not in ROLES:
+            raise ValueError(f"Role must be one of {ROLES}.")
+        return value
+
+    @field_validator("apps_server")
+    @classmethod
+    def _check_apps_server(cls, value: str) -> str:
+        return _validate_apps_server(value)
+
+
+class UpdateUserRequest(BaseModel):
+    role: str | None = None
+    teams: list[str] | None = None
+    is_active: bool | None = None
+    self_service: bool | None = None
+    apps_server: str | None = Field(default=None, max_length=253)
+
+    @field_validator("role")
+    @classmethod
+    def _check_role(cls, value: str | None) -> str | None:
+        if value is not None and value not in ROLES:
+            raise ValueError(f"Role must be one of {ROLES}.")
+        return value
+
+    @field_validator("apps_server")
+    @classmethod
+    def _check_apps_server(cls, value: str | None) -> str | None:
+        return None if value is None else _validate_apps_server(value)
+
+
+class UserOut(BaseModel):
+    id: int
+    username: str
+    role: str
+    is_active: bool
+    must_change_password: bool
+    self_service: bool
+    apps_server: str = ""
+    teams: list[str]
+
+
+class SessionOut(BaseModel):
+    authenticated: bool
+    enable_auth: bool
+    user: UserOut | None = None
+    csrf_token: str | None = None
+    # Configurable branding, readable pre-authentication so the login page can
+    # render the deployment's own name and logo.
+    app_name: str = ""
+    app_logo: str = ""
+    # One-time setup flag that drives the first-login wizard (admins only).
+    configured: bool = False
+
+
+class ApplicationOut(BaseModel):
+    id: int
+    name: str
+    description: str
+    url: str
+    url_type: str = "url"
+    icon_url: str
+    teams: list[str]
+    is_active: bool
+    approval_status: str = "approved"
+    sort_order: int
+    # Creating user's name. Populated only in management/own-app responses so a
+    # member listing never leaks who created another team's application.
+    created_by: str | None = None
+    # Reverse-proxy push result; populated only in management/own-app responses.
+    last_push_status: str | None = None
+    last_push_log: str = ""
+    last_push_at: str | None = None
+    # Per-app apps server/port (alias apps); management/own-app responses only.
+    apps_server: str = ""
+    apps_port: str = ""
+    # A staged alias change awaiting approval (management/own-app responses
+    # only). Empty unless the owner edited the alias and it is pending review.
+    pending_alias: str = ""
+
+
+class CreateApplicationRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    url: str = Field(min_length=1, max_length=2048)
+    url_type: str = "url"
+    description: str = Field(default="", max_length=512)
+    icon_url: str = Field(default="", max_length=ICON_FIELD_MAX_LEN)
+    teams: list[str] = Field(default_factory=list)
+    is_active: bool = True
+    sort_order: int = Field(default=0, ge=0, le=100000)
+    # Optional per-app apps server/port (admins only -- enforced in the router).
+    # Used to render the reverse-proxy alias when the owner has none.
+    apps_server: str = Field(default="", max_length=253)
+    apps_port: str = Field(default="", max_length=5)
+
+    @field_validator("name")
+    @classmethod
+    def _clean_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Name must not be empty.")
+        return value
+
+    @field_validator("url_type")
+    @classmethod
+    def _check_url_type(cls, value: str) -> str:
+        if value not in URL_TYPES:
+            raise ValueError(f"url_type must be one of {URL_TYPES}.")
+        return value
+
+    @field_validator("apps_server")
+    @classmethod
+    def _check_apps_server(cls, value: str) -> str:
+        return _validate_apps_server(value)
+
+    @field_validator("apps_port")
+    @classmethod
+    def _check_apps_port(cls, value: str) -> str:
+        return _validate_apps_port(value)
+
+    @field_validator("icon_url")
+    @classmethod
+    def _check_icon_url(cls, value: str) -> str:
+        return _validate_icon_value(value)
+
+    @model_validator(mode="after")
+    def _check_url(self) -> "CreateApplicationRequest":
+        # Validation of ``url`` depends on ``url_type``: a full http(s) URL for
+        # 'url', or a bare relative alias for 'alias'.
+        if self.url_type == "alias":
+            self.url = _validate_alias(self.url)
+        else:
+            self.url = _validate_http_url(self.url)
+        return self
+
+
+class UpdateApplicationRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    url: str | None = Field(default=None, min_length=1, max_length=2048)
+    url_type: str | None = None
+    description: str | None = Field(default=None, max_length=512)
+    icon_url: str | None = Field(default=None, max_length=ICON_FIELD_MAX_LEN)
+    teams: list[str] | None = None
+    is_active: bool | None = None
+    approval_status: str | None = None
+    sort_order: int | None = Field(default=None, ge=0, le=100000)
+    apps_server: str | None = Field(default=None, max_length=253)
+    apps_port: str | None = Field(default=None, max_length=5)
+
+    @field_validator("name")
+    @classmethod
+    def _clean_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("Name must not be empty.")
+        return value
+
+    @field_validator("url_type")
+    @classmethod
+    def _check_url_type(cls, value: str | None) -> str | None:
+        if value is not None and value not in URL_TYPES:
+            raise ValueError(f"url_type must be one of {URL_TYPES}.")
+        return value
+
+    @field_validator("apps_server")
+    @classmethod
+    def _check_apps_server(cls, value: str | None) -> str | None:
+        return None if value is None else _validate_apps_server(value)
+
+    @field_validator("apps_port")
+    @classmethod
+    def _check_apps_port(cls, value: str | None) -> str | None:
+        return None if value is None else _validate_apps_port(value)
+
+    @field_validator("approval_status")
+    @classmethod
+    def _check_status(cls, value: str | None) -> str | None:
+        if value is not None and value not in APPROVAL_STATES:
+            raise ValueError(f"approval_status must be one of {APPROVAL_STATES}.")
+        return value
+
+    @field_validator("icon_url")
+    @classmethod
+    def _check_icon_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _validate_icon_value(value)
+
+    @model_validator(mode="after")
+    def _check_url(self) -> "UpdateApplicationRequest":
+        if self.url is not None:
+            kind = self.url_type or "url"
+            if kind == "alias":
+                self.url = _validate_alias(self.url)
+            else:
+                self.url = _validate_http_url(self.url)
+        return self
+
+
+class GeneratedPasswordOut(BaseModel):
+    user: UserOut
+    password: str
+
+
+class AuditEntryOut(BaseModel):
+    id: int
+    created_at: str
+    category: str
+    action: str
+    actor_username: str | None = None
+    target_type: str | None = None
+    target_id: int | None = None
+    target_name: str | None = None
+    detail: str = ""
+
+
+# Reject shell metacharacters / whitespace tricks in path-like settings so a
+# value can never be abused when later passed (as an argv element) to ssh/scp.
+_UNSAFE_PATH_CHARS = set(";|&`$<>\n\r\"'\\ ")
+
+
+def _validate_path_setting(value: str, label: str) -> str:
+    value = value.strip()
+    if not value:
+        return ""
+    if any(ch in _UNSAFE_PATH_CHARS for ch in value):
+        raise ValueError(f"{label} must not contain spaces or shell metacharacters.")
+    return value
+
+
+class ReverseProxySettingsOut(BaseModel):
+    nginx_host: str = ""
+    nginx_user: str = ""
+    nginx_conf_path: str = ""
+    ssh_key_path: str = ""
+    alias_template: str = ""
+
+
+class UpdateReverseProxySettingsRequest(BaseModel):
+    nginx_host: str | None = Field(default=None, max_length=253)
+    nginx_user: str | None = Field(default=None, max_length=64)
+    nginx_conf_path: str | None = Field(default=None, max_length=4096)
+    ssh_key_path: str | None = Field(default=None, max_length=4096)
+    alias_template: str | None = Field(default=None, max_length=65536)
+
+    @field_validator("nginx_host")
+    @classmethod
+    def _check_host(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return ""
+        if not _HOST_RE.match(value):
+            raise ValueError(
+                "NGINX host must be a bare hostname or IP (letters, digits, '.', '-')."
+            )
+        return value
+
+    @field_validator("nginx_user")
+    @classmethod
+    def _check_user(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return ""
+        if not _SSH_USER_RE.match(value):
+            raise ValueError(
+                "SSH user must contain only letters, digits, '.', '_', and '-'."
+            )
+        return value
+
+    @field_validator("nginx_conf_path")
+    @classmethod
+    def _check_conf_path(cls, value: str | None) -> str | None:
+        return None if value is None else _validate_path_setting(value, "Conf path")
+
+    @field_validator("ssh_key_path")
+    @classmethod
+    def _check_key_path(cls, value: str | None) -> str | None:
+        return None if value is None else _validate_path_setting(value, "SSH key path")
+
+
+class BrandingSettingsOut(BaseModel):
+    app_name: str = ""
+    app_logo: str = ""
+    configured: bool = False
+
+
+class UpdateBrandingSettingsRequest(BaseModel):
+    app_name: str | None = Field(default=None, max_length=128)
+    app_logo: str | None = Field(default=None, max_length=ICON_FIELD_MAX_LEN)
+    configured: bool | None = None
+
+    @field_validator("app_name")
+    @classmethod
+    def _clean_name(cls, value: str | None) -> str | None:
+        return None if value is None else value.strip()
+
+    @field_validator("app_logo")
+    @classmethod
+    def _check_logo(cls, value: str | None) -> str | None:
+        # Reuse the application-logo policy: empty, a bundled relative path, an
+        # absolute http(s) URL, or a capped raster data URI.
+        return None if value is None else _validate_icon_value(value)
+
+
+class MessageOut(BaseModel):
+    detail: str
