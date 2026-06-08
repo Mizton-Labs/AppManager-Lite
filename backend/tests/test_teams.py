@@ -86,6 +86,12 @@ def test_create_team_accepts_catalogue_and_data_uri(admin) -> None:
     client, csrf, _ = admin
     ok_path = _create_team(client, csrf, "Net", icon="team-icons/network.svg")
     assert ok_path.status_code == 201, ok_path.text
+    # A hyphenated cybersecurity-catalogue path is also accepted.
+    ok_cyber = _create_team(
+        client, csrf, "Blue Team", icon="team-icons/defensive-security-1.svg"
+    )
+    assert ok_cyber.status_code == 201, ok_cyber.text
+    assert ok_cyber.json()["icon"] == "team-icons/defensive-security-1.svg"
     # A tiny 1x1 PNG data URI is accepted (same raster policy as app logos).
     png = (
         "data:image/png;base64,"

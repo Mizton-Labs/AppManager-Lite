@@ -118,6 +118,29 @@ describe("TeamManagement", () => {
     });
   });
 
+  it("selects a cybersecurity catalogue icon when creating a team", async () => {
+    const { calls } = stubTeams([]);
+    render(<TeamManagement />);
+
+    await screen.findByText(/No teams yet/i);
+    await userEvent.type(
+      screen.getByRole("textbox", { name: /team name/i }),
+      "Red Team",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Offensive Security 1" }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: /add team/i }));
+
+    const created = calls().find(
+      (c) => c.method === "POST" && c.url.endsWith("/api/settings/teams"),
+    );
+    expect(created?.body).toMatchObject({
+      name: "Red Team",
+      icon: "team-icons/offensive-security-1.svg",
+    });
+  });
+
   it("renames a team", async () => {
     const { calls } = stubTeams([makeTeam({ id: 7, name: "Old" })]);
     render(<TeamManagement />);
