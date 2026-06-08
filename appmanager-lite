@@ -1,0 +1,390 @@
+#!/usr/bin/env bash
+#
+# appmanager-lite — lifecycle manager for the AppManager Lite portal.
+#
+# Usage:
+#   appmanager-lite start   [--bind IP:PORT] [--base-prefix /path] [--dev] [--rebuild] [--reinstall]
+#   appmanager-lite stop
+#   appmanager-lite status
+#   appmanager-lite restart [--bind IP:PORT] [--base-prefix /path]
+#   appmanager-lite reset-admin-password
+#   appmanager-lite --reset-admin-password
+#
+# The server runs locally by default (127.0.0.1:8000) and logs to logs/app.log.
+# Use --dev to run in the foreground with auto-reload (Ctrl-C to stop). For
+# deployment behind a reverse proxy that serves the app from a subpath, pass
+# --base-prefix and bind to 0.0.0.0 (e.g. --bind 0.0.0.0:8000 --base-prefix /home).
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$SCRIPT_DIR"
+BACKEND_DIR="$PROJECT_DIR/backend"
+FRONTEND_DIR="$PROJECT_DIR/frontend"
+VENV_DIR="$BACKEND_DIR/.venv"
+PID_DIR="$PROJECT_DIR/.pids"
+LOG_DIR="$PROJECT_DIR/logs"
+PID_FILE="$PID_DIR/server.pid"
+LOG_FILE="$LOG_DIR/app.log"
+# Runtime stamps (under the git-ignored .pids dir) used to detect, between
+# starts, whether the checked-out code or the backend lockfile changed so the
+# operator can be warned about updates that may need manual follow-up.
+COMMIT_STAMP="$PID_DIR/last-run-commit"
+UVLOCK_STAMP="$PID_DIR/last-run-uvlock"
+
+VENV_PY="$VENV_DIR/bin/python"
+
+# Defaults (overridable via flags / environment).
+BIND="${APP_BIND:-127.0.0.1:8000}"
+BASE_PREFIX="${APP_BASE_PREFIX:-}"
+FORCE_REBUILD=0
+FORCE_REINSTALL=0
+DEV_MODE=0
+
+log()  { printf '[appmanager-lite] %s\n' "$*"; }
+err()  { printf '[appmanager-lite] error: %s\n' "$*" >&2; }
+die()  { err "$*"; exit 1; }
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+# Current HEAD commit (short) of the repository the project lives in, or empty
+# when git is unavailable or this is not a checkout. The .git directory may live
+# above PROJECT_DIR, so resolve from PROJECT_DIR. Never fails the script.
+git_head() {
+  command -v git >/dev/null 2>&1 || return 0
+  git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null || true
+}
+
+# Committer timestamp (epoch) of HEAD, or empty. Used to detect a build that is
+# older than the current commit -- the About page bakes in the commit hash and
+# contributor list at build time, so a newer HEAD means a stale frontend even
+# when no source file changed.
+git_head_timestamp() {
+  command -v git >/dev/null 2>&1 || return 0
+  git -C "$PROJECT_DIR" log -1 --format=%ct 2>/dev/null || true
+}
+
+# mtime (epoch seconds) of a path, or 0 when absent.
+mtime_of() {
+  stat -c %Y "$1" 2>/dev/null || echo 0
+}
+
+# Backend Python dependencies are managed exclusively with uv (no pip/poetry).
+# uv sync reconciles the venv to backend/uv.lock on every start, so a lockfile
+# change from a pull is applied automatically here.
+ensure_venv() {
+  require_cmd uv
+  if [[ "$FORCE_REINSTALL" -eq 1 ]]; then
+    log "syncing backend dependencies (uv sync --reinstall)"
+    ( cd "$BACKEND_DIR" && uv sync --reinstall )
+  else
+    # Note when the lockfile changed since the last start (informational; uv
+    # sync below applies it regardless).
+    if [[ -f "$UVLOCK_STAMP" && -f "$BACKEND_DIR/uv.lock" ]] \
+       && ! cmp -s "$BACKEND_DIR/uv.lock" "$UVLOCK_STAMP"; then
+      log "backend uv.lock changed since last start; uv sync will apply it"
+    fi
+    log "syncing backend dependencies (uv sync)"
+    ( cd "$BACKEND_DIR" && uv sync )
+  fi
+  # Record the applied lockfile so the next start can detect a change.
+  mkdir -p "$PID_DIR"
+  [[ -f "$BACKEND_DIR/uv.lock" ]] && cp -f "$BACKEND_DIR/uv.lock" "$UVLOCK_STAMP" 2>/dev/null || true
+}
+
+# True (0) when frontend node_modules are missing or the lockfile/manifest is
+# newer than npm's install marker, so dependencies need (re)installing.
+frontend_deps_stale() {
+  [[ -d "$FRONTEND_DIR/node_modules" ]] || return 0
+  local marker
+  marker="$FRONTEND_DIR/node_modules/.package-lock.json"
+  [[ -f "$marker" ]] || return 0
+  local marker_mtime lock_mtime pkg_mtime
+  marker_mtime="$(mtime_of "$marker")"
+  lock_mtime="$(mtime_of "$FRONTEND_DIR/package-lock.json")"
+  pkg_mtime="$(mtime_of "$FRONTEND_DIR/package.json")"
+  [[ "$lock_mtime" -gt "$marker_mtime" || "$pkg_mtime" -gt "$marker_mtime" ]]
+}
+
+# True (0) when the built frontend is missing or older than any build input.
+# Inputs are the Vite sources/config AND the git HEAD commit (baked into the
+# About page at build time). Errs toward rebuilding when timestamps are unknown.
+frontend_is_stale() {
+  local dist_index="$FRONTEND_DIR/dist/index.html"
+  [[ -f "$dist_index" ]] || return 0
+
+  local dist_mtime newest_src head_ts
+  dist_mtime="$(mtime_of "$dist_index")"
+
+  # Newest mtime across everything Vite consumes.
+  newest_src="$(
+    cd "$FRONTEND_DIR" 2>/dev/null && \
+    find src public index.html package.json package-lock.json \
+         vite.config.ts tsconfig.json -type f -printf '%T@\n' 2>/dev/null \
+      | sort -nr | head -1 | cut -d. -f1
+  )"
+  [[ -n "$newest_src" && "$newest_src" -gt "$dist_mtime" ]] && return 0
+
+  # A newer commit than the build stales the About page even with no file edit.
+  head_ts="$(git_head_timestamp)"
+  [[ -n "$head_ts" && "$head_ts" -gt "$dist_mtime" ]] && return 0
+
+  return 1
+}
+
+ensure_frontend() {
+  require_cmd npm
+  if frontend_deps_stale; then
+    log "installing frontend dependencies (npm install)"
+    ( cd "$FRONTEND_DIR" && npm install --no-audit --no-fund )
+  fi
+  if [[ "$FORCE_REBUILD" -eq 1 ]]; then
+    log "building frontend (--rebuild)"
+    ( cd "$FRONTEND_DIR" && npm run build )
+  elif frontend_is_stale; then
+    log "building frontend (sources or commit changed since last build)"
+    ( cd "$FRONTEND_DIR" && npm run build )
+  else
+    log "frontend already up to date (skipping build; use --rebuild to force)"
+  fi
+}
+
+split_bind() {
+  # Populates HOST and PORT from BIND (IP:PORT).
+  [[ "$BIND" == *:* ]] || die "--bind must be IP:PORT (got '$BIND')"
+  HOST="${BIND%:*}"
+  PORT="${BIND##*:}"
+  [[ -n "$HOST" && -n "$PORT" ]] || die "--bind must be IP:PORT (got '$BIND')"
+  [[ "$PORT" =~ ^[0-9]+$ ]] || die "port must be numeric (got '$PORT')"
+}
+
+# Warn when the checked-out code advanced since the last start. Schema
+# migrations run automatically and are additive/idempotent (see backend
+# init_db), but there is no schema-version marker, so this is a code-delta
+# heuristic: it flags that an update happened and that destructive schema or
+# dependency changes (if any) may need manual follow-up. Records the current
+# HEAD for next time. Never fails the script.
+warn_on_update() {
+  local current previous
+  current="$(git_head)"
+  [[ -z "$current" ]] && return 0   # not a git checkout; nothing to compare
+  mkdir -p "$PID_DIR"
+  if [[ -f "$COMMIT_STAMP" ]]; then
+    previous="$(cat "$COMMIT_STAMP" 2>/dev/null || true)"
+    if [[ -n "$previous" && "$previous" != "$current" ]]; then
+      log "code updated ${previous}..${current} since the last start."
+      log "  - the database migrates automatically on start (additive, idempotent)."
+      log "  - no automatic data/app.db reset is performed; if this update includes a"
+      log "    destructive schema change or a dependency change, review the release"
+      log "    notes for any manual steps."
+    fi
+  fi
+  printf '%s\n' "$current" >"$COMMIT_STAMP" 2>/dev/null || true
+}
+
+# Surface security-relevant conditions the background server only writes to the
+# log file (the operator running `start` would otherwise never see them).
+warn_runtime_state() {
+  if [[ "${APP_ENABLE_AUTH:-1}" == "0" ]]; then
+    err "authentication is DISABLED (APP_ENABLE_AUTH=0); the API is unauthenticated."
+  fi
+  # The data dir (and thus the credentials file) honours APP_DATA_DIR.
+  local data_dir="${APP_DATA_DIR:-$PROJECT_DIR/data}"
+  local creds="$data_dir/first-run-admin-credentials.txt"
+  if [[ -f "$creds" ]]; then
+    log "first-run administrator credentials are present at:"
+    log "    $creds"
+    log "  change the password at first login, then delete this file."
+  fi
+}
+
+health_host() {
+  # 0.0.0.0 is not directly connectable; probe via loopback.
+  if [[ "$HOST" == "0.0.0.0" || "$HOST" == "::" ]]; then
+    echo "127.0.0.1"
+  else
+    echo "$HOST"
+  fi
+}
+
+server_running() {
+  [[ -f "$PID_FILE" ]] || return 1
+  local pid
+  pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+  [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1
+}
+
+cmd_start() {
+  if server_running; then
+    log "already running (pid $(cat "$PID_FILE"))"
+    return 0
+  fi
+  mkdir -p "$PID_DIR" "$LOG_DIR"
+  warn_on_update
+  ensure_venv
+  ensure_frontend
+  split_bind
+
+  export APP_BASE_PREFIX="$BASE_PREFIX"
+  export APP_LOG_DIR="$LOG_DIR"
+  : "${APP_ENABLE_AUTH:=1}"
+  export APP_ENABLE_AUTH
+
+  if [[ "$DEV_MODE" -eq 1 ]]; then
+    # Foreground development mode: auto-reload enabled, output streams to the
+    # console and is still written to "$LOG_FILE" by the application's own
+    # logging. No PID file is used; stop with Ctrl-C.
+    export APP_DEV=1
+    warn_runtime_state
+    log "starting server in foreground (dev) on $HOST:$PORT (base-prefix='${BASE_PREFIX:-/}')"
+    log "auto-reload enabled; logs also at $LOG_FILE; press Ctrl-C to stop"
+    cd "$BACKEND_DIR"
+    exec "$VENV_PY" -m uvicorn app.main:app \
+      --host "$HOST" --port "$PORT" --reload
+  fi
+
+  log "starting server on $HOST:$PORT (base-prefix='${BASE_PREFIX:-/}')"
+  # Background mode: the application owns "$LOG_FILE" through its file handler, so
+  # the process's stdout/stderr are discarded to avoid duplicate lines. If the
+  # process dies before logging initializes, re-run with --dev for live output.
+  (
+    cd "$BACKEND_DIR"
+    exec "$VENV_PY" -m uvicorn app.main:app --host "$HOST" --port "$PORT"
+  ) >/dev/null 2>&1 &
+  local pid=$!
+  echo "$pid" >"$PID_FILE"
+
+  # Give uvicorn a moment, then verify it is alive and healthy.
+  sleep 2
+  if ! kill -0 "$pid" >/dev/null 2>&1; then
+    rm -f "$PID_FILE"
+    err "server failed to start; recent log ($LOG_FILE):"
+    tail -n 20 "$LOG_FILE" >&2 2>/dev/null || true
+    err "for live diagnostics, run: $(basename "$0") start --dev"
+    exit 1
+  fi
+  if command -v curl >/dev/null 2>&1; then
+    local hhost
+    hhost="$(health_host)"
+    if curl -fsS "http://$hhost:$PORT/api/health" >/dev/null 2>&1; then
+      log "healthy at http://$hhost:$PORT${BASE_PREFIX}/"
+    else
+      log "started (pid $pid); health check not yet responding — see $LOG_FILE"
+    fi
+  else
+    log "started (pid $pid)"
+  fi
+  # Surface security-relevant startup conditions the background server only
+  # wrote to the log file (run after startup so first-run creds exist).
+  warn_runtime_state
+}
+
+cmd_stop() {
+  if ! server_running; then
+    log "not running"
+    rm -f "$PID_FILE"
+    return 0
+  fi
+  local pid
+  pid="$(cat "$PID_FILE")"
+  log "stopping server (pid $pid)"
+  kill "$pid" >/dev/null 2>&1 || true
+  for _ in $(seq 1 20); do
+    kill -0 "$pid" >/dev/null 2>&1 || break
+    sleep 0.25
+  done
+  if kill -0 "$pid" >/dev/null 2>&1; then
+    log "forcing stop"
+    kill -9 "$pid" >/dev/null 2>&1 || true
+  fi
+  rm -f "$PID_FILE"
+  log "stopped"
+}
+
+cmd_status() {
+  if server_running; then
+    log "running (pid $(cat "$PID_FILE")); log: $LOG_FILE"
+    return 0
+  fi
+  log "not running"
+  return 3
+}
+
+cmd_reset_admin_password() {
+  ensure_venv
+  ( cd "$BACKEND_DIR" && exec "$VENV_PY" -m app.admin reset-admin-password )
+}
+
+usage() {
+  cat <<'EOF'
+appmanager-lite — lifecycle manager for the AppManager Lite portal.
+
+Usage:
+  appmanager-lite start   [--bind IP:PORT] [--base-prefix /path] [--dev] [--rebuild] [--reinstall]
+  appmanager-lite stop
+  appmanager-lite status
+  appmanager-lite restart [--bind IP:PORT] [--base-prefix /path]
+  appmanager-lite reset-admin-password
+  appmanager-lite --reset-admin-password
+
+Options:
+  --bind IP:PORT       Address to bind (default 127.0.0.1:8000).
+  --base-prefix /path  Serve under a subpath behind a reverse proxy (e.g. /home).
+  --dev                Run in the foreground with auto-reload; Ctrl-C to stop.
+  --rebuild            Force a frontend rebuild even when it looks up to date.
+  --reinstall          Reinstall backend dependencies (uv sync --reinstall).
+
+On start/restart the script rebuilds the frontend automatically when its
+sources, config, or the current commit changed since the last build, refreshes
+frontend dependencies when the lockfile changed, and runs uv sync for the
+backend (uv is the only Python dependency manager). It also warns when the
+checked-out code advanced since the last start: the database migrates
+automatically on start (additive), but destructive schema or dependency changes
+may need manual follow-up.
+
+Logs are written to logs/app.log. The server runs locally by default; for
+deployment behind a reverse proxy that serves from a subpath, pass --base-prefix
+and bind to 0.0.0.0 (e.g. --bind 0.0.0.0:8000 --base-prefix /home).
+EOF
+}
+
+main() {
+  local command="${1:-}"
+  [[ $# -gt 0 ]] && shift || true
+
+  # A bare --reset-admin-password flag is accepted as a command alias.
+  if [[ "$command" == "--reset-admin-password" ]]; then
+    command="reset-admin-password"
+  fi
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --bind)        BIND="${2:?--bind requires IP:PORT}"; shift 2 ;;
+      --bind=*)      BIND="${1#*=}"; shift ;;
+      --base-prefix) BASE_PREFIX="${2:?--base-prefix requires a value}"; shift 2 ;;
+      --base-prefix=*) BASE_PREFIX="${1#*=}"; shift ;;
+      --dev)         DEV_MODE=1; shift ;;
+      --rebuild)     FORCE_REBUILD=1; shift ;;
+      --reinstall)   FORCE_REINSTALL=1; shift ;;
+      --reset-admin-password) command="reset-admin-password"; shift ;;
+      -h|--help)     usage; exit 0 ;;
+      *)             die "unknown option: $1" ;;
+    esac
+  done
+
+  # Normalize an empty or "/" prefix to "" (root).
+  [[ "$BASE_PREFIX" == "/" ]] && BASE_PREFIX=""
+
+  case "$command" in
+    start)                cmd_start ;;
+    stop)                 cmd_stop ;;
+    status)               cmd_status ;;
+    restart)              cmd_stop; cmd_start ;;
+    reset-admin-password) cmd_reset_admin_password ;;
+    ""|-h|--help|help)    usage ;;
+    *)                    die "unknown command: $command (try --help)" ;;
+  esac
+}
+
+main "$@"
