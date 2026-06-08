@@ -393,3 +393,8 @@ these values before continuing.
 Portions of the authentication and user-management design reuse patterns from an
 Apache-2.0 licensed open-source project. See `NOTICE` and
 `THIRD-PARTY-NOTICES.md` for details.
+
+---
+
+_Built in part with OpenCode and vibecoding, following simple but solid
+development practices. Review and use with caution._

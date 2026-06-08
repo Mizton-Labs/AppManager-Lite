@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/anomalyco/AppManager-Lite/project-manifest.schema.json",
+  "$id": "https://github.com/Mizton-Labs/AppManager-Lite/project-manifest.schema.json",
   "title": "AppManager Lite Project Manifest",
   "description": "Machine-readable description of the project's structure, components, tech stack, commands, configuration, HTTP API, and data model. Intended for tooling, agents, and parsers.",
   "type": "object",
