@@ -16,7 +16,7 @@ export const DEFAULT_APP_NAME = "AppManager Lite";
 
 /** Browseable URL of the source repository (shown on the About page). */
 export const GITHUB_URL =
-  "https://github.com/anomalyco/AppManager-Lite";
+  "https://github.com/Mizton-Labs/AppManager-Lite";
 
 /** Bundled fallback logo asset filename, relative to the deployment base. */
 const DEFAULT_LOGO_ASSET = "app-logo.svg";
