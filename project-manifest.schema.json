@@ -1,0 +1,226 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/anomalyco/AppManager-Lite/project-manifest.schema.json",
+  "title": "AppManager Lite Project Manifest",
+  "description": "Machine-readable description of the project's structure, components, tech stack, commands, configuration, HTTP API, and data model. Intended for tooling, agents, and parsers.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "name", "version", "description", "components"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Optional reference to this JSON Schema for editor tooling."
+    },
+    "schemaVersion": {
+      "type": "string",
+      "description": "Version of this manifest's schema/shape.",
+      "pattern": "^[0-9]+\\.[0-9]+$"
+    },
+    "name": { "type": "string" },
+    "version": { "type": "string" },
+    "description": { "type": "string" },
+    "license": { "type": "string", "description": "SPDX license identifier or file reference." },
+    "repository": { "type": "string", "format": "uri" },
+    "generatedFrom": {
+      "type": "string",
+      "description": "How the manifest is kept accurate (e.g. hand-maintained from source)."
+    },
+    "architecture": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "summary": { "type": "string" },
+        "style": { "type": "string", "description": "e.g. monorepo, single-deployable." },
+        "runtimeTopology": { "type": "string", "description": "How parts are deployed/served at runtime." },
+        "auth": { "type": "string", "description": "Authentication/authorization model summary." }
+      }
+    },
+    "entrypoints": {
+      "type": "object",
+      "description": "Primary process/build entrypoints, keyed by role.",
+      "additionalProperties": { "type": "string" }
+    },
+    "components": {
+      "type": "array",
+      "description": "Top-level building blocks of the project.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "type", "path", "description"],
+        "properties": {
+          "id": { "type": "string" },
+          "type": {
+            "type": "string",
+            "enum": ["backend", "frontend", "cli", "scripts", "assets", "docs", "library"]
+          },
+          "path": { "type": "string", "description": "Repository-relative path." },
+          "description": { "type": "string" },
+          "language": { "type": "string" },
+          "runtime": { "type": "string" },
+          "framework": { "type": "string" },
+          "entrypoint": { "type": "string" },
+          "keyModules": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "role"],
+              "properties": {
+                "path": { "type": "string" },
+                "role": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "techStack": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "languages": { "type": "array", "items": { "type": "string" } },
+        "datastore": { "type": "string" },
+        "backend": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "runtime": { "type": "string" },
+            "packageManager": { "type": "string" },
+            "dependencies": { "type": "array", "items": { "type": "string" } },
+            "devDependencies": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "frontend": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "runtime": { "type": "string" },
+            "packageManager": { "type": "string" },
+            "buildTool": { "type": "string" },
+            "dependencies": { "type": "array", "items": { "type": "string" } },
+            "devDependencies": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "commands": {
+      "type": "array",
+      "description": "Common developer/operator commands.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "command", "description"],
+        "properties": {
+          "id": { "type": "string" },
+          "command": { "type": "string" },
+          "description": { "type": "string" },
+          "cwd": { "type": "string", "description": "Working directory the command runs in (repo-relative)." },
+          "category": {
+            "type": "string",
+            "enum": ["run", "build", "test", "lint", "typecheck", "security", "lifecycle", "setup"]
+          }
+        }
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "envVarPrefix": { "type": "string" },
+        "envVars": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "purpose"],
+            "properties": {
+              "name": { "type": "string" },
+              "default": { "type": "string" },
+              "type": { "type": "string", "enum": ["string", "boolean", "integer", "path"] },
+              "purpose": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "api": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "basePath": { "type": "string" },
+        "auth": { "type": "string" },
+        "csrf": { "type": "string" },
+        "docs": { "type": "string", "description": "How/when interactive API docs are exposed." },
+        "routes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["method", "path", "auth", "summary"],
+            "properties": {
+              "method": {
+                "type": "string",
+                "enum": ["GET", "POST", "PATCH", "PUT", "DELETE"]
+              },
+              "path": { "type": "string" },
+              "auth": {
+                "type": "string",
+                "enum": ["anonymous", "user", "admin"],
+                "description": "Minimum access level required."
+              },
+              "csrf": { "type": "boolean", "description": "Whether an X-CSRF-Token header is required." },
+              "summary": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "dataModel": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "engine": { "type": "string" },
+        "migrations": { "type": "string", "description": "How schema changes are applied." },
+        "tables": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "description"],
+            "properties": {
+              "name": { "type": "string" },
+              "description": { "type": "string" },
+              "columns": { "type": "array", "items": { "type": "string" } },
+              "primaryKey": { "type": "array", "items": { "type": "string" } },
+              "foreignKeys": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        }
+      }
+    },
+    "directories": {
+      "type": "array",
+      "description": "High-level directory map.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "purpose"],
+        "properties": {
+          "path": { "type": "string" },
+          "purpose": { "type": "string" }
+        }
+      }
+    },
+    "conventions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "testing": { "type": "string" },
+        "lint": { "type": "string" },
+        "commits": { "type": "string" },
+        "branching": { "type": "string" },
+        "notes": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}
