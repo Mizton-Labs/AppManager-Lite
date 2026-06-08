@@ -57,11 +57,25 @@ the schema changes.
 
 ## Quick start
 
-Prerequisites: [uv](https://docs.astral.sh/uv/) (backend Python environment),
-Node.js with npm (frontend), and Python 3.11+.
+Prerequisites (minimal requirements): [uv](https://docs.astral.sh/uv/) (backend
+Python environment), Node.js with npm (frontend), and Python 3.11+.
 
-The script uses uv to provision the backend environment, installs frontend
-dependencies, builds the frontend, and starts the server.
+You can install uv and Node.js/npm with the bundled installer (**root/sudo
+required**); the portal itself runs as a normal user:
+
+```bash
+sudo ./appmanager-lite install   # installs uv + Node.js/npm; root/sudo required
+```
+
+Run it with `sudo` from your normal account: uv is installed via its official
+installer **into your user's home** (`~/.local/bin`, which must be on your
+`PATH`), while Node.js/npm are installed system-wide via the OS package manager
+(apt, dnf/yum, pacman, zypper, or apk). Already-present tools are skipped. If you
+prefer, install the prerequisites manually instead.
+
+The lifecycle script uses uv to provision the backend environment, installs
+frontend dependencies, builds the frontend, and starts the server — all as a
+normal user (no root):
 
 ```bash
 ./appmanager-lite start                 # http://127.0.0.1:8000
