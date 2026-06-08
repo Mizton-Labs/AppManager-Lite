@@ -157,7 +157,7 @@
     "envVarPrefix": "APP_",
     "envVars": [
       { "name": "APP_BASE_DIR", "default": "project root", "type": "path", "purpose": "Base directory for resolving relative data, frontend, and log paths." },
-      { "name": "APP_BASE_PREFIX", "default": "", "type": "string", "purpose": "Mount path prefix when served behind a subpath proxy, e.g. /home." },
+      { "name": "APP_BASE_PREFIX", "default": "", "type": "string", "purpose": "Optional subpath prefix (e.g. /home); only needed for strict reverse-proxy setups that require the app to emit its public subpath. The app otherwise works behind a proxy unchanged via relative paths." },
       { "name": "APP_ENABLE_AUTH", "default": "1", "type": "boolean", "purpose": "Enable authentication and access control." },
       { "name": "APP_DEV", "default": "0", "type": "boolean", "purpose": "Dev mode: enables interactive API docs and relaxes cookie security." },
       { "name": "APP_SECURE_COOKIES", "default": "1 (off in dev)", "type": "boolean", "purpose": "Set the Secure flag on the session cookie." },

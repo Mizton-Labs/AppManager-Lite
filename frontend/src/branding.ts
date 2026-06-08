@@ -24,23 +24,31 @@ const DEFAULT_LOGO_ASSET = "app-logo.svg";
 interface Branding {
   appName: string;
   appLogo: string;
+  collaborators: string[];
 }
 
-const current: Branding = { appName: "", appLogo: "" };
+const current: Branding = { appName: "", appLogo: "", collaborators: [] };
 
 /** Update the in-memory branding from a session response. */
 export function setBranding(branding: {
   app_name?: string | null;
   app_logo?: string | null;
+  collaborators?: string[] | null;
 }): void {
   current.appName = (branding.app_name ?? "").trim();
   current.appLogo = (branding.app_logo ?? "").trim();
+  current.collaborators = (branding.collaborators ?? []).filter(Boolean);
   applyFavicon();
 }
 
 /** The configured application name, or the neutral default when unset. */
 export function getAppName(): string {
   return current.appName || DEFAULT_APP_NAME;
+}
+
+/** Admin-configured About-page collaborators (may be empty). */
+export function getCollaborators(): string[] {
+  return current.collaborators;
 }
 
 /**
