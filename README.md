@@ -193,9 +193,11 @@ has:
   them in the list (accessible **move up / down** buttons do the same); the new
   order is applied to every member's sidebar.
 - **Icon** — an optional small icon shown on the team's sidebar button. Pick one
-  from a bundled **generic-IT catalogue** of 12 icons (server, database, network,
+  from a bundled catalogue with a **generic-IT** set (server, database, network,
   cloud, security, dashboard, development, support, storage, containers,
-  automation, and team) or upload a small raster image (PNG, WebP, or JPEG,
+  automation, team) and a **cybersecurity** set (defensive security, offensive
+  security, vulnerability, threat intel, DevOps, and security engineering —
+  three variants each), or upload a small raster image (PNG, WebP, or JPEG,
   resized and stored as a capped raster like the application logo). When no icon
   is chosen, a neutral default is used.
 
