@@ -3,6 +3,7 @@
 # appmanager-lite — lifecycle manager for the AppManager Lite portal.
 #
 # Usage:
+#   appmanager-lite install   (root/sudo required; installs uv + Node.js/npm)
 #   appmanager-lite start   [--bind IP:PORT] [--base-prefix /path] [--dev] [--rebuild] [--reinstall]
 #   appmanager-lite stop
 #   appmanager-lite status
@@ -48,6 +49,128 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
 }
 
+# Require a build/run prerequisite (uv or npm); on absence, point the operator
+# at the root-only installer instead of a bare "not found".
+require_prereq() {
+  command -v "$1" >/dev/null 2>&1 && return 0
+  err "required command not found: $1"
+  die "install prerequisites with: sudo ./$(basename "$0") install"
+}
+
+# --- Prerequisite installer (root-only) ------------------------------------
+#
+# `install` installs the minimal prerequisites and is the ONLY operation that
+# needs root: uv (via the official installer, into the *invoking* user's home)
+# and Node.js/npm (via the OS package manager). The portal itself
+# (start/stop/status/...) always runs as a normal user.
+
+is_root() {
+  [[ "${EUID:-$(id -u)}" -eq 0 ]]
+}
+
+# The unprivileged user that invoked sudo, or empty when run as a raw root
+# login. uv installs per-user, so we need this to target the right home.
+invoking_user() {
+  local u="${SUDO_USER:-}"
+  [[ -n "$u" && "$u" != "root" ]] && printf '%s\n' "$u"
+}
+
+# Echo the first supported package manager found, or empty.
+detect_pkg_mgr() {
+  local m
+  for m in apt-get dnf yum pacman zypper apk; do
+    if command -v "$m" >/dev/null 2>&1; then
+      printf '%s\n' "$m"
+      return 0
+    fi
+  done
+  return 0
+}
+
+# Install OS packages non-interactively with the detected manager. Runs as the
+# current (root) user; callers ensure we are root.
+pkg_install() {
+  local mgr="$1"; shift
+  case "$mgr" in
+    apt-get) apt-get update && apt-get install -y "$@" ;;
+    dnf)     dnf install -y "$@" ;;
+    yum)     yum install -y "$@" ;;
+    pacman)  pacman -Sy --noconfirm "$@" ;;
+    zypper)  zypper --non-interactive install "$@" ;;
+    apk)     apk add "$@" ;;
+    *)       die "unsupported package manager: '$mgr'" ;;
+  esac
+}
+
+# Ensure curl is available (needed to fetch the uv installer).
+ensure_curl() {
+  local mgr="$1"
+  command -v curl >/dev/null 2>&1 && return 0
+  [[ -n "$mgr" ]] || die "curl is required but no supported package manager was found; install curl manually."
+  log "installing curl ($mgr)"
+  pkg_install "$mgr" curl
+}
+
+# Install uv for the invoking (non-root) user via the official installer.
+# uv installs per-user into ~/.local/bin; we run the installer as that user so
+# it lands in their home and is usable when they run start/stop as themselves.
+install_uv() {
+  local user="$1" home
+  home="$(getent passwd "$user" | cut -d: -f6)"
+  [[ -n "$home" ]] || die "could not resolve home directory for user '$user'"
+  if sudo -u "$user" -H bash -lc 'command -v uv >/dev/null 2>&1'; then
+    log "uv already installed for $user (skipping)"
+    return 0
+  fi
+  log "installing uv for $user (curl | sh, into \$HOME/.local/bin)"
+  sudo -u "$user" -H bash -lc 'curl -LsSf https://astral.sh/uv/install.sh | sh'
+  if [[ -x "$home/.local/bin/uv" ]]; then
+    log "uv installed at $home/.local/bin/uv"
+    log "  ensure '\$HOME/.local/bin' is on PATH (the uv installer updates the shell profile)"
+  else
+    die "uv installation did not produce $home/.local/bin/uv"
+  fi
+}
+
+# Install Node.js + npm system-wide via the OS package manager.
+install_node_npm() {
+  local mgr="$1"
+  if command -v npm >/dev/null 2>&1; then
+    log "npm already installed (skipping)"
+    return 0
+  fi
+  [[ -n "$mgr" ]] || die "no supported package manager found; install Node.js and npm manually."
+  log "installing Node.js and npm ($mgr)"
+  pkg_install "$mgr" nodejs npm
+  command -v npm >/dev/null 2>&1 || die "npm was not found after installation."
+}
+
+cmd_install() {
+  if ! is_root; then
+    err "the installer requires root."
+    die "re-run as: sudo ./$(basename "$0") install"
+  fi
+  local user
+  user="$(invoking_user)"
+  if [[ -z "$user" ]]; then
+    err "could not determine the unprivileged user to install uv for."
+    die "run via sudo from your normal account: sudo ./$(basename "$0") install"
+  fi
+  local mgr
+  mgr="$(detect_pkg_mgr)"
+  if [[ -z "$mgr" ]]; then
+    err "no supported package manager found (need one of: apt, dnf, yum, pacman, zypper, apk)."
+    die "install Node.js + npm manually, and uv from https://docs.astral.sh/uv/"
+  fi
+  log "using package manager: $mgr; installing uv for user: $user"
+  ensure_curl "$mgr"
+  install_uv "$user"
+  install_node_npm "$mgr"
+  log "prerequisites ready."
+  log "now run the portal as your normal user (not root):"
+  log "    ./$(basename "$0") start"
+}
+
 # Current HEAD commit (short) of the repository the project lives in, or empty
 # when git is unavailable or this is not a checkout. The .git directory may live
 # above PROJECT_DIR, so resolve from PROJECT_DIR. Never fails the script.
@@ -74,7 +197,7 @@ mtime_of() {
 # uv sync reconciles the venv to backend/uv.lock on every start, so a lockfile
 # change from a pull is applied automatically here.
 ensure_venv() {
-  require_cmd uv
+  require_prereq uv
   if [[ "$FORCE_REINSTALL" -eq 1 ]]; then
     log "syncing backend dependencies (uv sync --reinstall)"
     ( cd "$BACKEND_DIR" && uv sync --reinstall )
@@ -134,7 +257,7 @@ frontend_is_stale() {
 }
 
 ensure_frontend() {
-  require_cmd npm
+  require_prereq npm
   if frontend_deps_stale; then
     log "installing frontend dependencies (npm install)"
     ( cd "$FRONTEND_DIR" && npm install --no-audit --no-fund )
@@ -321,6 +444,7 @@ usage() {
 appmanager-lite — lifecycle manager for the AppManager Lite portal.
 
 Usage:
+  appmanager-lite install   (root/sudo required)
   appmanager-lite start   [--bind IP:PORT] [--base-prefix /path] [--dev] [--rebuild] [--reinstall]
   appmanager-lite stop
   appmanager-lite status
@@ -328,12 +452,23 @@ Usage:
   appmanager-lite reset-admin-password
   appmanager-lite --reset-admin-password
 
+Commands:
+  install              Install the minimal prerequisites: uv (for the invoking
+                       user, via the official installer) and Node.js/npm (via the
+                       OS package manager). Requires root — run with sudo from
+                       your normal account (e.g. `sudo ./appmanager-lite install`),
+                       so uv installs into that user's home. The portal itself
+                       runs as a normal user.
+
 Options:
   --bind IP:PORT       Address to bind (default 127.0.0.1:8000).
   --base-prefix /path  Serve under a subpath behind a reverse proxy (e.g. /home).
   --dev                Run in the foreground with auto-reload; Ctrl-C to stop.
   --rebuild            Force a frontend rebuild even when it looks up to date.
   --reinstall          Reinstall backend dependencies (uv sync --reinstall).
+
+Prerequisites: uv, Node.js with npm, and Python 3.11+. Install uv and Node/npm
+with `sudo ./appmanager-lite install` (root only), or install them manually.
 
 On start/restart the script rebuilds the frontend automatically when its
 sources, config, or the current commit changed since the last build, refreshes
@@ -357,6 +492,10 @@ main() {
   if [[ "$command" == "--reset-admin-password" ]]; then
     command="reset-admin-password"
   fi
+  # A bare --install flag is accepted as a command alias for `install`.
+  if [[ "$command" == "--install" ]]; then
+    command="install"
+  fi
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -368,6 +507,7 @@ main() {
       --rebuild)     FORCE_REBUILD=1; shift ;;
       --reinstall)   FORCE_REINSTALL=1; shift ;;
       --reset-admin-password) command="reset-admin-password"; shift ;;
+      --install)     command="install"; shift ;;
       -h|--help)     usage; exit 0 ;;
       *)             die "unknown option: $1" ;;
     esac
@@ -377,6 +517,7 @@ main() {
   [[ "$BASE_PREFIX" == "/" ]] && BASE_PREFIX=""
 
   case "$command" in
+    install)              cmd_install ;;
     start)                cmd_start ;;
     stop)                 cmd_stop ;;
     status)               cmd_status ;;
