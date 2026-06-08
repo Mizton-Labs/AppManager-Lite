@@ -1,16 +1,20 @@
-import { getAppName, GITHUB_URL } from "../branding";
+import { getAppName, getCollaborators, GITHUB_URL } from "../branding";
 import { GithubIcon } from "./icons";
 
 /**
  * About page. Shows the application name, a link to the source repository, the
- * build version (with the commit baked in at build time), and the development
- * team. The version, commit, and contributor list are injected at build time
- * from package.json and the git history (see vite.config.ts).
+ * build version (with the commit baked in at build time), the development team,
+ * and any administrator-configured collaborators.
+ *
+ * The version, commit, and development-team list are injected at build time
+ * from package.json and the git commit history (see vite.config.ts). The
+ * collaborators are an admin-managed list delivered with the session.
  */
 export function AboutView() {
   const version = __APP_VERSION__;
   const commit = __APP_COMMIT__;
   const contributors = __APP_CONTRIBUTORS__;
+  const collaborators = getCollaborators();
 
   return (
     <div className="stack wide">
@@ -60,6 +64,19 @@ export function AboutView() {
               </ul>
             </dd>
           </div>
+
+          {collaborators.length > 0 && (
+            <div className="detail-row">
+              <dt>Collaborators</dt>
+              <dd>
+                <ul className="about-contributors">
+                  {collaborators.map((name) => (
+                    <li key={name}>{name}</li>
+                  ))}
+                </ul>
+              </dd>
+            </div>
+          )}
         </dl>
       </section>
     </div>

@@ -6,6 +6,7 @@ can compose inside a single transaction.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from typing import Any
 
@@ -718,6 +719,25 @@ def list_audit_events(
 # --- Settings (reverse-proxy configuration) --------------------------------
 
 
+def parse_collaborators(raw: Any) -> list[str]:
+    """Decode the stored collaborators JSON to a list of names.
+
+    Tolerates any legacy or invalid value by returning an empty list, so a
+    malformed column never breaks the session or settings responses.
+    """
+    if isinstance(raw, list):
+        return [str(name) for name in raw]
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(name) for name in parsed if isinstance(name, str)]
+
+
 def get_settings_row(conn: sqlite3.Connection) -> dict[str, Any]:
     """Return the single settings row (id = 1), or an empty default shape."""
     row = conn.execute("SELECT * FROM settings WHERE id = 1").fetchone()
@@ -730,6 +750,7 @@ def get_settings_row(conn: sqlite3.Connection) -> dict[str, Any]:
             "alias_template": "",
             "app_name": "",
             "app_logo": "",
+            "collaborators": "[]",
             "configured": 0,
         }
     return dict(row)
@@ -745,6 +766,7 @@ def update_settings_row(
     alias_template: str | None = None,
     app_name: str | None = None,
     app_logo: str | None = None,
+    collaborators: str | None = None,
     configured: bool | None = None,
 ) -> dict[str, Any]:
     # Ensure the single row exists before updating.
@@ -764,6 +786,8 @@ def update_settings_row(
         columns["app_name"] = app_name
     if app_logo is not None:
         columns["app_logo"] = app_logo
+    if collaborators is not None:
+        columns["collaborators"] = collaborators
     if configured is not None:
         columns["configured"] = int(configured)
     if columns:

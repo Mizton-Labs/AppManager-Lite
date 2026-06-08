@@ -110,3 +110,86 @@ def test_branding_update_is_audited(admin) -> None:
     events = client.get("/api/audit", params={"category": "system"}).json()
     settings_events = [e for e in events if e["action"] == "settings_update"]
     assert any("branding" in e["detail"] for e in settings_events)
+
+
+def test_session_carries_collaborators_default_empty(client) -> None:
+    body = client.get("/api/session").json()
+    assert body["collaborators"] == []
+
+
+def test_branding_get_returns_collaborators(admin) -> None:
+    client, _csrf, _ = admin
+    body = client.get("/api/settings/branding").json()
+    assert body["collaborators"] == []
+
+
+def test_update_collaborators_round_trips_and_reflects_in_session(admin) -> None:
+    client, csrf, _ = admin
+    resp = client.patch(
+        "/api/settings/branding",
+        json={"collaborators": ["Jane Doe", "John Smith"]},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["collaborators"] == ["Jane Doe", "John Smith"]
+    # Persisted and delivered with the session.
+    again = client.get("/api/settings/branding").json()
+    assert again["collaborators"] == ["Jane Doe", "John Smith"]
+    session = client.get("/api/session").json()
+    assert session["collaborators"] == ["Jane Doe", "John Smith"]
+
+
+def test_update_collaborators_trims_dedupes_and_drops_blanks(admin) -> None:
+    client, csrf, _ = admin
+    resp = client.patch(
+        "/api/settings/branding",
+        json={"collaborators": ["  Ada  ", "ada", "", "   ", "Grace"]},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 200, resp.text
+    # Trimmed, case-insensitive de-dupe (first wins), blanks removed.
+    assert resp.json()["collaborators"] == ["Ada", "Grace"]
+
+
+def test_update_collaborators_does_not_change_configured(admin) -> None:
+    client, csrf, _ = admin
+    # configured starts False; saving collaborators must not flip it.
+    before = client.get("/api/session").json()["configured"]
+    assert before is False
+    client.patch(
+        "/api/settings/branding",
+        json={"collaborators": ["Solo"]},
+        headers={"X-CSRF-Token": csrf},
+    )
+    after = client.get("/api/session").json()["configured"]
+    assert after is False
+
+
+def test_update_collaborators_rejects_overlong_name(admin) -> None:
+    client, csrf, _ = admin
+    resp = client.patch(
+        "/api/settings/branding",
+        json={"collaborators": ["x" * 81]},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 422
+
+
+def test_update_collaborators_rejects_too_many(admin) -> None:
+    client, csrf, _ = admin
+    resp = client.patch(
+        "/api/settings/branding",
+        json={"collaborators": [f"Name {i}" for i in range(51)]},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 422
+
+
+def test_update_collaborators_rejects_non_string(admin) -> None:
+    client, csrf, _ = admin
+    resp = client.patch(
+        "/api/settings/branding",
+        json={"collaborators": ["ok", 123]},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 422
