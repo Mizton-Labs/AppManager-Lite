@@ -159,6 +159,74 @@ describe("ApplicationManager", () => {
     expect(screen.getByRole("radio", { name: /full url/i })).not.toBeChecked();
   });
 
+  it("lets an admin set the apps server and port on a new alias application", async () => {
+    const fetchMock = stubBackend([]);
+    render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
+
+    await screen.findByText(/No applications yet/i);
+    await userEvent.click(
+      screen.getByRole("button", { name: /new application/i }),
+    );
+
+    await userEvent.type(screen.getByLabelText("Name"), "Admin Alias");
+    await userEvent.type(
+      screen.getByLabelText("Local alias relative path"),
+      "adminalias",
+    );
+    await userEvent.type(screen.getByLabelText("Application port"), "8080");
+    // The admin-only apps server field is shown for alias apps.
+    const serverField = screen.getByLabelText("Apps server host or IP");
+    await userEvent.type(serverField, "apps.example.com");
+    await userEvent.click(
+      screen.getByRole("button", { name: /create application/i }),
+    );
+
+    expect(await screen.findByText("Admin Alias")).toBeInTheDocument();
+    const postCall = fetchMock.mock.calls.find(
+      ([, init]) => (init?.method ?? "GET") === "POST",
+    );
+    expect(JSON.parse((postCall![1] as RequestInit).body as string)).toMatchObject(
+      {
+        name: "Admin Alias",
+        url_type: "alias",
+        apps_port: "8080",
+        apps_server: "apps.example.com",
+      },
+    );
+  });
+
+  it("hides the apps server field from non-admins and sends only the port", async () => {
+    const fetchMock = stubBackend([]);
+    render(
+      <ApplicationManager isAdmin={false} teamOptions={["Threat Hunting"]} />,
+    );
+
+    await screen.findByText(/have not submitted any applications/i);
+    await userEvent.click(
+      screen.getByRole("button", { name: /new application/i }),
+    );
+
+    await userEvent.type(screen.getByLabelText("Name"), "Member Alias");
+    await userEvent.type(
+      screen.getByLabelText("Local alias relative path"),
+      "memberalias",
+    );
+    await userEvent.type(screen.getByLabelText("Application port"), "8080");
+    // No apps-server field for non-admins.
+    expect(screen.queryByLabelText("Apps server host or IP")).toBeNull();
+    await userEvent.click(
+      screen.getByRole("button", { name: /create application/i }),
+    );
+
+    expect(await screen.findByText("Member Alias")).toBeInTheDocument();
+    const postCall = fetchMock.mock.calls.find(
+      ([, init]) => (init?.method ?? "GET") === "POST",
+    );
+    const sent = JSON.parse((postCall![1] as RequestInit).body as string);
+    expect(sent).toMatchObject({ name: "Member Alias", apps_port: "8080" });
+    expect(sent).not.toHaveProperty("apps_server");
+  });
+
   it("selects and clears all teams with the Select all toggle", async () => {
     stubBackend([]);
     render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
@@ -218,10 +286,10 @@ describe("ApplicationManager", () => {
       url_type: "alias",
       apps_port: "8080",
     });
-    // The per-app server input was removed; it is never sent.
+    // Admins have an apps-server field; left blank it sends an empty server.
     expect(
-      JSON.parse((postCall![1] as RequestInit).body as string),
-    ).not.toHaveProperty("apps_server");
+      JSON.parse((postCall![1] as RequestInit).body as string).apps_server,
+    ).toBe("");
   });
 
   it("shows a port field (and no server field) for non-admins on an alias", async () => {
@@ -234,7 +302,9 @@ describe("ApplicationManager", () => {
     );
     // Alias mode is default: any user sets the port; no server input exists.
     expect(screen.getByLabelText(/application port/i)).toBeInTheDocument();
-    expect(screen.queryByLabelText(/apps server/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("Apps server host or IP"),
+    ).not.toBeInTheDocument();
   });
 
   it("hides the port field for a full URL", async () => {

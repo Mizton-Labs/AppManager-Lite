@@ -178,7 +178,7 @@ def test_approving_alias_app_pushes_to_proxy(admin, monkeypatch) -> None:
     _mock_ssh_ok(monkeypatch)
 
     # A member submits an alias app with its own port (stays pending). The
-    # server host is resolved from the reverse-proxy settings.
+    # upstream server host is resolved from the owning user's apps host.
     member_pw = _create_member(
         client,
         csrf,
@@ -452,6 +452,133 @@ def test_non_admin_apps_server_on_create_is_ignored(admin, monkeypatch) -> None:
         # The member sees their own app via /mine; apps_server was not stored.
         mine = {a["id"]: a for a in member.get("/api/applications/mine").json()}
     assert mine[app_id]["apps_server"] == ""
+
+
+def _mock_ssh_capture(monkeypatch):
+    """Mock SSH like _mock_ssh_ok but capture the config text written to the
+    remote, so the rendered upstream (proxy_pass host:port) can be asserted."""
+    captured: dict[str, str] = {}
+
+    def run(argv, *, timeout=20):
+        cmd = argv[-1]
+        if "cat " in cmd:
+            return _Run(0, "http {\n  server {\n  }\n}", "")
+        return _Run(0, "", "")
+
+    def run_with_input(argv, stdin_text):
+        captured["conf"] = stdin_text
+        return _Run(0, "", "")
+
+    monkeypatch.setattr(reverse_proxy, "_run", run)
+    monkeypatch.setattr(reverse_proxy, "_run_with_input", run_with_input)
+    return captured
+
+
+def test_alias_upstream_uses_owner_apps_server_not_nginx_host(
+    admin, monkeypatch
+) -> None:
+    # The reverse-proxy host (SSH target) is deliberately DIFFERENT from the
+    # owner's apps host. The rendered alias upstream must use the OWNER's host,
+    # never the nginx_host SSH target.
+    client, csrf, _ = admin
+    _configure_proxy(client, csrf)  # nginx_host = proxy.example.com
+    captured = _mock_ssh_capture(monkeypatch)
+
+    member_pw = _create_member(
+        client, csrf, "owneruser", apps_server="owner.example.com"
+    ).json()["password"]
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login",
+            json={"username": "owneruser", "password": member_pw},
+        )
+        mcsrf = login.json()["csrf_token"]
+        app_id = member.post(
+            "/api/applications",
+            json={
+                "name": "OwnerHosted",
+                "url": "ownerhosted",
+                "url_type": "alias",
+                "teams": ["Red Team"],
+                "apps_port": "8080",
+            },
+            headers={"X-CSRF-Token": mcsrf},
+        ).json()["id"]
+
+    resp = client.patch(
+        f"/api/applications/{app_id}",
+        json={"approval_status": "approved"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["last_push_status"] == "ok"
+    # The rendered upstream points at the owner's host, not the SSH host.
+    assert "proxy_pass http://owner.example.com:8080/;" in captured["conf"]
+    assert "proxy.example.com:8080" not in captured["conf"]
+
+
+def test_admin_app_apps_server_overrides_owner(admin, monkeypatch) -> None:
+    # When the application carries its own apps_server (admin-set), it wins over
+    # the owner's apps host.
+    client, csrf, _ = admin
+    _configure_proxy(client, csrf)
+    captured = _mock_ssh_capture(monkeypatch)
+
+    resp = client.post(
+        "/api/applications",
+        json={
+            "name": "AdminHosted",
+            "url": "adminhosted",
+            "url_type": "alias",
+            "teams": ["Red Team"],
+            "apps_server": "app.example.com",
+            "apps_port": "8080",
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["last_push_status"] == "ok"
+    assert "proxy_pass http://app.example.com:8080/;" in captured["conf"]
+
+
+def test_alias_push_skipped_when_no_owner_or_app_apps_server(
+    admin, monkeypatch
+) -> None:
+    # A member without a configured apps host submits an alias app (only a port);
+    # with no app apps_server and no owner apps_server, the push is skipped --
+    # it must NOT fall back to the nginx_host SSH target.
+    client, csrf, _ = admin
+    _configure_proxy(client, csrf)
+    _mock_ssh_ok(monkeypatch)
+
+    member_pw = _create_member(client, csrf, "noapps").json()["password"]
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login",
+            json={"username": "noapps", "password": member_pw},
+        )
+        mcsrf = login.json()["csrf_token"]
+        app_id = member.post(
+            "/api/applications",
+            json={
+                "name": "NoHost",
+                "url": "nohost",
+                "url_type": "alias",
+                "teams": ["Red Team"],
+                "apps_port": "8080",
+            },
+            headers={"X-CSRF-Token": mcsrf},
+        ).json()["id"]
+
+    resp = client.patch(
+        f"/api/applications/{app_id}",
+        json={"approval_status": "approved"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["last_push_status"] == "skipped"
+    assert "apps server" in body["last_push_log"].lower()
 
 
 def _mock_ssh_conf(monkeypatch, conf_text):
