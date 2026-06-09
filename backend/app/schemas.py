@@ -28,6 +28,7 @@ _HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 # An optional SSH login user (ssh user@host). Restricted so it cannot inject a
 # host or shell content when composed into "user@host" / used as an argv element.
 _SSH_USER_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def _validate_apps_server(value: str) -> str:
@@ -201,6 +202,8 @@ class CreateUserRequest(BaseModel):
         value = value.strip()
         if not value:
             raise ValueError("Username must not be empty.")
+        if not _EMAIL_RE.match(value):
+            raise ValueError("Username must be an email address.")
         return value
 
     @field_validator("role")
@@ -287,6 +290,8 @@ class ApplicationOut(BaseModel):
     # A staged alias change awaiting approval (management/own-app responses
     # only). Empty unless the owner edited the alias and it is pending review.
     pending_alias: str = ""
+    pending_is_active: bool | None = None
+    needs_push: bool = False
 
 
 class CreateApplicationRequest(BaseModel):

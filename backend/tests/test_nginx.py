@@ -258,7 +258,11 @@ def test_push_result_transcript() -> None:
     r = PushResult()
     r.log("a")
     r.log("b")
-    assert r.transcript == "a\nb"
+    lines = r.transcript.splitlines()
+    assert len(lines) == 2
+    assert lines[0].endswith(" a")
+    assert lines[1].endswith(" b")
+    assert lines[0].startswith("[")
 
 
 # --- marker + removal ----------------------------------------------------

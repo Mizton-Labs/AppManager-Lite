@@ -207,6 +207,11 @@ function pushBadgeClass(status: string): string {
   return "rejected";
 }
 
+function publisherLabel(username: string | null | undefined): string {
+  if (!username) return "unknown";
+  return username.split("@")[0] || username;
+}
+
 function TeamCheckboxes(props: {
   options: readonly string[];
   selected: string[];
@@ -694,6 +699,16 @@ function ApplicationRow(props: {
               alias change pending
             </span>
           )}
+          {app.pending_is_active !== null && app.pending_is_active !== undefined && (
+            <span className="status-badge warn push-needed">
+              {app.pending_is_active ? "enable requested" : "disable requested"}
+            </span>
+          )}
+          {isAdmin && app.needs_push && (
+            <span className="status-badge rejected push-needed">
+              proxy config changed - push required
+            </span>
+          )}
           {props.pushNotice && (
             <span
               className={`status-badge ${pushBadgeClass(props.pushNotice)} push-notice`}
@@ -726,7 +741,9 @@ function ApplicationRow(props: {
 
       {isAdmin && (
         <div className="row-actions approval-actions">
-          {app.approval_status !== "approved" && (
+          {(app.approval_status !== "approved" ||
+            app.pending_alias ||
+            app.pending_is_active !== null && app.pending_is_active !== undefined) && (
             <button
               type="button"
               className="btn approve"
@@ -768,6 +785,13 @@ function ApplicationRow(props: {
               ))}
             </div>
           )}
+          {app.created_by && (
+            <div className="tag-row publisher-row">
+              <span className="tag publisher-tag">
+                published by {publisherLabel(app.created_by)}
+              </span>
+            </div>
+          )}
         </>
       )}
 
@@ -786,14 +810,13 @@ function ApplicationRow(props: {
                 >
                   {showPushLog ? "Hide push log" : "View push log"}
                 </button>
-                {(app.last_push_status === "failed" ||
-                  app.last_push_status === "reverted") && (
+                {app.approval_status === "approved" && app.url_type === "alias" && (
                   <button
                     type="button"
                     className="btn approve"
                     onClick={props.onRetryPush}
                   >
-                    Retry push
+                    Push
                   </button>
                 )}
               </div>

@@ -105,8 +105,15 @@ def test_init_db_migrates_legacy_database(legacy_db: Path) -> None:
             r["name"] for r in conn.execute("PRAGMA table_info(applications)")
         }
         assert {"created_by", "url_type", "approval_status"} <= acols
-        # Applications gained their own apps server/port and a staged-alias column.
-        assert {"apps_server", "apps_port", "pending_alias"} <= acols
+        # Applications gained their own apps server/port, pending config fields,
+        # and a push-needed flag.
+        assert {
+            "apps_server",
+            "apps_port",
+            "pending_alias",
+            "pending_is_active",
+            "needs_push",
+        } <= acols
         tcols = {r["name"] for r in conn.execute("PRAGMA table_info(teams)")}
         assert "sort_order" in tcols
         assert "icon" in tcols
