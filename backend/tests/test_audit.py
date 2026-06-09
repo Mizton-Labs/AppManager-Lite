@@ -13,6 +13,7 @@ def _seed_teams(admin, make_team):
 
 
 def _create_member(client, csrf, username, teams):
+    username = username if "@" in username else f"{username}@example.com"
     resp = client.post(
         "/api/users",
         json={"username": username, "role": "user", "teams": teams},
@@ -127,7 +128,11 @@ def test_password_events_do_not_leak_secrets(admin) -> None:
     # Create + reset a user's password, then ensure no secret appears in audit.
     created = client.post(
         "/api/users",
-        json={"username": "secretuser", "role": "user", "teams": ["Red Team"]},
+        json={
+            "username": "secretuser@example.com",
+            "role": "user",
+            "teams": ["Red Team"],
+        },
         headers={"X-CSRF-Token": csrf},
     )
     assert created.status_code == 201, created.text

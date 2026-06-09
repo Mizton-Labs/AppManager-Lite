@@ -126,6 +126,10 @@ export interface Application {
   apps_port?: string;
   /** A staged alias change awaiting approval; management/own-app responses only. */
   pending_alias?: string;
+  /** A staged enable/disable change awaiting approval; management/own-app only. */
+  pending_is_active?: boolean | null;
+  /** True when current approved proxy config needs an admin push. */
+  needs_push?: boolean;
 }
 
 export interface CreateApplicationInput {

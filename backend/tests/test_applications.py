@@ -24,6 +24,7 @@ def _seed_teams(request, admin, make_team):
 
 def _create_member(client, csrf, username, teams):
     """Create a standard user via the admin client; return their password."""
+    username = username if "@" in username else f"{username}@example.com"
     resp = client.post(
         "/api/users",
         json={"username": username, "role": "user", "teams": teams},
@@ -366,7 +367,7 @@ def test_member_submission_is_pending_and_hidden(admin) -> None:
         assert created.status_code == 201, created.text
         body = created.json()
         assert body["approval_status"] == "pending"
-        assert body["created_by"] == "subm1"
+        assert body["created_by"] == "subm1@example.com"
 
         # Hidden from the member's own catalogue until approved...
         home = {a["name"] for a in member.get("/api/applications").json()}
@@ -375,7 +376,7 @@ def test_member_submission_is_pending_and_hidden(admin) -> None:
         mine = member.get("/api/applications/mine").json()
         mine_by_name = {a["name"]: a for a in mine}
         assert mine_by_name["Pending Tool"]["approval_status"] == "pending"
-        assert mine_by_name["Pending Tool"]["created_by"] == "subm1"
+        assert mine_by_name["Pending Tool"]["created_by"] == "subm1@example.com"
 
     # The admin sees it in the management view and on Home it stays hidden.
     manage = {a["name"] for a in client.get("/api/applications/manage").json()}
@@ -390,7 +391,7 @@ def test_self_service_member_submission_auto_approved(admin) -> None:
     password = _create_member(client, csrf, "selfsvc", ["Red Team"])
     # Grant self-service so the submission bypasses approval.
     users = client.get("/api/users").json()
-    uid = next(u["id"] for u in users if u["username"] == "selfsvc")
+    uid = next(u["id"] for u in users if u["username"] == "selfsvc@example.com")
     patched = client.patch(
         f"/api/users/{uid}",
         json={"self_service": True},
@@ -819,6 +820,3 @@ def test_create_rejects_logo_path_traversal(admin) -> None:
     ):
         resp = _create_app(client, csrf, icon_url=bad)
         assert resp.status_code == 422, f"expected 422 for {bad!r}, got {resp.status_code}"
-
-
-

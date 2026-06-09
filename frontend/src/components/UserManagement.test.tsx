@@ -23,7 +23,7 @@ function stubUsers() {
     }
     if (method === "POST" && url.endsWith("/api/users")) {
       return json({
-        user: makeUser({ id: 2, username: "newbie", role: "user" }),
+        user: makeUser({ id: 2, username: "newbie@example.com", role: "user" }),
         password: "Generated-Pass-123",
       });
     }
@@ -35,7 +35,7 @@ function stubUsers() {
 
 async function createUserAndOpenBanner() {
   await screen.findByRole("heading", { name: /create user/i });
-  await userEvent.type(screen.getByLabelText(/username/i), "newbie");
+  await userEvent.type(screen.getByLabelText(/username/i), "newbie@example.com");
   await userEvent.click(screen.getByRole("button", { name: /^create user$/i }));
   // Banner shows the generated password.
   await screen.findByText("Generated-Pass-123");

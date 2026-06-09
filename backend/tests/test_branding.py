@@ -32,7 +32,11 @@ def test_branding_get_requires_admin(admin) -> None:
     # Create a normal member and confirm they cannot read or write branding.
     member_pw = client.post(
         "/api/users",
-        json={"username": "brandmember", "role": "user", "teams": ["Red Team"]},
+        json={
+            "username": "brandmember@example.com",
+            "role": "user",
+            "teams": ["Red Team"],
+        },
         headers={"X-CSRF-Token": csrf},
     ).json()["password"]
     from fastapi.testclient import TestClient

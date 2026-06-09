@@ -112,6 +112,8 @@ def login(
         return SessionOut(authenticated=True, enable_auth=False, **_branding(conn))
 
     row = repository.get_user_by_username(conn, payload.username)
+    if row is None:
+        row = repository.get_user_by_unique_email_local_part(conn, payload.username)
     # Always perform a hash verification to reduce username enumeration via timing.
     stored_hash = row["password_hash"] if row else security.hash_password("x")
     valid = security.verify_password(stored_hash, payload.password)

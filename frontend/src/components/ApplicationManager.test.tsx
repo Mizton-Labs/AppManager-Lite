@@ -487,28 +487,33 @@ describe("ApplicationManager", () => {
     expect(screen.getByText(/nginx reloaded/i)).toBeInTheDocument();
   });
 
-  it("does not show a retry button for a successful push", async () => {
+  it("does not show a push button for a full-url app", async () => {
     stubBackend([makeApp({ last_push_status: "ok", last_push_log: "ok" })]);
     render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
 
     await screen.findByText("Hunt Workbench");
     await userEvent.click(screen.getByRole("button", { name: /^edit$/i }));
     expect(
-      screen.queryByRole("button", { name: /retry push/i }),
+      screen.queryByRole("button", { name: /^push$/i }),
     ).not.toBeInTheDocument();
   });
 
-  it("retries a failed push and updates the status", async () => {
+  it("pushes an approved alias app and updates the status", async () => {
     const fetchMock = stubBackend([
-      makeApp({ last_push_status: "failed", last_push_log: "[FAIL] reload" }),
+      makeApp({
+        url: "hunt",
+        url_type: "alias",
+        last_push_status: "failed",
+        last_push_log: "[FAIL] reload",
+      }),
     ]);
     render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
 
     await screen.findByText("Hunt Workbench");
     await userEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-    // The failed indicator and the retry button are shown.
+    // The failed indicator and the Push button are shown.
     expect(screen.getByText(/proxy: failed/i)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: /retry push/i }));
+    await userEvent.click(screen.getByRole("button", { name: /^push$/i }));
 
     // The retry endpoint was called and the status flips to ok. The status now
     // appears both as the transient notice (next to the name) and in the
@@ -520,5 +525,20 @@ describe("ApplicationManager", () => {
       ),
     ).toBe(true);
     expect((await screen.findAllByText(/proxy: ok/i)).length).toBeGreaterThan(0);
+  });
+
+  it("shows publisher and push-needed notices to admins", async () => {
+    stubBackend([
+      makeApp({
+        created_by: "analyst@example.com",
+        needs_push: true,
+        pending_is_active: false,
+      }),
+    ]);
+    render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
+
+    expect(await screen.findByText(/published by analyst/i)).toBeInTheDocument();
+    expect(screen.getByText(/disable requested/i)).toBeInTheDocument();
+    expect(screen.getByText(/proxy config changed/i)).toBeInTheDocument();
   });
 });

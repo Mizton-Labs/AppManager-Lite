@@ -223,6 +223,23 @@ def get_user_by_username(
     ).fetchone()
 
 
+def get_user_by_unique_email_local_part(
+    conn: sqlite3.Connection, local_part: str
+) -> sqlite3.Row | None:
+    """Resolve a unique email username by its local part.
+
+    Stored usernames are now email addresses. This compatibility lookup keeps
+    existing short-name login flows working only when the local part is unique.
+    """
+    if "@" in local_part:
+        return None
+    rows = conn.execute(
+        "SELECT * FROM users WHERE username LIKE ?",
+        (f"{local_part}@%",),
+    ).fetchall()
+    return rows[0] if len(rows) == 1 else None
+
+
 def list_users(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = conn.execute("SELECT * FROM users ORDER BY id").fetchall()
     return [_row_to_user(conn, r) for r in rows]
@@ -364,6 +381,10 @@ def _row_to_application(
         "apps_server": row["apps_server"],
         "apps_port": row["apps_port"],
         "pending_alias": row["pending_alias"],
+        "pending_is_active": (
+            None if row["pending_is_active"] is None else bool(row["pending_is_active"])
+        ),
+        "needs_push": bool(row["needs_push"]),
         "teams": list_application_teams(conn, row["id"]),
     }
     if include_creator:
@@ -598,6 +619,9 @@ def update_application(
     apps_server: str | None = None,
     apps_port: str | None = None,
     pending_alias: str | None = None,
+    pending_is_active: bool | None = None,
+    clear_pending_is_active: bool = False,
+    needs_push: bool | None = None,
 ) -> dict[str, Any] | None:
     if get_application(conn, application_id) is None:
         return None
@@ -626,6 +650,12 @@ def update_application(
         columns["apps_port"] = apps_port
     if pending_alias is not None:
         columns["pending_alias"] = pending_alias
+    if pending_is_active is not None:
+        columns["pending_is_active"] = int(pending_is_active)
+    if clear_pending_is_active:
+        columns["pending_is_active"] = None
+    if needs_push is not None:
+        columns["needs_push"] = int(needs_push)
     if columns:
         assignments = ", ".join(f"{col} = ?" for col in columns)
         params = list(columns.values()) + [application_id]
@@ -652,12 +682,18 @@ def set_application_push_result(
     *,
     status: str,
     log: str,
+    needs_push: bool | None = None,
 ) -> None:
     """Record the result of the last reverse-proxy alias push for an app."""
+    needs_push_sql = "" if needs_push is None else ", needs_push = ?"
+    params: list[Any] = [status, log]
+    if needs_push is not None:
+        params.append(int(needs_push))
+    params.append(application_id)
     conn.execute(
         "UPDATE applications SET last_push_status = ?, last_push_log = ?, "
-        "last_push_at = datetime('now') WHERE id = ?",
-        (status, log, application_id),
+        f"last_push_at = datetime('now'){needs_push_sql} WHERE id = ?",
+        params,
     )
 
 

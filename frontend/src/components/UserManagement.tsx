@@ -231,13 +231,17 @@ function CreateUserCard(props: {
       <form className="create-form" onSubmit={onSubmit}>
         <div className="form-row">
           <label className="field">
-            <span>Username</span>
+            <span>Username (email)</span>
             <input
-              type="text"
+              type="email"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
+              placeholder="user@example.com"
               required
             />
+            <span className="muted logo-hint">
+              Use the user's email address; this is their sign-in username.
+            </span>
           </label>
           <label className="field">
             <span>Role</span>

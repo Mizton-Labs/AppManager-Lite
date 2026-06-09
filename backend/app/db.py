@@ -65,6 +65,8 @@ CREATE TABLE IF NOT EXISTS applications (
     apps_server      TEXT    NOT NULL DEFAULT '',
     apps_port        TEXT    NOT NULL DEFAULT '',
     pending_alias    TEXT    NOT NULL DEFAULT '',
+    pending_is_active INTEGER,
+    needs_push       INTEGER NOT NULL DEFAULT 0,
     last_push_status TEXT,
     last_push_log    TEXT    NOT NULL DEFAULT '',
     last_push_at     TEXT,
@@ -222,6 +224,8 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     # edits the alias, the new value is held here while the application keeps
     # serving its current alias; on approval it is applied to ``url``.
     _add_column(conn, "applications", "pending_alias", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "applications", "pending_is_active", "INTEGER")
+    _add_column(conn, "applications", "needs_push", "INTEGER NOT NULL DEFAULT 0")
 
     # The reverse-proxy config gained an optional SSH user (ssh user@host).
     _add_column(conn, "settings", "nginx_user", "TEXT NOT NULL DEFAULT ''")
@@ -240,4 +244,3 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     # Teams gained an optional small icon (a bundled catalogue path or a capped
     # raster data URI), shown on the sidebar team button.
     _add_column(conn, "teams", "icon", "TEXT NOT NULL DEFAULT ''")
-

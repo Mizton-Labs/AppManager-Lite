@@ -16,6 +16,7 @@ def _seed_teams(admin, make_team):
 
 
 def _create_member(client, csrf, username, **extra):
+    username = username if "@" in username else f"{username}@example.com"
     body = {"username": username, "role": "user", "teams": ["Red Team"]}
     body.update(extra)
     resp = client.post(
@@ -120,7 +121,7 @@ def test_create_user_with_apps_server(admin) -> None:
     assert "apps_port" not in user
     # Visible in the admin user listing.
     listed = {u["username"]: u for u in client.get("/api/users").json()}
-    assert listed["appsuser"]["apps_server"] == "apps.example.com"
+    assert listed["appsuser@example.com"]["apps_server"] == "apps.example.com"
 
 
 def test_create_user_rejects_bad_apps_server(admin) -> None:
@@ -660,6 +661,153 @@ def test_deleting_non_alias_app_does_not_remove(admin, monkeypatch) -> None:
     assert resp.status_code == 200, resp.text
     events = client.get("/api/audit", params={"category": "application"}).json()
     assert not any(e["action"] == "nginx_remove" for e in events)
+
+
+def test_admin_disable_alias_app_comments_nginx_block(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _configure_proxy(client, csrf)
+    captured = _mock_ssh_capture(monkeypatch)
+    app_id = client.post(
+        "/api/applications",
+        json={
+            "name": "DisableMe",
+            "url": "disableme",
+            "url_type": "alias",
+            "teams": ["Red Team"],
+            "apps_server": "apps.example.com",
+            "apps_port": "8080",
+        },
+        headers={"X-CSRF-Token": csrf},
+    ).json()["id"]
+
+    resp = client.patch(
+        f"/api/applications/{app_id}",
+        json={"is_active": False},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["is_active"] is False
+    assert body["last_push_status"] == "ok"
+    assert body["needs_push"] is False
+    assert body["last_push_log"].startswith("[")
+    assert "# proxy_pass http://apps.example.com:8080/;" in captured["conf"]
+
+
+def test_manual_push_replaces_existing_marked_block(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _configure_proxy(client, csrf)
+    _mock_ssh_ok(monkeypatch)
+    app_id = client.post(
+        "/api/applications",
+        json={
+            "name": "ReplaceMe",
+            "url": "replaceme",
+            "url_type": "alias",
+            "teams": ["Red Team"],
+            "apps_server": "apps.example.com",
+            "apps_port": "8080",
+        },
+        headers={"X-CSRF-Token": csrf},
+    ).json()["id"]
+    begin, end = reverse_proxy.app_marker(app_id)
+    conf = (
+        "http {\n  server {\n"
+        f"{begin}\nold block should go away\n{end}\n"
+        "  }\n}\n"
+    )
+    captured = _mock_ssh_conf(monkeypatch, conf)
+
+    resp = client.post(
+        f"/api/applications/{app_id}/push-retry",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 200, resp.text
+    assert captured["written"].count(begin) == 1
+    assert "old block should go away" not in captured["written"]
+    assert "proxy_pass http://apps.example.com:8080/;" in captured["written"]
+
+
+def test_owner_disable_request_is_staged_until_admin_approval(
+    admin, monkeypatch
+) -> None:
+    client, csrf, _ = admin
+    _configure_proxy(client, csrf)
+    _mock_ssh_ok(monkeypatch)
+    app_id, member_pw = _approved_member_alias_app(
+        client, csrf, monkeypatch, "disableuser", "disablealias"
+    )
+
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login",
+            json={"username": "disableuser", "password": member_pw},
+        )
+        mcsrf = login.json()["csrf_token"]
+        resp = member.patch(
+            f"/api/applications/{app_id}",
+            json={"is_active": False},
+            headers={"X-CSRF-Token": mcsrf},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["is_active"] is True
+    assert body["pending_is_active"] is False
+    assert body["needs_push"] is True
+
+    captured = _mock_ssh_capture(monkeypatch)
+    approved = client.patch(
+        f"/api/applications/{app_id}",
+        json={"approval_status": "approved"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert approved.status_code == 200, approved.text
+    body = approved.json()
+    assert body["is_active"] is False
+    assert body["pending_is_active"] is None
+    assert body["last_push_status"] == "ok"
+    assert body["needs_push"] is False
+    assert "# proxy_pass http://apps.example.com:8080/;" in captured["conf"]
+
+
+def test_self_service_disable_pushes_automatically(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _configure_proxy(client, csrf)
+    captured = _mock_ssh_capture(monkeypatch)
+    member_pw = _create_member(
+        client,
+        csrf,
+        "selfdisable",
+        apps_server="apps.example.com",
+        self_service=True,
+    ).json()["password"]
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login",
+            json={"username": "selfdisable", "password": member_pw},
+        )
+        mcsrf = login.json()["csrf_token"]
+        app_id = member.post(
+            "/api/applications",
+            json={
+                "name": "SelfDisable",
+                "url": "selfdisable",
+                "url_type": "alias",
+                "teams": ["Red Team"],
+                "apps_port": "8080",
+            },
+            headers={"X-CSRF-Token": mcsrf},
+        ).json()["id"]
+        resp = member.patch(
+            f"/api/applications/{app_id}",
+            json={"is_active": False},
+            headers={"X-CSRF-Token": mcsrf},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["is_active"] is False
+    assert body["last_push_status"] == "ok"
+    assert "# proxy_pass http://apps.example.com:8080/;" in captured["conf"]
 
 
 # --- alias-change approval staging (issue_009) -----------------------------
