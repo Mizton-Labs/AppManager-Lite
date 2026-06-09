@@ -104,6 +104,7 @@ export function ApplicationManager(props: {
 
       {creating ? (
         <CreateApplicationCard
+          isAdmin={isAdmin}
           teamOptions={teamOptions}
           onCreated={(created) => {
             setCreating(false);
@@ -435,6 +436,7 @@ function LogoField(props: {
 }
 
 function CreateApplicationCard(props: {
+  isAdmin: boolean;
   teamOptions: readonly string[];
   onCreated: (created: Application) => void;
   onCancel: () => void;
@@ -447,12 +449,14 @@ function CreateApplicationCard(props: {
   const [iconUrl, setIconUrl] = useState("");
   const [teams, setTeams] = useState<string[]>([]);
   const [appsPort, setAppsPort] = useState("");
+  const [appsServer, setAppsServer] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // Each alias application has its own port; any user can set it. The upstream
-  // server host is taken from the reverse-proxy settings (or the owner record),
-  // so it is not entered here.
+  // Each alias application has its own port, settable by any user. The upstream
+  // server host comes from the owning user's configured apps host; an admin
+  // (who has no per-user apps host) can set the host on the application itself.
   const showPort = urlType === "alias";
+  const showServer = props.isAdmin && urlType === "alias";
 
   function toggleTeam(team: string) {
     setTeams((current) =>
@@ -479,6 +483,7 @@ function CreateApplicationCard(props: {
         icon_url: icon,
         teams,
         ...(showPort ? { apps_port: appsPort.trim() } : {}),
+        ...(showServer ? { apps_server: appsServer.trim() } : {}),
       });
       props.onCreated(created);
     } catch (err) {
@@ -525,8 +530,28 @@ function CreateApplicationCard(props: {
               aria-label="Application port"
             />
             <span className="muted logo-hint">
-              The port your application listens on. The server host is taken from
-              the reverse-proxy settings.
+              The port your application listens on.{" "}
+              {props.isAdmin
+                ? "Set the server host below."
+                : "The server host comes from your account's apps server (set by an administrator)."}
+            </span>
+          </label>
+        )}
+
+        {showServer && (
+          <label className="field">
+            <span>Apps server (host/IP)</span>
+            <input
+              type="text"
+              value={appsServer}
+              onChange={(e) => setAppsServer(e.target.value)}
+              placeholder="apps.example.com"
+              aria-label="Apps server host or IP"
+            />
+            <span className="muted logo-hint">
+              The host where this application runs (used as the alias upstream).
+              Admins set this per application since they have no per-user apps
+              server.
             </span>
           </label>
         )}
@@ -595,6 +620,7 @@ function ApplicationRow(props: {
   const [iconUrl, setIconUrl] = useState(app.icon_url);
   const [teams, setTeams] = useState<string[]>(app.teams);
   const [appsPort, setAppsPort] = useState(app.apps_port ?? "");
+  const [appsServer, setAppsServer] = useState(app.apps_server ?? "");
   const [logoError, setLogoError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -605,6 +631,7 @@ function ApplicationRow(props: {
     setIconUrl(app.icon_url);
     setTeams(app.teams);
     setAppsPort(app.apps_port ?? "");
+    setAppsServer(app.apps_server ?? "");
   }, [
     app.name,
     app.url_type,
@@ -613,6 +640,7 @@ function ApplicationRow(props: {
     app.icon_url,
     app.teams,
     app.apps_port,
+    app.apps_server,
   ]);
 
   const dirty = useMemo(
@@ -623,14 +651,17 @@ function ApplicationRow(props: {
       description !== app.description ||
       iconUrl !== app.icon_url ||
       appsPort !== (app.apps_port ?? "") ||
+      appsServer !== (app.apps_server ?? "") ||
       teams.length !== app.teams.length ||
       teams.some((t) => !app.teams.includes(t)),
-    [name, urlType, url, description, iconUrl, appsPort, teams, app],
+    [name, urlType, url, description, iconUrl, appsPort, appsServer, teams, app],
   );
 
   // Each alias application has its own port, editable by any user. The upstream
-  // server host comes from the reverse-proxy settings / owner record.
+  // server host comes from the owning user's configured apps host; an admin can
+  // set the host on the application itself.
   const showPort = urlType === "alias";
+  const showServer = isAdmin && urlType === "alias";
 
   function toggleTeam(team: string) {
     setTeams((current) =>
@@ -801,6 +832,19 @@ function ApplicationRow(props: {
             </label>
           )}
 
+          {showServer && (
+            <label className="field">
+              <span>Apps server (host/IP)</span>
+              <input
+                type="text"
+                value={appsServer}
+                onChange={(e) => setAppsServer(e.target.value)}
+                placeholder="apps.example.com"
+                aria-label="Apps server host or IP"
+              />
+            </label>
+          )}
+
           <label className="field">
             <span>Description</span>
             <input
@@ -844,6 +888,7 @@ function ApplicationRow(props: {
                   icon_url: iconUrl,
                   teams,
                   ...(showPort ? { apps_port: appsPort.trim() } : {}),
+                  ...(showServer ? { apps_server: appsServer.trim() } : {}),
                 });
                 setEditing(false);
               }}

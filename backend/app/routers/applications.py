@@ -85,31 +85,29 @@ def _push_alias_on_approval(
                 result = reverse_proxy.PushResult(status="skipped")
                 result.log("Skipped: application does not use a local alias.")
             else:
-                # Resolve the upstream server and port for the alias.
-                #   - port: the application's own port (set by any user) first,
-                #     then the owner's record.
+                # Resolve the upstream server and port for the alias. The
+                # reverse-proxy settings host (nginx_host) is only the SSH target
+                # used to push config -- it is never the upstream the alias
+                # proxies to.
                 #   - server: the application's own server (admin-set) first,
-                #     then the reverse-proxy settings host, then the owner's
-                #     record.
+                #     then the owning user's configured apps host.
+                #   - port: the application's own port (set by any user).
                 owner_id = app.get("created_by")
                 owner = (
                     repository.get_user_by_id(conn, owner_id)
                     if owner_id
                     else None
                 )
-                apps_port = app.get("apps_port") or (
-                    owner["apps_port"] if owner else ""
-                )
-                apps_server = (
-                    app.get("apps_server")
-                    or settings.get("nginx_host", "")
-                    or (owner["apps_server"] if owner else "")
+                apps_port = app.get("apps_port") or ""
+                apps_server = app.get("apps_server") or (
+                    owner["apps_server"] if owner else ""
                 )
                 if not (apps_server and apps_port):
                     result = reverse_proxy.PushResult(status="skipped")
                     result.log(
-                        "Skipped: no apps server/port configured for this "
-                        "application, the reverse-proxy settings, or its owner."
+                        "Skipped: no apps server (on the application or its "
+                        "owner's account) and/or port is configured for this "
+                        "application."
                     )
                 else:
                     result = reverse_proxy.push_alias(
@@ -299,8 +297,8 @@ def create_application(
 
     # The application's own port may be set by any user (each alias app has its
     # own port). The application's own server host is administrator-only; other
-    # users rely on the server resolved from settings / the owner's record at
-    # push time.
+    # users rely on the owning user's configured apps host (resolved at push
+    # time). Admins -- who have no per-user apps host -- can set the app's host.
     apps_server = payload.apps_server if is_admin else ""
     apps_port = payload.apps_port
 

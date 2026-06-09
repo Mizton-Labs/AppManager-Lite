@@ -140,9 +140,13 @@ same area with every application (and its creator), a tab for user management, a
 (application name and logo) and reverse-proxy configuration.
 
 When an administrator creates a user they can set the user's **apps server**
-(host/IP) — the default host where that user runs their applications, used to
-render reverse-proxy aliases. Each application carries its **own port** (see
-below), so there is no per-user port.
+(host/IP) — the host where that user runs their applications, used as the
+upstream for that user's reverse-proxy aliases. Each application carries its
+**own port** (see below), so there is no per-user port. A normal user only sets
+the port on an application; the upstream host comes from their apps server.
+Administrators have no per-user apps server, so when an administrator creates an
+application they can set **both** its apps host and port on the application
+itself.
 
 - **Approval workflow.** Submissions have one of three states: `pending`,
   `approved`, or `rejected`. Only `approved` applications appear on the Home and
@@ -186,8 +190,12 @@ below), so there is no per-user port.
   not subject to `http`/`https` validation.
 - **Application port.** Each alias application has its **own port**, which **any**
   user can set on the create/edit form (shown only for alias apps). The upstream
-  server host is resolved from the reverse-proxy settings (or the owner's apps
-  server) — it is not entered per application.
+  server host is the **owning user's apps server** (configured per user by an
+  administrator); an administrator can instead set the apps host **on the
+  application** (since admins have no per-user apps server). The reverse-proxy
+  settings host is only the SSH target used to push config — never the alias
+  upstream. If neither the application nor its owner has an apps host, the push
+  is skipped.
 - **Team selection.** The team picker offers a **Select all / Clear all** toggle
   in addition to the individual checkboxes.
 
@@ -244,10 +252,10 @@ Configure in General Settings:
   the UI; only the path is kept.
 - **Alias template** — the nginx `location` block (collapsed by default). The
   placeholders `APPS_SERVER`, `APPS_PORT` and `ALIAS` are substituted on push.
-  `APPS_PORT` is the application's own port (falling back to the owner's record);
-  `APPS_SERVER` is resolved as the application's own server (administrator-set,
-  if any), then the **NGINX Server Host/IP** from these settings, then the
-  **owning user's** apps server.
+  `APPS_PORT` is the application's own port. `APPS_SERVER` is the application's
+  own server (administrator-set, if any), otherwise the **owning user's** apps
+  server. The **NGINX Server Host/IP** above is only the SSH target used to push
+  the config — it is never used as `APPS_SERVER`.
 
 On approval the backend (using the system `ssh`/`scp`, key-based, non-interactive,
 with timeouts) verifies SSH access, that the conf file exists, that nginx is
