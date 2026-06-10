@@ -7,14 +7,12 @@ import { AppCard } from "./AppCard";
 
 /**
  * Per-team view: the applications configured for a single team. The team is
- * resolved from the URL slug against the teams the account can see; a
- * membership check mirrors the server-side gate (which also returns 403) for a
- * clearer message.
+ * resolved from the URL slug against all configured teams the account can see in
+ * the sidebar. Each team page shows apps shared to that team.
  */
 export function TeamView(props: { teams: readonly string[] }) {
   const { slug } = useParams();
   const team = slug ? teamFromSlug(slug, props.teams) : null;
-  const isMember = team !== null && props.teams.includes(team);
 
   if (!team) {
     return (
@@ -24,18 +22,6 @@ export function TeamView(props: { teams: readonly string[] }) {
         <Link to="/" className="btn ghost">
           Back to Home
         </Link>
-      </section>
-    );
-  }
-
-  if (!isMember) {
-    return (
-      <section className="card">
-        <h1>{team}</h1>
-        <p className="alert error" role="alert">
-          Your account is not assigned to this team. Contact an administrator if
-          you need access.
-        </p>
       </section>
     );
   }

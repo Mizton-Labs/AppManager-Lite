@@ -10,7 +10,7 @@ import logging
 import sqlite3
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from .. import audit, repository, security, sessions
 from ..deps import get_current_user, get_db, require_admin, verify_csrf
@@ -230,6 +230,7 @@ def reset_user_password(
 @router.delete("/users/{user_id}", response_model=MessageOut)
 def delete_user(
     user_id: int,
+    delete_apps: bool = Query(default=False),
     admin: dict[str, Any] = Depends(require_admin),
     __: None = Depends(verify_csrf),
     conn: sqlite3.Connection = Depends(get_db),
@@ -243,7 +244,12 @@ def delete_user(
             detail="You cannot delete your own account",
         )
     _guard_last_admin(conn, target, removing=True)
-    repository.delete_user(conn, user_id)
+    repository.delete_user(
+        conn,
+        user_id,
+        delete_apps=delete_apps,
+        transfer_to_user_id=None if delete_apps else admin.get("id"),
+    )
     logger.warning(
         "User deleted id=%s username=%r by=%r",
         user_id,
@@ -259,4 +265,9 @@ def delete_user(
         target_id=user_id,
         target_name=target["username"],
     )
-    return MessageOut(detail="User deleted")
+    detail = (
+        "User deleted; applications deleted"
+        if delete_apps
+        else f"User deleted; applications transferred to {admin.get('username')}"
+    )
+    return MessageOut(detail=detail)

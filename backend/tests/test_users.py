@@ -16,6 +16,7 @@ def _seed_teams(admin, make_team):
 
 
 def _create(client, csrf, username, role="user", teams=None):
+    username = username if "@" in username else f"{username}@example.com"
     return client.post(
         "/api/users",
         json={"username": username, "role": role, "teams": teams or []},
@@ -40,7 +41,7 @@ def test_create_user_with_self_service(admin) -> None:
     resp = client.post(
         "/api/users",
         json={
-            "username": "olive",
+            "username": "olive@example.com",
             "role": "user",
             "teams": ["Red Team"],
             "self_service": True,
@@ -85,6 +86,16 @@ def test_create_user_rejects_unknown_team(admin) -> None:
     assert resp.status_code == 400
 
 
+def test_create_user_rejects_non_email_username(admin) -> None:
+    client, csrf, _ = admin
+    resp = client.post(
+        "/api/users",
+        json={"username": "not-an-email", "role": "user", "teams": []},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 422
+
+
 def test_create_user_rejects_duplicate_username(admin) -> None:
     client, csrf, _ = admin
     assert _create(client, csrf, "carol").status_code == 201
@@ -103,7 +114,7 @@ def test_list_users_includes_admin_and_created(admin) -> None:
     client, csrf, _ = admin
     _create(client, csrf, "dave")
     usernames = {u["username"] for u in client.get("/api/users").json()}
-    assert {"admin", "dave"} <= usernames
+    assert {"admin", "dave@example.com"} <= usernames
 
 
 def test_update_user_role_teams_and_active(admin) -> None:
@@ -203,6 +214,59 @@ def test_delete_user_removes_it(admin) -> None:
     assert resp.status_code == 200
     usernames = {u["username"] for u in client.get("/api/users").json()}
     assert "ivan" not in usernames
+
+
+def test_delete_user_transfers_owned_apps_to_admin(admin) -> None:
+    client, csrf, _ = admin
+    created = _create(client, csrf, "owner", teams=["Red Team"]).json()
+    user_id = created["user"]["id"]
+    password = created["password"]
+    from fastapi.testclient import TestClient
+
+    with TestClient(client.app) as owner:
+        login = owner.post(
+            "/api/auth/login", json={"username": "owner", "password": password}
+        )
+        ocsrf = login.json()["csrf_token"]
+        app_id = owner.post(
+            "/api/applications",
+            json={"name": "Owned App", "url": "https://example.com/o", "teams": ["Red Team"]},
+            headers={"X-CSRF-Token": ocsrf},
+        ).json()["id"]
+
+    resp = client.request(
+        "DELETE", f"/api/users/{user_id}", headers={"X-CSRF-Token": csrf}
+    )
+    assert resp.status_code == 200, resp.text
+    app = next(a for a in client.get("/api/applications/manage").json() if a["id"] == app_id)
+    assert app["created_by"] == "admin"
+
+
+def test_delete_user_can_delete_owned_apps(admin) -> None:
+    client, csrf, _ = admin
+    created = _create(client, csrf, "owner2", teams=["Red Team"]).json()
+    user_id = created["user"]["id"]
+    password = created["password"]
+    from fastapi.testclient import TestClient
+
+    with TestClient(client.app) as owner:
+        login = owner.post(
+            "/api/auth/login", json={"username": "owner2", "password": password}
+        )
+        ocsrf = login.json()["csrf_token"]
+        app_id = owner.post(
+            "/api/applications",
+            json={"name": "Deleted App", "url": "https://example.com/d", "teams": ["Red Team"]},
+            headers={"X-CSRF-Token": ocsrf},
+        ).json()["id"]
+
+    resp = client.request(
+        "DELETE",
+        f"/api/users/{user_id}?delete_apps=true",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 200, resp.text
+    assert all(a["id"] != app_id for a in client.get("/api/applications/manage").json())
 
 
 def test_non_admin_cannot_manage_users(admin) -> None:

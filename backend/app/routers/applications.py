@@ -48,20 +48,40 @@ def _app_out(
         is_active=app["is_active"],
         approval_status=app["approval_status"],
         sort_order=app["sort_order"],
-        # The creator's name is exposed only in management / own-app responses so
-        # an ordinary listing never reveals who created another team's app.
-        created_by=app.get("created_by_username") if include_creator else None,
+        created_by=app.get("created_by_username"),
+        created_by_id=app.get("created_by"),
         last_push_status=app.get("last_push_status") if include_creator else None,
         last_push_log=app.get("last_push_log", "") if include_creator else "",
         last_push_at=app.get("last_push_at") if include_creator else None,
         apps_server=app.get("apps_server", "") if include_creator else "",
         apps_port=app.get("apps_port", "") if include_creator else "",
         pending_alias=app.get("pending_alias", "") if include_creator else "",
+        pending_is_active=app.get("pending_is_active") if include_creator else None,
+        needs_push=bool(app.get("needs_push")) if include_creator else False,
     )
 
 
 # Cap stored push transcripts so a verbose remote error can't bloat the row.
 _MAX_PUSH_LOG = 16000
+
+
+def _nginx_config_changed(
+    existing: dict[str, Any], payload: UpdateApplicationRequest, *, is_admin: bool
+) -> bool:
+    checks: tuple[tuple[str, Any], ...] = (
+        ("name", payload.name),
+        ("url", payload.url),
+        ("url_type", payload.url_type),
+        ("apps_port", payload.apps_port),
+        ("is_active", payload.is_active),
+    )
+    if any(value is not None and value != existing[key] for key, value in checks):
+        return True
+    return bool(
+        is_admin
+        and payload.apps_server is not None
+        and payload.apps_server != existing["apps_server"]
+    )
 
 
 def _push_alias_on_approval(
@@ -85,31 +105,29 @@ def _push_alias_on_approval(
                 result = reverse_proxy.PushResult(status="skipped")
                 result.log("Skipped: application does not use a local alias.")
             else:
-                # Resolve the upstream server and port for the alias.
-                #   - port: the application's own port (set by any user) first,
-                #     then the owner's record.
+                # Resolve the upstream server and port for the alias. The
+                # reverse-proxy settings host (nginx_host) is only the SSH target
+                # used to push config -- it is never the upstream the alias
+                # proxies to.
                 #   - server: the application's own server (admin-set) first,
-                #     then the reverse-proxy settings host, then the owner's
-                #     record.
+                #     then the owning user's configured apps host.
+                #   - port: the application's own port (set by any user).
                 owner_id = app.get("created_by")
                 owner = (
                     repository.get_user_by_id(conn, owner_id)
                     if owner_id
                     else None
                 )
-                apps_port = app.get("apps_port") or (
-                    owner["apps_port"] if owner else ""
-                )
-                apps_server = (
-                    app.get("apps_server")
-                    or settings.get("nginx_host", "")
-                    or (owner["apps_server"] if owner else "")
+                apps_port = app.get("apps_port") or ""
+                apps_server = app.get("apps_server") or (
+                    owner["apps_server"] if owner else ""
                 )
                 if not (apps_server and apps_port):
                     result = reverse_proxy.PushResult(status="skipped")
                     result.log(
-                        "Skipped: no apps server/port configured for this "
-                        "application, the reverse-proxy settings, or its owner."
+                        "Skipped: no apps server (on the application or its "
+                        "owner's account) and/or port is configured for this "
+                        "application."
                     )
                 else:
                     result = reverse_proxy.push_alias(
@@ -119,14 +137,21 @@ def _push_alias_on_approval(
                         alias=app["url"],
                         app_name=app["name"],
                         app_id=application_id,
+                        is_active=app["is_active"],
                     )
 
             transcript = result.transcript[:_MAX_PUSH_LOG]
+            needs_push = (
+                app["url_type"] == "alias"
+                and app["approval_status"] == "approved"
+                and result.status != "ok"
+            )
             repository.set_application_push_result(
                 conn,
                 application_id,
                 status=result.status,
                 log=transcript,
+                needs_push=needs_push,
             )
             action = (
                 "nginx_revert"
@@ -238,11 +263,6 @@ def list_applications(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Unknown team"
             )
-        if not is_admin and team not in user["teams"]:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Your account is not assigned to this team",
-            )
         apps = repository.list_applications_for_team(
             conn, team, active_only=active_only
         )
@@ -299,8 +319,8 @@ def create_application(
 
     # The application's own port may be set by any user (each alias app has its
     # own port). The application's own server host is administrator-only; other
-    # users rely on the server resolved from settings / the owner's record at
-    # push time.
+    # users rely on the owning user's configured apps host (resolved at push
+    # time). Admins -- who have no per-user apps host -- can set the app's host.
     apps_server = payload.apps_server if is_admin else ""
     apps_port = payload.apps_port
 
@@ -375,11 +395,25 @@ def update_application(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only administrators can change approval status",
         )
+    if payload.created_by is not None:
+        if not is_admin:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only administrators can transfer ownership",
+            )
+        if repository.get_user_by_id(conn, payload.created_by) is None:
+            raise HTTPException(status_code=404, detail="New owner not found")
 
+    has_staged_change = bool(existing.get("pending_alias")) or existing.get(
+        "pending_is_active"
+    ) is not None
     # An approved application cannot be rejected; only disable or delete it.
+    # Staged changes on an otherwise-approved app can be approved, but they are
+    # not modelled as a rejected application state.
     if (
         payload.approval_status == "rejected"
         and existing["approval_status"] == "approved"
+        and not has_staged_change
     ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -410,6 +444,8 @@ def update_application(
                 payload.description,
                 payload.icon_url,
                 payload.teams,
+                payload.is_active,
+                payload.apps_port,
             )
         )
         new_status = (
@@ -432,6 +468,13 @@ def update_application(
         and payload.url is not None
         and payload.url != existing["url"]
     )
+    stages_active = (
+        not is_admin
+        and not actor.get("self_service")
+        and existing["approval_status"] == "approved"
+        and payload.is_active is not None
+        and payload.is_active != existing["is_active"]
+    )
     if stages_alias:
         # Do not change the live URL; record the requested alias as pending and
         # leave the application active and approved on its current config until
@@ -442,6 +485,21 @@ def update_application(
     else:
         url_for_update = payload.url
         pending_alias_for_update = None
+    if stages_active:
+        is_active_for_update: bool | None = None
+        pending_is_active_for_update: bool | None = payload.is_active
+        new_status = "approved"
+    else:
+        is_active_for_update = payload.is_active
+        pending_is_active_for_update = None
+
+    config_changed = _nginx_config_changed(existing, payload, is_admin=is_admin)
+    mark_needs_push = (
+        existing["approval_status"] == "approved"
+        and existing["url_type"] == "alias"
+        and config_changed
+        and not (is_admin or actor.get("self_service"))
+    )
 
     updated = repository.update_application(
         conn,
@@ -451,15 +509,18 @@ def update_application(
         url_type=payload.url_type,
         description=payload.description,
         icon_url=payload.icon_url,
-        is_active=payload.is_active,
+        is_active=is_active_for_update,
         approval_status=new_status,
         sort_order=payload.sort_order,
+        created_by=payload.created_by,
         teams=payload.teams,
         # The application's own server host is administrator-only; its port may
         # be changed by any user (owner or admin).
         apps_server=payload.apps_server if is_admin else None,
         apps_port=payload.apps_port,
         pending_alias=pending_alias_for_update,
+        pending_is_active=pending_is_active_for_update,
+        needs_push=True if mark_needs_push else None,
     )
     assert updated is not None
     if stages_alias:
@@ -478,6 +539,24 @@ def update_application(
             target_id=application_id,
             target_name=updated["name"],
             detail=f"pending_alias={payload.url}",
+        )
+    if stages_active:
+        requested = "enable" if payload.is_active else "disable"
+        logger.info(
+            "Application active-state change staged id=%s pending_is_active=%s by=%r",
+            application_id,
+            payload.is_active,
+            actor.get("username"),
+        )
+        audit.record(
+            conn,
+            category=audit.CATEGORY_APPLICATION,
+            action=f"{requested}_requested",
+            actor=actor,
+            target_type="application",
+            target_id=application_id,
+            target_name=updated["name"],
+            detail=f"pending_is_active={payload.is_active}",
         )
     if is_admin and payload.approval_status is not None:
         logger.info(
@@ -525,6 +604,7 @@ def update_application(
     #      the new one waited for review). The staged alias is applied to the
     #      live URL and cleared before the push renders the proxy config.
     staged = existing.get("pending_alias") or ""
+    staged_is_active = existing.get("pending_is_active")
     normal_approval = (
         is_admin
         and payload.approval_status == "approved"
@@ -532,6 +612,11 @@ def update_application(
     )
     staged_approval = (
         is_admin and payload.approval_status == "approved" and bool(staged)
+    )
+    staged_active_approval = (
+        is_admin
+        and payload.approval_status == "approved"
+        and staged_is_active is not None
     )
     if staged_approval:
         repository.update_application(
@@ -556,7 +641,38 @@ def update_application(
             target_name=updated["name"],
             detail=f"url={staged}",
         )
-    if normal_approval or staged_approval:
+    if staged_active_approval:
+        repository.update_application(
+            conn,
+            application_id,
+            is_active=bool(staged_is_active),
+            clear_pending_is_active=True,
+        )
+        logger.info(
+            "Applied staged active-state change id=%s is_active=%s by=%r",
+            application_id,
+            bool(staged_is_active),
+            actor.get("username"),
+        )
+        audit.record(
+            conn,
+            category=audit.CATEGORY_APPLICATION,
+            action="active_change_approved",
+            actor=actor,
+            target_type="application",
+            target_id=application_id,
+            target_name=updated["name"],
+            detail=f"is_active={bool(staged_is_active)}",
+        )
+    auto_config_push = (
+        (is_admin or actor.get("self_service"))
+        and config_changed
+        and existing["approval_status"] == "approved"
+        and (updated["approval_status"] == "approved")
+        and (existing["url_type"] == "alias" or updated["url_type"] == "alias")
+        and not (normal_approval or staged_approval or staged_active_approval)
+    )
+    if normal_approval or staged_approval or staged_active_approval or auto_config_push:
         conn.commit()
         _push_alias_on_approval(application_id, actor)
     result = repository.get_application(conn, application_id, include_creator=True)
