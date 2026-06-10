@@ -572,13 +572,15 @@ describe("ApplicationManager", () => {
     stubBackend([
       makeApp({
         created_by: "analyst@example.com",
+        publisher_team: "Red Team",
         needs_push: true,
         pending_is_active: false,
       }),
     ]);
     render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
 
-    expect(await screen.findByText(/published by analyst/i)).toBeInTheDocument();
+    expect(await screen.findByText(/published by: analyst/i)).toBeInTheDocument();
+    expect(screen.getByText("Team: Red Team")).toBeInTheDocument();
     expect(screen.getByText(/disable requested/i)).toBeInTheDocument();
     expect(screen.getByText(/proxy config changed/i)).toBeInTheDocument();
   });

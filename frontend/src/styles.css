@@ -581,6 +581,12 @@ textarea:focus,
   color: #bae6fd;
 }
 
+.publisher-team-tag {
+  border-color: rgba(16, 185, 129, 0.55);
+  background: rgba(16, 185, 129, 0.12);
+  color: #bbf7d0;
+}
+
 .inline-checkbox {
   display: inline-flex;
   align-items: center;

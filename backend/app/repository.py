@@ -536,6 +536,7 @@ def render_bundle_template(template: dict[str, Any], user: dict[str, Any]) -> st
 def _row_to_application(
     conn: sqlite3.Connection, row: sqlite3.Row, *, include_creator: bool = False
 ) -> dict[str, Any]:
+    publisher_teams = list_user_teams(conn, row["created_by"]) if row["created_by"] else []
     data: dict[str, Any] = {
         "id": row["id"],
         "name": row["name"],
@@ -554,6 +555,7 @@ def _row_to_application(
             None if row["pending_is_active"] is None else bool(row["pending_is_active"])
         ),
         "needs_push": bool(row["needs_push"]),
+        "publisher_team": publisher_teams[0] if publisher_teams else "",
         "teams": list_application_teams(conn, row["id"]),
     }
     if "created_by_username" in row.keys():

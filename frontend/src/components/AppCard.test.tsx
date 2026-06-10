@@ -47,18 +47,18 @@ describe("AppCard", () => {
     expect(container.querySelector("img")).toHaveAttribute("src", data);
   });
 
-  it("shows team-scope badges for each team", () => {
+  it("shows publisher team instead of shared team-scope badges", () => {
     render(
       <AppCard
-        app={makeApp({ teams: ["Threat Hunting", "Red Team"] })}
+        app={makeApp({ teams: ["Threat Hunting"], publisher_team: "Red Team" })}
       />,
     );
-    expect(screen.getByText("Threat Hunting")).toBeInTheDocument();
-    expect(screen.getByText("Red Team")).toBeInTheDocument();
+    expect(screen.getByText("Team: Red Team")).toBeInTheDocument();
+    expect(screen.queryByText("Threat Hunting")).toBeNull();
   });
 
   it("shows the publisher local-part", () => {
     render(<AppCard app={makeApp({ created_by: "publisher@example.com" })} />);
-    expect(screen.getByText(/published by publisher/i)).toBeInTheDocument();
+    expect(screen.getByText(/published by: publisher/i)).toBeInTheDocument();
   });
 });
