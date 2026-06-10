@@ -8,7 +8,9 @@ import type {
 
 const MAPPING_OPTIONS: { value: BundleMappingSource; label: string }[] = [
   { value: "username", label: "Username" },
-  { value: "user_apps_server", label: "User apps server" },
+  { value: "user_apps_server", label: "Apps server host/IP fallback" },
+  { value: "user_apps_server_host", label: "Apps server host" },
+  { value: "user_apps_server_ip", label: "Apps server IP" },
   { value: "user_role", label: "User role" },
 ];
 

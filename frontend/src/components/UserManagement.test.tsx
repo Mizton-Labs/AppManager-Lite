@@ -49,6 +49,7 @@ function stubUsers() {
 async function createUserAndOpenBanner() {
   await screen.findByRole("heading", { name: /create user/i });
   await userEvent.type(screen.getByLabelText(/username/i), "newbie@example.com");
+  await userEvent.type(screen.getByLabelText(/apps server hostname/i), "apps.example.com");
   await userEvent.click(screen.getByRole("button", { name: /^create user$/i }));
   // Banner shows the generated password.
   await screen.findByText("Generated-Pass-123");
@@ -132,5 +133,34 @@ describe("UserManagement credential copy", () => {
       content: "USER",
       mappings: [{ field_name: "USER", source: "username" }],
     });
+  });
+
+  it("creates a user with an apps server IP", async () => {
+    const fetchMock = stubUsers();
+    render(<UserManagement currentUser={makeUser({ id: 99, role: "admin" })} />);
+
+    await screen.findByRole("heading", { name: /create user/i });
+    await userEvent.type(screen.getByLabelText(/username/i), "ipuser@example.com");
+    await userEvent.type(screen.getByLabelText(/apps server ip/i), "10.0.0.8");
+    await userEvent.click(screen.getByRole("button", { name: /^create user$/i }));
+
+    const createCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).endsWith("/api/users") && (init?.method ?? "GET") === "POST",
+    );
+    expect(JSON.parse((createCall![1] as RequestInit).body as string)).toMatchObject({
+      username: "ipuser@example.com",
+      apps_server: "",
+      apps_server_ip: "10.0.0.8",
+    });
+  });
+
+  it("offers explicit host and IP bundle mapping values", async () => {
+    stubUsers();
+    render(<UserManagement currentUser={makeUser({ id: 1, role: "admin" })} />);
+
+    await screen.findByRole("heading", { name: /bundle templates/i });
+    expect(screen.getByRole("option", { name: /apps server host$/i })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /apps server ip/i })).toBeInTheDocument();
   });
 });

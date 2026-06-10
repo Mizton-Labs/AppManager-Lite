@@ -28,6 +28,7 @@ export function makeUser(overrides: Partial<ApiUser> = {}): ApiUser {
     must_change_password: false,
     self_service: false,
     apps_server: "",
+    apps_server_ip: "",
     teams: [],
     ...overrides,
   };
