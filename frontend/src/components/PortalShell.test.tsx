@@ -110,7 +110,7 @@ describe("PortalShell", () => {
     await screen.findByText(/No shared applications are available/i);
   });
 
-  it("shows Settings to regular users and hides non-member teams", async () => {
+  it("shows Settings and every team to regular users", async () => {
     renderShell(makeSession({ role: "user", teams: ["Red Team"] }));
 
     expect(screen.queryByRole("link", { name: "Manage" })).toBeNull();
@@ -120,8 +120,8 @@ describe("PortalShell", () => {
       await within(nav).findByRole("link", { name: "Red Team" }),
     ).toBeInTheDocument();
     expect(
-      within(nav).queryByRole("link", { name: "Threat Hunting" }),
-    ).toBeNull();
+      within(nav).getByRole("link", { name: "Threat Hunting" }),
+    ).toBeInTheDocument();
     // Settings is now available to every signed-in user.
     expect(
       within(nav).getByRole("link", { name: "Settings" }),

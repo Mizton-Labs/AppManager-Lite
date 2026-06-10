@@ -61,12 +61,9 @@ export function PortalShell(props: {
     void reloadTeams();
   }, [reloadTeams]);
 
-  // Admins see every team; members see only the teams they belong to, in the
-  // catalogue's sort order.
-  const memberTeamNames = new Set(user?.teams ?? []);
-  const visibleTeams: Team[] = isAdmin
-    ? teams
-    : teams.filter((team) => memberTeamNames.has(team.name));
+  // Team sections are visible to every user; team pages then show apps shared to
+  // that specific team, which makes an app's sharing scope explicit.
+  const visibleTeams: Team[] = teams;
   const visibleTeamNames: readonly string[] = visibleTeams.map((t) => t.name);
   const allTeamNames: readonly string[] = teams.map((t) => t.name);
 
@@ -190,4 +187,3 @@ export function PortalShell(props: {
     </div>
   );
 }
-

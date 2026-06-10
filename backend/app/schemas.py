@@ -280,6 +280,7 @@ class ApplicationOut(BaseModel):
     # Creating user's name. Populated only in management/own-app responses so a
     # member listing never leaks who created another team's application.
     created_by: str | None = None
+    created_by_id: int | None = None
     # Reverse-proxy push result; populated only in management/own-app responses.
     last_push_status: str | None = None
     last_push_log: str = ""
@@ -361,6 +362,7 @@ class UpdateApplicationRequest(BaseModel):
     sort_order: int | None = Field(default=None, ge=0, le=100000)
     apps_server: str | None = Field(default=None, max_length=253)
     apps_port: str | None = Field(default=None, max_length=5)
+    created_by: int | None = None
 
     @field_validator("name")
     @classmethod

@@ -100,15 +100,17 @@ def test_member_team_query_returns_team_apps(admin) -> None:
     assert names == {"Hunt One", "Shared Case"}
 
 
-def test_member_forbidden_for_other_team(admin) -> None:
+def test_member_can_view_other_team_section(admin) -> None:
     client, csrf, _ = admin
+    _seed_app(client, csrf, "Hunt Tool", "https://example.com/hunt", ["Threat Hunting"])
     password = _create_member(client, csrf, "redder2", ["Red Team"])
     with TestClient(client.app) as member:
         member.post(
             "/api/auth/login", json={"username": "redder2", "password": password}
         )
         resp = member.get("/api/applications", params={"team": "Threat Hunting"})
-    assert resp.status_code == 403
+    assert resp.status_code == 200, resp.text
+    assert {a["name"] for a in resp.json()} == {"Hunt Tool"}
 
 
 def test_unknown_team_returns_404(admin) -> None:
@@ -658,7 +660,7 @@ def test_url_mode_rejects_relative_path(admin) -> None:
     assert resp.status_code == 422
 
 
-def test_home_listing_never_exposes_creator(admin) -> None:
+def test_home_listing_exposes_publisher(admin) -> None:
     client, csrf, _ = admin
     _create_app(client, csrf, name="Owned", teams=["Red Team"])
     password = _create_member(client, csrf, "viewer", ["Red Team"])
@@ -668,7 +670,7 @@ def test_home_listing_never_exposes_creator(admin) -> None:
         )
         apps = member.get("/api/applications").json()
     assert apps, "expected at least one visible app"
-    assert all(a["created_by"] is None for a in apps)
+    assert any(a["created_by"] == "admin" for a in apps)
 
 
 
@@ -688,6 +690,24 @@ def test_admin_delete_application(admin) -> None:
         headers={"X-CSRF-Token": csrf},
     )
     assert again.status_code == 404
+
+
+def test_admin_can_transfer_application_ownership(admin) -> None:
+    client, csrf, _ = admin
+    new_owner = client.post(
+        "/api/users",
+        json={"username": "newowner@example.com", "role": "user", "teams": ["Red Team"]},
+        headers={"X-CSRF-Token": csrf},
+    ).json()["user"]
+    app_id = _create_app(client, csrf, name="Transfer Me").json()["id"]
+
+    resp = client.patch(
+        f"/api/applications/{app_id}",
+        json={"created_by": new_owner["id"]},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["created_by"] == "newowner@example.com"
 
 
 # ---------------------------------------------------------------------------

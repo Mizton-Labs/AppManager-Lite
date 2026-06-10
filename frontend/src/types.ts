@@ -117,6 +117,7 @@ export interface Application {
   sort_order: number;
   /** Creator's username; only populated in own-app and management responses. */
   created_by: string | null;
+  created_by_id?: number | null;
   /** Last reverse-proxy push status; only in management/own-app responses. */
   last_push_status?: string | null;
   last_push_log?: string;
@@ -143,6 +144,7 @@ export interface CreateApplicationInput {
   sort_order?: number;
   apps_server?: string;
   apps_port?: string;
+  created_by?: number;
 }
 
 export interface UpdateApplicationInput {
