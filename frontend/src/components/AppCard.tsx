@@ -19,8 +19,7 @@ function publisherLabel(username: string | null | undefined): string {
 
 /**
  * A single application tile: optional icon (or a generated monogram), the
- * application name, a short description, and small team-scope badges showing
- * which team(s) the application belongs to. Renders as an external link that
+ * application name, a short description, and publisher metadata. Renders as an external link that
  * opens in a new tab; `rel="noopener noreferrer"` prevents reverse-tabnabbing
  * and referrer leakage to the target. Local-alias applications resolve to an
  * absolute href against the document base URI. The whole card is a link, so the
@@ -46,20 +45,16 @@ export function AppCard({ app }: { app: Application }) {
       {app.description && (
         <span className="app-card-desc">{app.description}</span>
       )}
-      {app.teams.length > 0 && (
-        <span className="app-card-teams">
-          {app.teams.map((team) => (
-            <span key={team} className="tag app-card-team">
-              {team}
-            </span>
-          ))}
-        </span>
-      )}
-      {app.created_by && (
+      {(app.publisher_team || app.created_by) && (
         <span className="app-card-teams publisher-row">
-          <span className="tag publisher-tag">
-            published by {publisherLabel(app.created_by)}
-          </span>
+          {app.publisher_team && (
+            <span className="tag publisher-team-tag">Team: {app.publisher_team}</span>
+          )}
+          {app.created_by && (
+            <span className="tag publisher-tag">
+              Published by: {publisherLabel(app.created_by)}
+            </span>
+          )}
         </span>
       )}
     </a>

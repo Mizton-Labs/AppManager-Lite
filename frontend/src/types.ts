@@ -159,9 +159,11 @@ export interface Application {
   is_active: boolean;
   approval_status: ApprovalStatus;
   sort_order: number;
-  /** Creator's username; only populated in own-app and management responses. */
+  /** Creator's username, shown as publisher metadata in listings. */
   created_by: string | null;
   created_by_id?: number | null;
+  /** First team assigned to the publisher; independent from shared visibility teams. */
+  publisher_team?: string;
   /** Last reverse-proxy push status; only in management/own-app responses. */
   last_push_status?: string | null;
   last_push_log?: string;

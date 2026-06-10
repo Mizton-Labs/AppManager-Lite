@@ -813,20 +813,16 @@ function ApplicationRow(props: {
           >
             {app.url}
           </a>
-          {app.teams.length > 0 && (
-            <div className="tag-row">
-              {app.teams.map((team) => (
-                <span key={team} className="tag">
-                  {team}
-                </span>
-              ))}
-            </div>
-          )}
-          {app.created_by && (
+          {(app.publisher_team || app.created_by) && (
             <div className="tag-row publisher-row">
-              <span className="tag publisher-tag">
-                published by {publisherLabel(app.created_by)}
-              </span>
+              {app.publisher_team && (
+                <span className="tag publisher-team-tag">Team: {app.publisher_team}</span>
+              )}
+              {app.created_by && (
+                <span className="tag publisher-tag">
+                  Published by: {publisherLabel(app.created_by)}
+                </span>
+              )}
             </div>
           )}
         </>

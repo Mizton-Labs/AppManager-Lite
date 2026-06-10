@@ -380,10 +380,12 @@ class ApplicationOut(BaseModel):
     is_active: bool
     approval_status: str = "approved"
     sort_order: int
-    # Creating user's name. Populated only in management/own-app responses so a
-    # member listing never leaks who created another team's application.
+    # Creating user's name, shown as publisher metadata in listings.
     created_by: str | None = None
     created_by_id: int | None = None
+    # First team assigned to the publisher, in configured team order. This is
+    # display metadata and is independent from shared visibility teams.
+    publisher_team: str = ""
     # Reverse-proxy push result; populated only in management/own-app responses.
     last_push_status: str | None = None
     last_push_log: str = ""
