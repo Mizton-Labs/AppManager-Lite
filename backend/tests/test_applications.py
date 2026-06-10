@@ -153,6 +153,55 @@ def test_team_query_keeps_visibility_but_reports_publisher_team(admin) -> None:
     assert app["created_by"] == "publisher@example.com"
 
 
+def test_publisher_team_section_respects_app_visibility(admin) -> None:
+    client, csrf, _ = admin
+    password = _create_member(client, csrf, "redpublisher", ["Red Team"])
+    with TestClient(client.app) as publisher:
+        login = publisher.post(
+            "/api/auth/login", json={"username": "redpublisher", "password": password}
+        )
+        pcsrf = login.json()["csrf_token"]
+        created = publisher.post(
+            "/api/applications",
+            json={
+                "name": "Red Published Threat Share",
+                "url": "https://example.com/red-threat",
+                "teams": ["Threat Hunting"],
+            },
+            headers={"X-CSRF-Token": pcsrf},
+        )
+        assert created.status_code == 201, created.text
+        app_id = created.json()["id"]
+
+    approved = client.patch(
+        f"/api/applications/{app_id}",
+        json={"approval_status": "approved"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert approved.status_code == 200, approved.text
+
+    viewer_password = _create_member(client, csrf, "threatviewer", ["Threat Hunting"])
+    with TestClient(client.app) as viewer:
+        viewer.post(
+            "/api/auth/login",
+            json={"username": "threatviewer", "password": viewer_password},
+        )
+        home = viewer.get("/api/applications")
+        red_section = viewer.get(
+            "/api/applications", params={"publisher_team": "Red Team"}
+        )
+        threat_section = viewer.get(
+            "/api/applications", params={"publisher_team": "Threat Hunting"}
+        )
+
+    assert home.status_code == 200, home.text
+    assert any(a["id"] == app_id for a in home.json())
+    assert red_section.status_code == 200, red_section.text
+    assert [a["id"] for a in red_section.json()] == [app_id]
+    assert threat_section.status_code == 200, threat_section.text
+    assert all(a["id"] != app_id for a in threat_section.json())
+
+
 def test_unknown_team_returns_404(admin) -> None:
     client, _csrf, _ = admin
     resp = client.get("/api/applications", params={"team": "Nonexistent Team"})
