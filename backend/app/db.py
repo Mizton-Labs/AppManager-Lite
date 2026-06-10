@@ -94,6 +94,22 @@ CREATE TABLE IF NOT EXISTS audit_log (
     detail         TEXT    NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS bundle_templates (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT    NOT NULL UNIQUE,
+    content    TEXT    NOT NULL,
+    created_at TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS bundle_template_mappings (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    template_id INTEGER NOT NULL REFERENCES bundle_templates(id) ON DELETE CASCADE,
+    field_name  TEXT    NOT NULL,
+    source      TEXT    NOT NULL,
+    UNIQUE(template_id, field_name)
+);
+
 -- Single-row admin-editable settings (reverse-proxy configuration). The row is
 -- pinned to id = 1 and seeded with defaults by init_db.
 CREATE TABLE IF NOT EXISTS settings (
@@ -115,6 +131,8 @@ CREATE INDEX IF NOT EXISTS idx_user_teams_team ON user_teams(team_id);
 CREATE INDEX IF NOT EXISTS idx_application_teams_team
     ON application_teams(team_id);
 CREATE INDEX IF NOT EXISTS idx_audit_category_id ON audit_log(category, id);
+CREATE INDEX IF NOT EXISTS idx_bundle_template_mappings_template
+    ON bundle_template_mappings(template_id);
 """
 
 

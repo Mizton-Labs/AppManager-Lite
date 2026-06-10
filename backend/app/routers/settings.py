@@ -17,11 +17,14 @@ from ..deps import get_db, require_admin, verify_csrf
 from ..repository import TeamConflictError
 from ..schemas import (
     BrandingSettingsOut,
+    BundleTemplateOut,
+    CreateBundleTemplateRequest,
     CreateTeamRequest,
     MessageOut,
     ReorderTeamsRequest,
     ReverseProxySettingsOut,
     TeamOut,
+    UpdateBundleTemplateRequest,
     UpdateBrandingSettingsRequest,
     UpdateReverseProxySettingsRequest,
     UpdateTeamRequest,
@@ -49,6 +52,10 @@ def _branding_out(row: dict[str, Any]) -> BrandingSettingsOut:
         ),
         configured=bool(row.get("configured", 0)),
     )
+
+
+def _bundle_out(template: dict[str, Any]) -> BundleTemplateOut:
+    return BundleTemplateOut(**template)
 
 
 @router.get("/settings/reverse-proxy", response_model=ReverseProxySettingsOut)
@@ -135,6 +142,120 @@ def update_branding_settings(
         detail=f"branding fields={','.join(changed) or 'none'}",
     )
     return _branding_out(row)
+
+
+# --- Bundle templates (administrator-managed) ------------------------------
+
+
+@router.get("/settings/bundle-templates", response_model=list[BundleTemplateOut])
+def list_bundle_templates(
+    _actor: dict[str, Any] = Depends(require_admin),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> list[BundleTemplateOut]:
+    return [_bundle_out(t) for t in repository.list_bundle_templates(conn)]
+
+
+@router.post(
+    "/settings/bundle-templates",
+    response_model=BundleTemplateOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_bundle_template(
+    payload: CreateBundleTemplateRequest,
+    actor: dict[str, Any] = Depends(require_admin),
+    __: None = Depends(verify_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> BundleTemplateOut:
+    try:
+        template = repository.create_bundle_template(
+            conn,
+            name=payload.name,
+            content=payload.content,
+            mappings=[m.model_dump() for m in payload.mappings],
+        )
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A bundle template with that name already exists",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    audit.record(
+        conn,
+        category=audit.CATEGORY_SYSTEM,
+        action="bundle_template_create",
+        actor=actor,
+        target_type="bundle_template",
+        target_id=template["id"],
+        target_name=template["name"],
+    )
+    return _bundle_out(template)
+
+
+@router.patch(
+    "/settings/bundle-templates/{template_id}", response_model=BundleTemplateOut
+)
+def update_bundle_template(
+    template_id: int,
+    payload: UpdateBundleTemplateRequest,
+    actor: dict[str, Any] = Depends(require_admin),
+    __: None = Depends(verify_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> BundleTemplateOut:
+    try:
+        template = repository.update_bundle_template(
+            conn,
+            template_id,
+            name=payload.name,
+            content=payload.content,
+            mappings=(None if payload.mappings is None else [m.model_dump() for m in payload.mappings]),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A bundle template with that name already exists",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if template is None:
+        raise HTTPException(status_code=404, detail="Bundle template not found")
+    changed = [
+        name for name in ("name", "content", "mappings") if getattr(payload, name) is not None
+    ]
+    audit.record(
+        conn,
+        category=audit.CATEGORY_SYSTEM,
+        action="bundle_template_update",
+        actor=actor,
+        target_type="bundle_template",
+        target_id=template["id"],
+        target_name=template["name"],
+        detail=f"fields={','.join(changed) or 'none'}",
+    )
+    return _bundle_out(template)
+
+
+@router.delete("/settings/bundle-templates/{template_id}", response_model=MessageOut)
+def delete_bundle_template(
+    template_id: int,
+    actor: dict[str, Any] = Depends(require_admin),
+    __: None = Depends(verify_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> MessageOut:
+    existing = repository.get_bundle_template(conn, template_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Bundle template not found")
+    repository.delete_bundle_template(conn, template_id)
+    audit.record(
+        conn,
+        category=audit.CATEGORY_SYSTEM,
+        action="bundle_template_delete",
+        actor=actor,
+        target_type="bundle_template",
+        target_id=existing["id"],
+        target_name=existing["name"],
+    )
+    return MessageOut(detail="Bundle template deleted")
 
 
 # --- Team management (administrator-managed) --------------------------------

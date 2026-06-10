@@ -24,6 +24,13 @@ function stubUsers() {
     if (method === "GET" && url.endsWith("/api/teams")) {
       return json([{ id: 1, name: "Red Team", sort_order: 0, icon: "" }]);
     }
+    if (method === "GET" && url.endsWith("/api/settings/bundle-templates")) {
+      return json([]);
+    }
+    if (method === "POST" && url.endsWith("/api/settings/bundle-templates")) {
+      const body = JSON.parse(init?.body as string);
+      return json({ id: 1, ...body });
+    }
     if (method === "POST" && url.endsWith("/api/users")) {
       return json({
         user: makeUser({ id: 2, username: "newbie@example.com", role: "user" }),
@@ -103,5 +110,27 @@ describe("UserManagement credential copy", () => {
         (init?.method ?? "GET") === "DELETE",
       ),
     ).toBe(true);
+  });
+
+  it("creates a bundle template", async () => {
+    const fetchMock = stubUsers();
+    render(<UserManagement currentUser={makeUser({ id: 1, role: "admin" })} />);
+
+    await screen.findByRole("heading", { name: /bundle templates/i });
+    await userEvent.type(screen.getByLabelText(/template name/i), "Shell profile");
+    await userEvent.type(screen.getByLabelText(/template content/i), "USER");
+    await userEvent.type(screen.getByLabelText(/template field/i), "USER");
+    await userEvent.click(screen.getByRole("button", { name: /add template/i }));
+
+    const createCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).endsWith("/api/settings/bundle-templates") &&
+        (init?.method ?? "GET") === "POST",
+    );
+    expect(JSON.parse((createCall![1] as RequestInit).body as string)).toMatchObject({
+      name: "Shell profile",
+      content: "USER",
+      mappings: [{ field_name: "USER", source: "username" }],
+    });
   });
 });
