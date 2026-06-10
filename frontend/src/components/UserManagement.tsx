@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "../api";
 import type { ApiUser, Role, UpdateUserInput } from "../types";
 import { copyToClipboard } from "../lib/clipboard";
+import { BundleTemplateManagement } from "./BundleTemplateManagement";
 
 const ROLES: Role[] = ["admin", "user"];
 
@@ -76,6 +77,8 @@ export function UserManagement(props: { currentUser: ApiUser | null }) {
         }}
         onError={setError}
       />
+
+      <BundleTemplateManagement />
 
       <section className="card">
         <h2>Users</h2>

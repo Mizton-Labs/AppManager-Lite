@@ -18,6 +18,9 @@ class TeamConflictError(ValueError):
     """Raised when a team name (or its derived slug) collides with another."""
 
 
+BUNDLE_MAPPING_SOURCES = ("username", "user_apps_server", "user_role")
+
+
 def _row_to_team(row: sqlite3.Row) -> dict[str, Any]:
     return {
         "id": row["id"],
@@ -363,6 +366,146 @@ def delete_user(
         )
     cur = conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
     return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Bundle templates
+# ---------------------------------------------------------------------------
+
+
+def _bundle_mappings(conn: sqlite3.Connection, template_id: int) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT field_name, source
+        FROM bundle_template_mappings
+        WHERE template_id = ?
+        ORDER BY id
+        """,
+        (template_id,),
+    ).fetchall()
+    return [{"field_name": r["field_name"], "source": r["source"]} for r in rows]
+
+
+def _row_to_bundle_template(
+    conn: sqlite3.Connection, row: sqlite3.Row
+) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "content": row["content"],
+        "mappings": _bundle_mappings(conn, row["id"]),
+    }
+
+
+def _validate_bundle_mappings(mappings: list[dict[str, str]]) -> None:
+    seen: set[str] = set()
+    for mapping in mappings:
+        field_name = mapping["field_name"].strip()
+        source = mapping["source"].strip()
+        if not field_name:
+            raise ValueError("Bundle mapping field name must not be empty.")
+        if field_name in seen:
+            raise ValueError(f"Duplicate bundle mapping field: {field_name}")
+        if source not in BUNDLE_MAPPING_SOURCES:
+            raise ValueError(f"Unknown bundle mapping source: {source}")
+        seen.add(field_name)
+
+
+def _replace_bundle_mappings(
+    conn: sqlite3.Connection, template_id: int, mappings: list[dict[str, str]]
+) -> None:
+    _validate_bundle_mappings(mappings)
+    conn.execute(
+        "DELETE FROM bundle_template_mappings WHERE template_id = ?", (template_id,)
+    )
+    for mapping in mappings:
+        conn.execute(
+            """
+            INSERT INTO bundle_template_mappings (template_id, field_name, source)
+            VALUES (?, ?, ?)
+            """,
+            (template_id, mapping["field_name"].strip(), mapping["source"].strip()),
+        )
+
+
+def list_bundle_templates(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT * FROM bundle_templates ORDER BY lower(name), id"
+    ).fetchall()
+    return [_row_to_bundle_template(conn, r) for r in rows]
+
+
+def get_bundle_template(
+    conn: sqlite3.Connection, template_id: int
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT * FROM bundle_templates WHERE id = ?", (template_id,)
+    ).fetchone()
+    return _row_to_bundle_template(conn, row) if row is not None else None
+
+
+def create_bundle_template(
+    conn: sqlite3.Connection,
+    *,
+    name: str,
+    content: str,
+    mappings: list[dict[str, str]],
+) -> dict[str, Any]:
+    cur = conn.execute(
+        "INSERT INTO bundle_templates (name, content) VALUES (?, ?)",
+        (name.strip(), content),
+    )
+    template_id = int(cur.lastrowid)
+    _replace_bundle_mappings(conn, template_id, mappings)
+    created = get_bundle_template(conn, template_id)
+    assert created is not None
+    return created
+
+
+def update_bundle_template(
+    conn: sqlite3.Connection,
+    template_id: int,
+    *,
+    name: str | None = None,
+    content: str | None = None,
+    mappings: list[dict[str, str]] | None = None,
+) -> dict[str, Any] | None:
+    if get_bundle_template(conn, template_id) is None:
+        return None
+    columns: dict[str, Any] = {}
+    if name is not None:
+        columns["name"] = name.strip()
+    if content is not None:
+        columns["content"] = content
+    if columns:
+        assignments = ", ".join(f"{col} = ?" for col in columns)
+        conn.execute(
+            f"UPDATE bundle_templates SET {assignments}, updated_at = datetime('now') "
+            "WHERE id = ?",
+            [*columns.values(), template_id],
+        )
+    if mappings is not None:
+        _replace_bundle_mappings(conn, template_id, mappings)
+    return get_bundle_template(conn, template_id)
+
+
+def delete_bundle_template(conn: sqlite3.Connection, template_id: int) -> bool:
+    cur = conn.execute("DELETE FROM bundle_templates WHERE id = ?", (template_id,))
+    return cur.rowcount > 0
+
+
+def render_bundle_template(template: dict[str, Any], user: dict[str, Any]) -> str:
+    values = {
+        "username": user.get("username", "") or "",
+        "user_apps_server": user.get("apps_server", "") or "",
+        "user_role": user.get("role", "") or "",
+    }
+    rendered = str(template["content"])
+    for mapping in template["mappings"]:
+        rendered = rendered.replace(
+            mapping["field_name"], values.get(mapping["source"], "")
+        )
+    return rendered
 
 
 # ---------------------------------------------------------------------------
