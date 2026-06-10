@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "../api";
 import type {
+  ApiUser,
   Application,
   ApprovalStatus,
   UpdateApplicationInput,
@@ -30,13 +31,17 @@ export function ApplicationManager(props: {
   // Populated from an action's returned push status and shown once next to the
   // application name. Cleared on reload (and therefore on leaving this view).
   const [pushNotices, setPushNotices] = useState<Record<number, string>>({});
+  const [pushBusy, setPushBusy] = useState<Record<number, boolean>>({});
+  const [pushMessages, setPushMessages] = useState<Record<number, string>>({});
+  const [ownerOptions, setOwnerOptions] = useState<ApiUser[]>([]);
 
   const reload = useCallback(async () => {
-    setApps(
-      isAdmin
-        ? await api.listManagedApplications()
-        : await api.listMyApplications(),
-    );
+    const [nextApps, nextUsers] = await Promise.all([
+      isAdmin ? api.listManagedApplications() : api.listMyApplications(),
+      isAdmin ? api.listUsers() : Promise.resolve([]),
+    ]);
+    setApps(nextApps);
+    setOwnerOptions(nextUsers.filter((user) => user.is_active));
   }, [isAdmin]);
 
   useEffect(() => {
@@ -70,8 +75,10 @@ export function ApplicationManager(props: {
   // Run an action that returns the affected application, then surface its push
   // status as a transient notice next to that application's name.
   const runPushAction = useCallback(
-    async (action: () => Promise<Application>) => {
+    async (appId: number, action: () => Promise<Application>) => {
       setError(null);
+      setPushBusy((current) => ({ ...current, [appId]: true }));
+      setPushMessages((current) => ({ ...current, [appId]: "" }));
       try {
         const result = await action();
         if (result && result.last_push_status) {
@@ -79,12 +86,32 @@ export function ApplicationManager(props: {
             ...current,
             [result.id]: result.last_push_status as string,
           }));
+          const ok = result.last_push_status === "ok";
+          setPushMessages((current) => ({
+            ...current,
+            [result.id]: ok
+              ? "Push completed successfully."
+              : `Push finished with status: ${result.last_push_status}.`,
+          }));
+          window.setTimeout(() => {
+            setPushMessages((current) => {
+              const next = { ...current };
+              delete next[result.id];
+              return next;
+            });
+          }, 5000);
         }
         await reload();
       } catch (err) {
+        setPushMessages((current) => ({
+          ...current,
+          [appId]: err instanceof ApiError ? err.message : "Push failed.",
+        }));
         setError(
           err instanceof ApiError ? err.message : "The operation failed.",
         );
+      } finally {
+        setPushBusy((current) => ({ ...current, [appId]: false }));
       }
     },
     [reload],
@@ -164,18 +191,21 @@ export function ApplicationManager(props: {
                   })
                 }
                 onSetApproval={(status) =>
-                  runPushAction(async () => {
+                  runPushAction(app.id, async () => {
                     return await api.updateApplication(app.id, {
                       approval_status: status,
                     });
                   })
                 }
                 onRetryPush={() =>
-                  runPushAction(async () => {
+                  runPushAction(app.id, async () => {
                     return await api.retryApplicationPush(app.id);
                   })
                 }
                 pushNotice={pushNotices[app.id]}
+                pushBusy={Boolean(pushBusy[app.id])}
+                pushMessage={pushMessages[app.id]}
+                ownerOptions={ownerOptions}
                 onDelete={() =>
                   runAction(async () => {
                     await api.deleteApplication(app.id);
@@ -613,6 +643,9 @@ function ApplicationRow(props: {
   onDelete: () => void;
   /** Transient reverse-proxy push status shown once next to the name. */
   pushNotice?: string;
+  pushBusy: boolean;
+  pushMessage?: string;
+  ownerOptions: readonly ApiUser[];
 }) {
   const { app, isAdmin } = props;
   const [editing, setEditing] = useState(false);
@@ -626,6 +659,7 @@ function ApplicationRow(props: {
   const [teams, setTeams] = useState<string[]>(app.teams);
   const [appsPort, setAppsPort] = useState(app.apps_port ?? "");
   const [appsServer, setAppsServer] = useState(app.apps_server ?? "");
+  const [ownerId, setOwnerId] = useState(String(app.created_by_id ?? ""));
   const [logoError, setLogoError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -637,6 +671,7 @@ function ApplicationRow(props: {
     setTeams(app.teams);
     setAppsPort(app.apps_port ?? "");
     setAppsServer(app.apps_server ?? "");
+    setOwnerId(String(app.created_by_id ?? ""));
   }, [
     app.name,
     app.url_type,
@@ -646,6 +681,7 @@ function ApplicationRow(props: {
     app.teams,
     app.apps_port,
     app.apps_server,
+    app.created_by_id,
   ]);
 
   const dirty = useMemo(
@@ -657,9 +693,10 @@ function ApplicationRow(props: {
       iconUrl !== app.icon_url ||
       appsPort !== (app.apps_port ?? "") ||
       appsServer !== (app.apps_server ?? "") ||
+      ownerId !== String(app.created_by_id ?? "") ||
       teams.length !== app.teams.length ||
       teams.some((t) => !app.teams.includes(t)),
-    [name, urlType, url, description, iconUrl, appsPort, appsServer, teams, app],
+    [name, urlType, url, description, iconUrl, appsPort, appsServer, ownerId, teams, app],
   );
 
   // Each alias application has its own port, editable by any user. The upstream
@@ -813,11 +850,17 @@ function ApplicationRow(props: {
                 {app.approval_status === "approved" && app.url_type === "alias" && (
                   <button
                     type="button"
-                    className="btn approve"
+                    className={props.pushBusy ? "btn warn" : "btn approve"}
                     onClick={props.onRetryPush}
+                    disabled={props.pushBusy}
                   >
-                    Push
+                    {props.pushBusy ? "Pushing…" : "Push"}
                   </button>
+                )}
+                {props.pushMessage && (
+                  <span className="muted push-action-message" role="status">
+                    {props.pushMessage}
+                  </span>
                 )}
               </div>
               {showPushLog && (
@@ -868,6 +911,22 @@ function ApplicationRow(props: {
             </label>
           )}
 
+          {isAdmin && props.ownerOptions.length > 0 && (
+            <label className="field">
+              <span>Owner</span>
+              <select
+                value={ownerId}
+                onChange={(e) => setOwnerId(e.target.value)}
+              >
+                {props.ownerOptions.map((owner) => (
+                  <option key={owner.id} value={owner.id}>
+                    {owner.username}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
           <label className="field">
             <span>Description</span>
             <input
@@ -912,6 +971,7 @@ function ApplicationRow(props: {
                   teams,
                   ...(showPort ? { apps_port: appsPort.trim() } : {}),
                   ...(showServer ? { apps_server: appsServer.trim() } : {}),
+                  ...(isAdmin && ownerId ? { created_by: Number(ownerId) } : {}),
                 });
                 setEditing(false);
               }}

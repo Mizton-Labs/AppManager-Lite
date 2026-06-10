@@ -347,14 +347,20 @@ def set_password(
     )
 
 
-def delete_user(conn: sqlite3.Connection, user_id: int) -> bool:
-    # Keep applications this user created; just detach ownership so they show as
-    # system-owned. (Fresh schemas also enforce this via ON DELETE SET NULL, but
-    # databases migrated with ALTER TABLE have no such foreign key.)
-    conn.execute(
-        "UPDATE applications SET created_by = NULL WHERE created_by = ?",
-        (user_id,),
-    )
+def delete_user(
+    conn: sqlite3.Connection,
+    user_id: int,
+    *,
+    delete_apps: bool = False,
+    transfer_to_user_id: int | None = None,
+) -> bool:
+    if delete_apps:
+        conn.execute("DELETE FROM applications WHERE created_by = ?", (user_id,))
+    else:
+        conn.execute(
+            "UPDATE applications SET created_by = ? WHERE created_by = ?",
+            (transfer_to_user_id, user_id),
+        )
     cur = conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
     return cur.rowcount > 0
 
@@ -387,9 +393,9 @@ def _row_to_application(
         "needs_push": bool(row["needs_push"]),
         "teams": list_application_teams(conn, row["id"]),
     }
-    if include_creator:
-        # Only present when the query LEFT JOINs users as created_by_username.
+    if "created_by_username" in row.keys():
         data["created_by_username"] = row["created_by_username"]
+    if include_creator:
         # Push status/log are management-only details (mirror created_by gating).
         data["last_push_status"] = row["last_push_status"]
         data["last_push_log"] = row["last_push_log"]
@@ -422,10 +428,15 @@ def count_applications(conn: sqlite3.Connection) -> int:
 def list_all_applications(
     conn: sqlite3.Connection, *, active_only: bool = True
 ) -> list[dict[str, Any]]:
-    sql = "SELECT * FROM applications WHERE approval_status = 'approved'"
+    sql = """
+        SELECT a.*, u.username AS created_by_username
+        FROM applications a
+        LEFT JOIN users u ON u.id = a.created_by
+        WHERE a.approval_status = 'approved'
+    """
     if active_only:
-        sql += " AND is_active = 1"
-    sql += " ORDER BY sort_order, name, id"
+        sql += " AND a.is_active = 1"
+    sql += " ORDER BY a.sort_order, a.name, a.id"
     rows = conn.execute(sql).fetchall()
     return [_row_to_application(conn, r) for r in rows]
 
@@ -434,8 +445,9 @@ def list_applications_for_team(
     conn: sqlite3.Connection, team_name: str, *, active_only: bool = True
 ) -> list[dict[str, Any]]:
     sql = """
-        SELECT a.*
+        SELECT a.*, u.username AS created_by_username
         FROM applications a
+        LEFT JOIN users u ON u.id = a.created_by
         JOIN application_teams at ON at.application_id = a.id
         JOIN teams t ON t.id = at.team_id
         WHERE t.name = ? AND a.approval_status = 'approved'
@@ -456,8 +468,9 @@ def list_applications_for_teams(
     # remains a fully parameter-bound query.
     placeholders = ",".join("?" for _ in team_names)
     sql = f"""
-        SELECT DISTINCT a.*
+        SELECT DISTINCT a.*, u.username AS created_by_username
         FROM applications a
+        LEFT JOIN users u ON u.id = a.created_by
         JOIN application_teams at ON at.application_id = a.id
         JOIN teams t ON t.id = at.team_id
         WHERE t.name IN ({placeholders}) AND a.approval_status = 'approved'
@@ -614,6 +627,7 @@ def update_application(
     icon_url: str | None = None,
     is_active: bool | None = None,
     approval_status: str | None = None,
+    created_by: int | None = None,
     sort_order: int | None = None,
     teams: list[str] | None = None,
     apps_server: str | None = None,
@@ -642,6 +656,8 @@ def update_application(
         columns["is_active"] = int(is_active)
     if approval_status is not None:
         columns["approval_status"] = approval_status
+    if created_by is not None:
+        columns["created_by"] = created_by
     if sort_order is not None:
         columns["sort_order"] = sort_order
     if apps_server is not None:

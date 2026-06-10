@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { UserManagement } from "./UserManagement";
 import { makeUser } from "../test/fixtures";
@@ -16,7 +16,10 @@ function stubUsers() {
       ({ ok: true, status: 200, json: async () => payload }) as Response;
 
     if (method === "GET" && url.endsWith("/api/users")) {
-      return json([makeUser({ id: 1, username: "admin", role: "admin" })]);
+      return json([
+        makeUser({ id: 1, username: "admin", role: "admin" }),
+        makeUser({ id: 2, username: "analyst", role: "user" }),
+      ]);
     }
     if (method === "GET" && url.endsWith("/api/teams")) {
       return json([{ id: 1, name: "Red Team", sort_order: 0, icon: "" }]);
@@ -26,6 +29,9 @@ function stubUsers() {
         user: makeUser({ id: 2, username: "newbie@example.com", role: "user" }),
         password: "Generated-Pass-123",
       });
+    }
+    if (method === "DELETE" && url.includes("/api/users/")) {
+      return json({ detail: "User deleted" });
     }
     return { ok: false, status: 500, json: async () => ({}) } as Response;
   });
@@ -53,7 +59,7 @@ describe("UserManagement credential copy", () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", { clipboard: { writeText } });
 
-    render(<UserManagement currentUser={makeUser({ id: 1, role: "admin" })} />);
+    render(<UserManagement currentUser={makeUser({ id: 99, role: "admin" })} />);
     await createUserAndOpenBanner();
 
     await userEvent.click(screen.getByRole("button", { name: /^copy$/i }));
@@ -76,5 +82,26 @@ describe("UserManagement credential copy", () => {
     expect(
       await screen.findByText(/select it, then\s+copy manually/i),
     ).toBeInTheDocument();
+  });
+
+  it("sends the delete-apps choice when deleting a user", async () => {
+    const fetchMock = stubUsers();
+    render(<UserManagement currentUser={makeUser({ id: 1, role: "admin" })} />);
+
+    const analystCard = (await screen.findByText("analyst")).closest("article");
+    expect(analystCard).not.toBeNull();
+    await userEvent.click(
+      within(analystCard!).getByRole("button", { name: /^edit$/i }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: /^delete$/i }));
+    await userEvent.click(screen.getByLabelText(/also delete this user's apps/i));
+    await userEvent.click(screen.getByRole("button", { name: /confirm delete/i }));
+
+    expect(
+      fetchMock.mock.calls.some(([url, init]) =>
+        String(url).includes("delete_apps=true") &&
+        (init?.method ?? "GET") === "DELETE",
+      ),
+    ).toBe(true);
   });
 });

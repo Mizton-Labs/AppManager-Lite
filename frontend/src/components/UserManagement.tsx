@@ -101,9 +101,9 @@ export function UserManagement(props: { currentUser: ApiUser | null }) {
                   });
                 })
               }
-              onDelete={() =>
+              onDelete={(deleteApps) =>
                 runAction(async () => {
-                  await api.deleteUser(user.id);
+                  await api.deleteUser(user.id, { delete_apps: deleteApps });
                 })
               }
             />
@@ -302,11 +302,12 @@ function UserRow(props: {
   isSelf: boolean;
   onSave: (input: UpdateUserInput) => void;
   onResetPassword: () => void;
-  onDelete: () => void;
+  onDelete: (deleteApps: boolean) => void;
 }) {
   const { user } = props;
   const [editing, setEditing] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleteApps, setDeleteApps] = useState(false);
   const [role, setRole] = useState<Role>(user.role);
   const [teams, setTeams] = useState<string[]>(user.teams);
   const [selfService, setSelfService] = useState(user.self_service);
@@ -451,12 +452,21 @@ function UserRow(props: {
             {confirmingDelete ? (
               <span className="confirm-inline">
                 <span>Delete {user.username}?</span>
+                <label className="checkbox inline-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={deleteApps}
+                    onChange={(e) => setDeleteApps(e.target.checked)}
+                  />
+                  <span>Also delete this user's apps</span>
+                </label>
                 <button
                   type="button"
                   className="btn danger"
                   onClick={() => {
-                    props.onDelete();
+                    props.onDelete(deleteApps);
                     setConfirmingDelete(false);
+                    setDeleteApps(false);
                   }}
                 >
                   Confirm delete
@@ -464,7 +474,10 @@ function UserRow(props: {
                 <button
                   type="button"
                   className="btn ghost"
-                  onClick={() => setConfirmingDelete(false)}
+                  onClick={() => {
+                    setConfirmingDelete(false);
+                    setDeleteApps(false);
+                  }}
                 >
                   Cancel
                 </button>

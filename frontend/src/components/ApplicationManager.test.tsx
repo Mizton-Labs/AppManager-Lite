@@ -40,6 +40,30 @@ function stubBackend(initial: Application[]) {
     if (method === "GET" && /\/api\/applications\/(manage|mine)$/.test(url)) {
       return jsonResponse(store);
     }
+    if (method === "GET" && url.endsWith("/api/users")) {
+      return jsonResponse([
+        {
+          id: 1,
+          username: "admin@example.com",
+          role: "admin",
+          is_active: true,
+          must_change_password: false,
+          self_service: true,
+          apps_server: "",
+          teams: [],
+        },
+        {
+          id: 2,
+          username: "owner@example.com",
+          role: "user",
+          is_active: true,
+          must_change_password: false,
+          self_service: false,
+          apps_server: "",
+          teams: ["Red Team"],
+        },
+      ]);
+    }
     const retryMatch = url.match(/\/api\/applications\/(\d+)\/push-retry$/);
     if (method === "POST" && retryMatch) {
       const id = Number(retryMatch[1]);
@@ -68,7 +92,22 @@ function stubBackend(initial: Application[]) {
     }
     if (method === "PATCH" && byId) {
       const id = Number(byId[1]);
-      store = store.map((app) => (app.id === id ? { ...app, ...body } : app));
+      const selectedOwner = body.created_by
+        ? body.created_by === 1
+          ? "admin@example.com"
+          : "owner@example.com"
+        : undefined;
+      store = store.map((app) =>
+        app.id === id
+          ? {
+              ...app,
+              ...body,
+              ...(selectedOwner
+                ? { created_by_id: body.created_by, created_by: selectedOwner }
+                : {}),
+            }
+          : app,
+      );
       return jsonResponse(store.find((app) => app.id === id));
     }
     if (method === "DELETE" && byId) {
@@ -540,5 +579,26 @@ describe("ApplicationManager", () => {
     expect(await screen.findByText(/published by analyst/i)).toBeInTheDocument();
     expect(screen.getByText(/disable requested/i)).toBeInTheDocument();
     expect(screen.getByText(/proxy config changed/i)).toBeInTheDocument();
+  });
+
+  it("lets an admin transfer application ownership", async () => {
+    const fetchMock = stubBackend([
+      makeApp({ created_by: "admin@example.com", created_by_id: 1 }),
+    ]);
+    render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
+
+    await screen.findByText("Hunt Workbench");
+    await userEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    await userEvent.selectOptions(screen.getByLabelText("Owner"), "2");
+    await userEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+    const patchCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).includes("/api/applications/1") &&
+        (init?.method ?? "GET") === "PATCH",
+    );
+    expect(JSON.parse((patchCall![1] as RequestInit).body as string)).toMatchObject({
+      created_by: 2,
+    });
   });
 });

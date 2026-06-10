@@ -56,4 +56,9 @@ describe("AppCard", () => {
     expect(screen.getByText("Threat Hunting")).toBeInTheDocument();
     expect(screen.getByText("Red Team")).toBeInTheDocument();
   });
+
+  it("shows the publisher local-part", () => {
+    render(<AppCard app={makeApp({ created_by: "publisher@example.com" })} />);
+    expect(screen.getByText(/published by publisher/i)).toBeInTheDocument();
+  });
 });

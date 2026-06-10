@@ -48,9 +48,8 @@ def _app_out(
         is_active=app["is_active"],
         approval_status=app["approval_status"],
         sort_order=app["sort_order"],
-        # The creator's name is exposed only in management / own-app responses so
-        # an ordinary listing never reveals who created another team's app.
-        created_by=app.get("created_by_username") if include_creator else None,
+        created_by=app.get("created_by_username"),
+        created_by_id=app.get("created_by"),
         last_push_status=app.get("last_push_status") if include_creator else None,
         last_push_log=app.get("last_push_log", "") if include_creator else "",
         last_push_at=app.get("last_push_at") if include_creator else None,
@@ -264,11 +263,6 @@ def list_applications(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Unknown team"
             )
-        if not is_admin and team not in user["teams"]:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Your account is not assigned to this team",
-            )
         apps = repository.list_applications_for_team(
             conn, team, active_only=active_only
         )
@@ -401,6 +395,14 @@ def update_application(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only administrators can change approval status",
         )
+    if payload.created_by is not None:
+        if not is_admin:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only administrators can transfer ownership",
+            )
+        if repository.get_user_by_id(conn, payload.created_by) is None:
+            raise HTTPException(status_code=404, detail="New owner not found")
 
     has_staged_change = bool(existing.get("pending_alias")) or existing.get(
         "pending_is_active"
@@ -510,6 +512,7 @@ def update_application(
         is_active=is_active_for_update,
         approval_status=new_status,
         sort_order=payload.sort_order,
+        created_by=payload.created_by,
         teams=payload.teams,
         # The application's own server host is administrator-only; its port may
         # be changed by any user (owner or admin).
