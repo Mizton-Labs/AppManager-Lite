@@ -14,6 +14,7 @@ export interface ApiUser {
   must_change_password: boolean;
   self_service: boolean;
   apps_server: string;
+  apps_server_ip: string;
   teams: string[];
 }
 
@@ -36,7 +37,12 @@ export interface GeneratedPassword {
   password: string;
 }
 
-export type BundleMappingSource = "username" | "user_apps_server" | "user_role";
+export type BundleMappingSource =
+  | "username"
+  | "user_apps_server"
+  | "user_apps_server_host"
+  | "user_apps_server_ip"
+  | "user_role";
 
 export interface BundleTemplateMapping {
   field_name: string;
@@ -97,6 +103,7 @@ export interface CreateUserInput {
   teams: string[];
   self_service?: boolean;
   apps_server?: string;
+  apps_server_ip?: string;
 }
 
 export interface UpdateUserInput {
@@ -105,6 +112,7 @@ export interface UpdateUserInput {
   is_active?: boolean;
   self_service?: boolean;
   apps_server?: string;
+  apps_server_ip?: string;
 }
 
 /** Reverse-proxy (nginx) configuration in General Settings (admin only). */

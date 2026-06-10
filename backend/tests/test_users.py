@@ -19,7 +19,12 @@ def _create(client, csrf, username, role="user", teams=None):
     username = username if "@" in username else f"{username}@example.com"
     return client.post(
         "/api/users",
-        json={"username": username, "role": role, "teams": teams or []},
+        json={
+            "username": username,
+            "role": role,
+            "teams": teams or [],
+            "apps_server": "apps.example.com",
+        },
         headers={"X-CSRF-Token": csrf},
     )
 
@@ -45,6 +50,7 @@ def test_create_user_with_self_service(admin) -> None:
             "role": "user",
             "teams": ["Red Team"],
             "self_service": True,
+            "apps_server": "apps.example.com",
         },
         headers={"X-CSRF-Token": csrf},
     )
@@ -90,7 +96,12 @@ def test_create_user_rejects_non_email_username(admin) -> None:
     client, csrf, _ = admin
     resp = client.post(
         "/api/users",
-        json={"username": "not-an-email", "role": "user", "teams": []},
+        json={
+            "username": "not-an-email",
+            "role": "user",
+            "teams": [],
+            "apps_server": "apps.example.com",
+        },
         headers={"X-CSRF-Token": csrf},
     )
     assert resp.status_code == 422
@@ -100,6 +111,33 @@ def test_create_user_rejects_duplicate_username(admin) -> None:
     client, csrf, _ = admin
     assert _create(client, csrf, "carol").status_code == 201
     assert _create(client, csrf, "carol").status_code == 409
+
+
+def test_create_user_requires_apps_server_host_or_ip(admin) -> None:
+    client, csrf, _ = admin
+    resp = client.post(
+        "/api/users",
+        json={"username": "noserver@example.com", "role": "user", "teams": []},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 422
+
+
+def test_create_user_accepts_apps_server_ip(admin) -> None:
+    client, csrf, _ = admin
+    resp = client.post(
+        "/api/users",
+        json={
+            "username": "ipuser@example.com",
+            "role": "user",
+            "teams": [],
+            "apps_server_ip": "10.0.0.7",
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["user"]["apps_server"] == ""
+    assert resp.json()["user"]["apps_server_ip"] == "10.0.0.7"
 
 
 def test_teams_endpoint_returns_created_teams(admin) -> None:

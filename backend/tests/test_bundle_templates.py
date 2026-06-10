@@ -6,7 +6,12 @@ from fastapi.testclient import TestClient
 
 
 def _create_member(client, csrf, username="bundleuser@example.com", **extra):
-    body = {"username": username, "role": "user", "teams": []}
+    body = {
+        "username": username,
+        "role": "user",
+        "teams": [],
+        "apps_server": "apps.example.com",
+    }
     body.update(extra)
     resp = client.post("/api/users", json=body, headers={"X-CSRF-Token": csrf})
     assert resp.status_code == 201, resp.text
@@ -121,3 +126,58 @@ def test_account_download_renders_bundle_for_current_user(admin) -> None:
     assert download.status_code == 200, download.text
     assert download.text == "analyst@example.com runs on apps.example.com as user"
     assert "attachment" in download.headers["content-disposition"]
+
+
+def test_account_download_uses_ip_fallback_for_apps_server(admin) -> None:
+    client, csrf, _ = admin
+    template = _create_template(client, csrf)
+    created = _create_member(
+        client,
+        csrf,
+        username="iponly@example.com",
+        apps_server="",
+        apps_server_ip="10.0.0.8",
+    )
+
+    with TestClient(client.app) as member:
+        member.post(
+            "/api/auth/login",
+            json={"username": "iponly@example.com", "password": created["password"]},
+        )
+        download = member.get(f"/api/account/bundles/{template['id']}/download")
+
+    assert download.status_code == 200, download.text
+    assert download.text == "iponly@example.com runs on 10.0.0.8 as user"
+
+
+def test_account_download_renders_explicit_host_and_ip(admin) -> None:
+    client, csrf, _ = admin
+    template = client.post(
+        "/api/settings/bundle-templates",
+        json={
+            "name": "Server details",
+            "content": "HOST=HOSTNAME\nIP=SERVER_IP",
+            "mappings": [
+                {"field_name": "HOSTNAME", "source": "user_apps_server_host"},
+                {"field_name": "SERVER_IP", "source": "user_apps_server_ip"},
+            ],
+        },
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    created = _create_member(
+        client,
+        csrf,
+        username="both@example.com",
+        apps_server="apps.example.com",
+        apps_server_ip="10.0.0.9",
+    )
+
+    with TestClient(client.app) as member:
+        member.post(
+            "/api/auth/login",
+            json={"username": "both@example.com", "password": created["password"]},
+        )
+        download = member.get(f"/api/account/bundles/{template['id']}/download")
+
+    assert download.status_code == 200, download.text
+    assert download.text == "HOST=apps.example.com\nIP=10.0.0.9"

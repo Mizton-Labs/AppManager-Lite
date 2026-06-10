@@ -17,7 +17,12 @@ def _seed_teams(admin, make_team):
 
 def _create_member(client, csrf, username, **extra):
     username = username if "@" in username else f"{username}@example.com"
-    body = {"username": username, "role": "user", "teams": ["Red Team"]}
+    body = {
+        "username": username,
+        "role": "user",
+        "teams": ["Red Team"],
+        "apps_server": "apps.example.com",
+    }
     body.update(extra)
     resp = client.post(
         "/api/users", json=body, headers={"X-CSRF-Token": csrf}
@@ -542,17 +547,18 @@ def test_admin_app_apps_server_overrides_owner(admin, monkeypatch) -> None:
     assert "proxy_pass http://app.example.com:8080/;" in captured["conf"]
 
 
-def test_alias_push_skipped_when_no_owner_or_app_apps_server(
+def test_alias_push_uses_owner_apps_server_ip_when_no_hostname(
     admin, monkeypatch
 ) -> None:
-    # A member without a configured apps host submits an alias app (only a port);
-    # with no app apps_server and no owner apps_server, the push is skipped --
-    # it must NOT fall back to the nginx_host SSH target.
+    # A member without a configured apps hostname can still publish an alias app
+    # when their account has an explicit apps server IP.
     client, csrf, _ = admin
     _configure_proxy(client, csrf)
     _mock_ssh_ok(monkeypatch)
 
-    member_pw = _create_member(client, csrf, "noapps").json()["password"]
+    member_pw = _create_member(
+        client, csrf, "noapps", apps_server="", apps_server_ip="10.0.0.10"
+    ).json()["password"]
     with TestClient(client.app) as member:
         login = member.post(
             "/api/auth/login",
@@ -578,8 +584,7 @@ def test_alias_push_skipped_when_no_owner_or_app_apps_server(
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["last_push_status"] == "skipped"
-    assert "apps server" in body["last_push_log"].lower()
+    assert body["last_push_status"] == "ok"
 
 
 def _mock_ssh_conf(monkeypatch, conf_text):

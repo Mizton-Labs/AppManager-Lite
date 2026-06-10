@@ -110,7 +110,7 @@ def _push_alias_on_approval(
                 # used to push config -- it is never the upstream the alias
                 # proxies to.
                 #   - server: the application's own server (admin-set) first,
-                #     then the owning user's configured apps host.
+                #     then the owning user's configured apps host/IP.
                 #   - port: the application's own port (set by any user).
                 owner_id = app.get("created_by")
                 owner = (
@@ -120,7 +120,7 @@ def _push_alias_on_approval(
                 )
                 apps_port = app.get("apps_port") or ""
                 apps_server = app.get("apps_server") or (
-                    owner["apps_server"] if owner else ""
+                    (owner["apps_server"] or owner["apps_server_ip"]) if owner else ""
                 )
                 if not (apps_server and apps_port):
                     result = reverse_proxy.PushResult(status="skipped")

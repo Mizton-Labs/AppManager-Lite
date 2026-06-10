@@ -36,6 +36,7 @@ def test_branding_get_requires_admin(admin) -> None:
             "username": "brandmember@example.com",
             "role": "user",
             "teams": ["Red Team"],
+            "apps_server": "apps.example.com",
         },
         headers={"X-CSRF-Token": csrf},
     ).json()["password"]
