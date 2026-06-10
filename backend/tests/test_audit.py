@@ -16,7 +16,12 @@ def _create_member(client, csrf, username, teams):
     username = username if "@" in username else f"{username}@example.com"
     resp = client.post(
         "/api/users",
-        json={"username": username, "role": "user", "teams": teams},
+        json={
+            "username": username,
+            "role": "user",
+            "teams": teams,
+            "apps_server": "apps.example.com",
+        },
         headers={"X-CSRF-Token": csrf},
     )
     assert resp.status_code == 201, resp.text
@@ -132,6 +137,7 @@ def test_password_events_do_not_leak_secrets(admin) -> None:
             "username": "secretuser@example.com",
             "role": "user",
             "teams": ["Red Team"],
+            "apps_server": "apps.example.com",
         },
         headers={"X-CSRF-Token": csrf},
     )

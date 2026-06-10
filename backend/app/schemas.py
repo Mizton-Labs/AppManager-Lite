@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from ipaddress import ip_address
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -12,7 +13,13 @@ from .teams import slugify as _slugify_name
 ROLES = ("admin", "user")
 URL_TYPES = ("url", "alias")
 APPROVAL_STATES = ("pending", "approved", "rejected")
-BUNDLE_MAPPING_SOURCES = ("username", "user_apps_server", "user_role")
+BUNDLE_MAPPING_SOURCES = (
+    "username",
+    "user_apps_server",
+    "user_apps_server_host",
+    "user_apps_server_ip",
+    "user_role",
+)
 
 # A local alias becomes part of a URL path, so it is restricted to URL-safe
 # characters: letters, digits, and dashes only, with a hard length cap. This
@@ -33,15 +40,26 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def _validate_apps_server(value: str) -> str:
-    """An optional bare host/IP where a user runs their applications."""
+    """An optional bare hostname where a user runs their applications."""
     value = value.strip()
     if not value:
         return ""
     if len(value) > 253 or not _HOST_RE.match(value):
         raise ValueError(
-            "Apps server must be a bare hostname or IP (letters, digits, '.', '-')."
+            "Apps server host must be a bare hostname (letters, digits, '.', '-')."
         )
     return value
+
+
+def _validate_apps_server_ip(value: str) -> str:
+    """An optional IPv4/IPv6 address where a user runs their applications."""
+    value = value.strip()
+    if not value:
+        return ""
+    try:
+        return str(ip_address(value))
+    except ValueError as exc:
+        raise ValueError("Apps server IP must be a valid IPv4 or IPv6 address.") from exc
 
 
 def _validate_apps_port(value: str) -> str:
@@ -196,6 +214,7 @@ class CreateUserRequest(BaseModel):
     teams: list[str] = Field(default_factory=list)
     self_service: bool = False
     apps_server: str = Field(default="", max_length=253)
+    apps_server_ip: str = Field(default="", max_length=45)
 
     @field_validator("username")
     @classmethod
@@ -219,6 +238,17 @@ class CreateUserRequest(BaseModel):
     def _check_apps_server(cls, value: str) -> str:
         return _validate_apps_server(value)
 
+    @field_validator("apps_server_ip")
+    @classmethod
+    def _check_apps_server_ip(cls, value: str) -> str:
+        return _validate_apps_server_ip(value)
+
+    @model_validator(mode="after")
+    def _check_server_location(self) -> "CreateUserRequest":
+        if not self.apps_server and not self.apps_server_ip:
+            raise ValueError("Apps server hostname or IP is required.")
+        return self
+
 
 class UpdateUserRequest(BaseModel):
     role: str | None = None
@@ -226,6 +256,7 @@ class UpdateUserRequest(BaseModel):
     is_active: bool | None = None
     self_service: bool | None = None
     apps_server: str | None = Field(default=None, max_length=253)
+    apps_server_ip: str | None = Field(default=None, max_length=45)
 
     @field_validator("role")
     @classmethod
@@ -239,6 +270,11 @@ class UpdateUserRequest(BaseModel):
     def _check_apps_server(cls, value: str | None) -> str | None:
         return None if value is None else _validate_apps_server(value)
 
+    @field_validator("apps_server_ip")
+    @classmethod
+    def _check_apps_server_ip(cls, value: str | None) -> str | None:
+        return None if value is None else _validate_apps_server_ip(value)
+
 
 class UserOut(BaseModel):
     id: int
@@ -248,6 +284,7 @@ class UserOut(BaseModel):
     must_change_password: bool
     self_service: bool
     apps_server: str = ""
+    apps_server_ip: str = ""
     teams: list[str]
 
 

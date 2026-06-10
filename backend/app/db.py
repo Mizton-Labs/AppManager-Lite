@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS users (
     must_change_password INTEGER NOT NULL DEFAULT 0,
     self_service         INTEGER NOT NULL DEFAULT 0,
     apps_server          TEXT    NOT NULL DEFAULT '',
+    apps_server_ip       TEXT    NOT NULL DEFAULT '',
     apps_port            TEXT    NOT NULL DEFAULT '',
     created_at           TEXT    NOT NULL DEFAULT (datetime('now')),
     updated_at           TEXT    NOT NULL DEFAULT (datetime('now'))
@@ -212,6 +213,7 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     # Users gained an apps server/port: where the user runs their applications,
     # used to render reverse-proxy aliases.
     _add_column(conn, "users", "apps_server", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "users", "apps_server_ip", "TEXT NOT NULL DEFAULT ''")
     _add_column(conn, "users", "apps_port", "TEXT NOT NULL DEFAULT ''")
 
     # Applications gained an owner, a URL kind, and an approval state. Existing

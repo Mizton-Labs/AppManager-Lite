@@ -17,7 +17,12 @@ def test_user_management_open_without_login_or_csrf(client_no_auth: TestClient) 
     # State-changing requests succeed without a CSRF token when auth is off.
     resp = client_no_auth.post(
         "/api/users",
-        json={"username": "service-account@example.com", "role": "user", "teams": []},
+        json={
+            "username": "service-account@example.com",
+            "role": "user",
+            "teams": [],
+            "apps_server": "apps.example.com",
+        },
     )
     assert resp.status_code == 201, resp.text
 

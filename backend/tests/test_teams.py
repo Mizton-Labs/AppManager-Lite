@@ -17,7 +17,12 @@ def _create_member(client, csrf, username, teams):
     username = username if "@" in username else f"{username}@example.com"
     return client.post(
         "/api/users",
-        json={"username": username, "role": "user", "teams": teams},
+        json={
+            "username": username,
+            "role": "user",
+            "teams": teams,
+            "apps_server": "apps.example.com",
+        },
         headers={"X-CSRF-Token": csrf},
     )
 

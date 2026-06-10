@@ -27,7 +27,12 @@ def _create_member(client, csrf, username, teams):
     username = username if "@" in username else f"{username}@example.com"
     resp = client.post(
         "/api/users",
-        json={"username": username, "role": "user", "teams": teams},
+        json={
+            "username": username,
+            "role": "user",
+            "teams": teams,
+            "apps_server": "apps.example.com",
+        },
         headers={"X-CSRF-Token": csrf},
     )
     assert resp.status_code == 201, resp.text
@@ -696,7 +701,12 @@ def test_admin_can_transfer_application_ownership(admin) -> None:
     client, csrf, _ = admin
     new_owner = client.post(
         "/api/users",
-        json={"username": "newowner@example.com", "role": "user", "teams": ["Red Team"]},
+        json={
+            "username": "newowner@example.com",
+            "role": "user",
+            "teams": ["Red Team"],
+            "apps_server": "apps.example.com",
+        },
         headers={"X-CSRF-Token": csrf},
     ).json()["user"]
     app_id = _create_app(client, csrf, name="Transfer Me").json()["id"]

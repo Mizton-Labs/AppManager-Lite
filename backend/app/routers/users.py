@@ -37,6 +37,7 @@ def _user_out(user: dict[str, Any]) -> UserOut:
         must_change_password=user["must_change_password"],
         self_service=user["self_service"],
         apps_server=user["apps_server"],
+        apps_server_ip=user["apps_server_ip"],
         teams=user["teams"],
     )
 
@@ -104,6 +105,7 @@ def create_user(
             must_change_password=True,
             self_service=payload.self_service,
             apps_server=payload.apps_server,
+            apps_server_ip=payload.apps_server_ip,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -127,7 +129,8 @@ def create_user(
         target_id=user["id"],
         target_name=user["username"],
         detail=f"role={user['role']} teams={payload.teams} "
-        f"self_service={user['self_service']} apps_server={user['apps_server']!r}",
+        f"self_service={user['self_service']} apps_server={user['apps_server']!r} "
+        f"apps_server_ip={user['apps_server_ip']!r}",
     )
     return GeneratedPasswordOut(user=_user_out(user), password=password)
 
@@ -145,6 +148,21 @@ def update_user(
         raise HTTPException(status_code=404, detail="User not found")
     if payload.teams is not None:
         _validate_teams(conn, payload.teams)
+    next_apps_server = (
+        target["apps_server"] if payload.apps_server is None else payload.apps_server
+    )
+    next_apps_server_ip = (
+        target["apps_server_ip"]
+        if payload.apps_server_ip is None
+        else payload.apps_server_ip
+    )
+    if (
+        payload.apps_server is not None or payload.apps_server_ip is not None
+    ) and not next_apps_server and not next_apps_server_ip:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Apps server hostname or IP is required",
+        )
 
     # Determine whether this change removes the last active admin.
     demoting = payload.role is not None and payload.role != "admin"
@@ -165,6 +183,7 @@ def update_user(
         is_active=payload.is_active,
         self_service=payload.self_service,
         apps_server=payload.apps_server,
+        apps_server_ip=payload.apps_server_ip,
     )
     assert updated is not None
     if payload.is_active is False:
