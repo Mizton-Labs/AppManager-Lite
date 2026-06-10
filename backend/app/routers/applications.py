@@ -244,6 +244,10 @@ def list_applications(
     team: str | None = Query(
         default=None, description="Limit to a single team the caller can access."
     ),
+    publisher_team: str | None = Query(
+        default=None,
+        description="Limit to apps published by users assigned to this team.",
+    ),
     include_inactive: bool = Query(
         default=False, description="Administrators only: include disabled apps."
     ),
@@ -258,8 +262,24 @@ def list_applications(
             detail="Administrator privileges required",
         )
     active_only = not (include_inactive and is_admin)
+    if team is not None and publisher_team is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Use either team or publisher_team, not both",
+        )
 
-    if team is not None:
+    if publisher_team is not None:
+        if publisher_team not in set(repository.list_team_names(conn)):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Unknown team"
+            )
+        apps = repository.list_applications_for_publisher_team(
+            conn,
+            publisher_team,
+            visible_team_names=None if is_admin else user["teams"],
+            active_only=active_only,
+        )
+    elif team is not None:
         if team not in set(repository.list_team_names(conn)):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Unknown team"
