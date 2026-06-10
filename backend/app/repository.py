@@ -18,7 +18,13 @@ class TeamConflictError(ValueError):
     """Raised when a team name (or its derived slug) collides with another."""
 
 
-BUNDLE_MAPPING_SOURCES = ("username", "user_apps_server", "user_role")
+BUNDLE_MAPPING_SOURCES = (
+    "username",
+    "user_apps_server",
+    "user_apps_server_host",
+    "user_apps_server_ip",
+    "user_role",
+)
 
 
 def _row_to_team(row: sqlite3.Row) -> dict[str, Any]:
@@ -40,6 +46,7 @@ def _row_to_user(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
         "must_change_password": bool(row["must_change_password"]),
         "self_service": bool(row["self_service"]),
         "apps_server": row["apps_server"],
+        "apps_server_ip": row["apps_server_ip"],
         "apps_port": row["apps_port"],
         "teams": teams,
     }
@@ -258,6 +265,7 @@ def create_user(
     must_change_password: bool,
     self_service: bool = False,
     apps_server: str = "",
+    apps_server_ip: str = "",
     apps_port: str = "",
 ) -> dict[str, Any]:
     existing = get_user_by_username(conn, username)
@@ -267,8 +275,8 @@ def create_user(
         """
         INSERT INTO users
             (username, password_hash, role, must_change_password, self_service,
-             apps_server, apps_port)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+             apps_server, apps_server_ip, apps_port)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             username,
@@ -277,6 +285,7 @@ def create_user(
             int(must_change_password),
             int(self_service),
             apps_server,
+            apps_server_ip,
             apps_port,
         ),
     )
@@ -296,6 +305,7 @@ def update_user(
     is_active: bool | None = None,
     self_service: bool | None = None,
     apps_server: str | None = None,
+    apps_server_ip: str | None = None,
     apps_port: str | None = None,
 ) -> dict[str, Any] | None:
     if get_user_by_id(conn, user_id) is None:
@@ -321,6 +331,12 @@ def update_user(
             "UPDATE users SET apps_server = ?, updated_at = datetime('now') "
             "WHERE id = ?",
             (apps_server, user_id),
+        )
+    if apps_server_ip is not None:
+        conn.execute(
+            "UPDATE users SET apps_server_ip = ?, updated_at = datetime('now') "
+            "WHERE id = ?",
+            (apps_server_ip, user_id),
         )
     if apps_port is not None:
         conn.execute(
@@ -497,7 +513,11 @@ def delete_bundle_template(conn: sqlite3.Connection, template_id: int) -> bool:
 def render_bundle_template(template: dict[str, Any], user: dict[str, Any]) -> str:
     values = {
         "username": user.get("username", "") or "",
-        "user_apps_server": user.get("apps_server", "") or "",
+        "user_apps_server": user.get("apps_server", "")
+        or user.get("apps_server_ip", "")
+        or "",
+        "user_apps_server_host": user.get("apps_server", "") or "",
+        "user_apps_server_ip": user.get("apps_server_ip", "") or "",
         "user_role": user.get("role", "") or "",
     }
     rendered = str(template["content"])

@@ -50,6 +50,7 @@ function stubBackend(initial: Application[]) {
           must_change_password: false,
           self_service: true,
           apps_server: "",
+          apps_server_ip: "",
           teams: [],
         },
         {
@@ -60,6 +61,7 @@ function stubBackend(initial: Application[]) {
           must_change_password: false,
           self_service: false,
           apps_server: "",
+          apps_server_ip: "",
           teams: ["Red Team"],
         },
       ]);

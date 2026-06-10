@@ -59,6 +59,8 @@ def _user_out(user: dict[str, Any]) -> UserOut:
         is_active=user["is_active"],
         must_change_password=user["must_change_password"],
         self_service=user["self_service"],
+        apps_server=user.get("apps_server", ""),
+        apps_server_ip=user.get("apps_server_ip", ""),
         teams=user["teams"],
     )
 

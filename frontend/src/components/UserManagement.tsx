@@ -187,7 +187,9 @@ function CreateUserCard(props: {
   const [selectedTeams, setSelectedTeams] = useState<string[]>([]);
   const [selfService, setSelfService] = useState(false);
   const [appsServer, setAppsServer] = useState("");
+  const [appsServerIp, setAppsServerIp] = useState("");
   const [busy, setBusy] = useState(false);
+  const hasServerLocation = Boolean(appsServer.trim() || appsServerIp.trim());
 
   function toggleTeam(team: string) {
     setSelectedTeams((current) =>
@@ -208,6 +210,7 @@ function CreateUserCard(props: {
         teams: selectedTeams,
         self_service: selfService,
         apps_server: appsServer.trim(),
+        apps_server_ip: appsServerIp.trim(),
       });
       props.onCreated({
         username: result.user.username,
@@ -219,6 +222,7 @@ function CreateUserCard(props: {
       setSelectedTeams([]);
       setSelfService(false);
       setAppsServer("");
+      setAppsServerIp("");
     } catch (err) {
       props.onError(
         err instanceof ApiError ? err.message : "Unable to create the user.",
@@ -265,7 +269,7 @@ function CreateUserCard(props: {
         />
 
         <label className="field">
-          <span>Apps server (host/IP)</span>
+          <span>Apps server hostname</span>
           <input
             type="text"
             value={appsServer}
@@ -273,8 +277,20 @@ function CreateUserCard(props: {
             placeholder="apps.example.com"
           />
           <span className="muted logo-hint">
-            Default host where this user's applications run. Each application
-            sets its own port.
+            Preferred hostname where this user's applications run.
+          </span>
+        </label>
+
+        <label className="field">
+          <span>Apps server IP</span>
+          <input
+            type="text"
+            value={appsServerIp}
+            onChange={(e) => setAppsServerIp(e.target.value)}
+            placeholder="10.0.0.8"
+          />
+          <span className="muted logo-hint">
+            Used when a module needs an IP, or as the fallback when no hostname is set.
           </span>
         </label>
 
@@ -290,7 +306,7 @@ function CreateUserCard(props: {
         <button
           type="submit"
           className="btn primary"
-          disabled={busy || username.trim().length === 0}
+          disabled={busy || username.trim().length === 0 || !hasServerLocation}
         >
           {busy ? "Creating…" : "Create user"}
         </button>
@@ -315,32 +331,38 @@ function UserRow(props: {
   const [teams, setTeams] = useState<string[]>(user.teams);
   const [selfService, setSelfService] = useState(user.self_service);
   const [appsServer, setAppsServer] = useState(user.apps_server);
+  const [appsServerIp, setAppsServerIp] = useState(user.apps_server_ip);
 
   useEffect(() => {
     setRole(user.role);
     setTeams(user.teams);
     setSelfService(user.self_service);
     setAppsServer(user.apps_server);
-  }, [user.role, user.teams, user.self_service, user.apps_server]);
+    setAppsServerIp(user.apps_server_ip);
+  }, [user.role, user.teams, user.self_service, user.apps_server, user.apps_server_ip]);
 
   const dirty = useMemo(
     () =>
       role !== user.role ||
       selfService !== user.self_service ||
       appsServer !== user.apps_server ||
+      appsServerIp !== user.apps_server_ip ||
       teams.length !== user.teams.length ||
       teams.some((t) => !user.teams.includes(t)),
     [
       role,
       selfService,
       appsServer,
+      appsServerIp,
       teams,
       user.role,
       user.self_service,
       user.apps_server,
+      user.apps_server_ip,
       user.teams,
     ],
   );
+  const hasServerLocation = Boolean(appsServer.trim() || appsServerIp.trim());
 
   function toggleTeam(team: string) {
     setTeams((current) =>
@@ -413,7 +435,7 @@ function UserRow(props: {
           <TeamPicker teams={props.teams} selected={teams} onToggle={toggleTeam} />
 
           <label className="field">
-            <span>Apps server (host/IP)</span>
+            <span>Apps server hostname</span>
             <input
               type="text"
               value={appsServer}
@@ -421,8 +443,20 @@ function UserRow(props: {
               placeholder="apps.example.com"
             />
             <span className="muted logo-hint">
-              Default host where this user's applications run. Each application
-              sets its own port.
+              Preferred hostname where this user's applications run.
+            </span>
+          </label>
+
+          <label className="field">
+            <span>Apps server IP</span>
+            <input
+              type="text"
+              value={appsServerIp}
+              onChange={(e) => setAppsServerIp(e.target.value)}
+              placeholder="10.0.0.8"
+            />
+            <span className="muted logo-hint">
+              Used when a module needs an IP, or as the fallback when no hostname is set.
             </span>
           </label>
 
@@ -439,13 +473,14 @@ function UserRow(props: {
             <button
               type="button"
               className="btn primary"
-              disabled={!dirty}
+              disabled={!dirty || !hasServerLocation}
               onClick={() => {
                 props.onSave({
                   role,
                   teams,
                   self_service: selfService,
                   apps_server: appsServer.trim(),
+                  apps_server_ip: appsServerIp.trim(),
                 });
                 setEditing(false);
               }}
