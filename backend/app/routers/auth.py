@@ -13,6 +13,7 @@ from ..config import get_settings
 from ..deps import get_current_user, get_db, verify_csrf
 from ..schemas import (
     ChangePasswordRequest,
+    BundleOptionOut,
     LoginRequest,
     MessageOut,
     SessionOut,
@@ -239,3 +240,34 @@ def change_own_password(
         target_name=user["username"],
     )
     return MessageOut(detail="Password updated")
+
+
+@router.get("/account/bundles", response_model=list[BundleOptionOut])
+def list_account_bundles(
+    _user: dict[str, Any] = Depends(get_current_user),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> list[BundleOptionOut]:
+    return [
+        BundleOptionOut(id=template["id"], name=template["name"])
+        for template in repository.list_bundle_templates(conn)
+    ]
+
+
+@router.get("/account/bundles/{template_id}/download")
+def download_account_bundle(
+    template_id: int,
+    user: dict[str, Any] = Depends(get_current_user),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> Response:
+    template = repository.get_bundle_template(conn, template_id)
+    if template is None:
+        raise HTTPException(status_code=404, detail="Bundle template not found")
+    content = repository.render_bundle_template(template, user)
+    safe_name = "".join(
+        ch if ch.isalnum() or ch in ("-", "_") else "-" for ch in template["name"].lower()
+    ).strip("-") or "bundle"
+    return Response(
+        content=content,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}.txt"'},
+    )

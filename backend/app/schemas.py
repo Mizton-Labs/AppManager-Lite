@@ -12,6 +12,7 @@ from .teams import slugify as _slugify_name
 ROLES = ("admin", "user")
 URL_TYPES = ("url", "alias")
 APPROVAL_STATES = ("pending", "approved", "rejected")
+BUNDLE_MAPPING_SOURCES = ("username", "user_apps_server", "user_role")
 
 # A local alias becomes part of a URL path, so it is restricted to URL-safe
 # characters: letters, digits, and dashes only, with a hard length cap. This
@@ -264,6 +265,71 @@ class SessionOut(BaseModel):
     collaborators: list[str] = Field(default_factory=list)
     # One-time setup flag that drives the first-login wizard (admins only).
     configured: bool = False
+
+
+class BundleTemplateMapping(BaseModel):
+    field_name: str = Field(min_length=1, max_length=80)
+    source: str = Field(min_length=1, max_length=80)
+
+    @field_validator("field_name")
+    @classmethod
+    def _clean_field_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Field name must not be empty.")
+        return value
+
+    @field_validator("source")
+    @classmethod
+    def _check_source(cls, value: str) -> str:
+        value = value.strip()
+        if value not in BUNDLE_MAPPING_SOURCES:
+            raise ValueError(
+                f"source must be one of {BUNDLE_MAPPING_SOURCES}."
+            )
+        return value
+
+
+class BundleTemplateOut(BaseModel):
+    id: int
+    name: str
+    content: str
+    mappings: list[BundleTemplateMapping] = Field(default_factory=list)
+
+
+class CreateBundleTemplateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    content: str = Field(min_length=1, max_length=20000)
+    mappings: list[BundleTemplateMapping] = Field(default_factory=list)
+
+    @field_validator("name")
+    @classmethod
+    def _clean_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Name must not be empty.")
+        return value
+
+
+class UpdateBundleTemplateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    content: str | None = Field(default=None, min_length=1, max_length=20000)
+    mappings: list[BundleTemplateMapping] | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _clean_optional_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("Name must not be empty.")
+        return value
+
+
+class BundleOptionOut(BaseModel):
+    id: int
+    name: str
 
 
 class ApplicationOut(BaseModel):
