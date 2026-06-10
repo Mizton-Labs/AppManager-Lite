@@ -150,8 +150,11 @@ export const api = {
   resetPassword: (id: number) =>
     request<GeneratedPassword>(`users/${id}/reset-password`, { method: "POST" }),
 
-  deleteUser: (id: number) =>
-    request<{ detail: string }>(`users/${id}`, { method: "DELETE" }),
+  deleteUser: (id: number, options: { delete_apps?: boolean } = {}) =>
+    request<{ detail: string }>(
+      `users/${id}?delete_apps=${options.delete_apps ? "true" : "false"}`,
+      { method: "DELETE" },
+    ),
 
   /** Reverse-proxy configuration (administrators only). */
   getReverseProxySettings: () =>

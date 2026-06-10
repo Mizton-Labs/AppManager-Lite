@@ -40,6 +40,30 @@ function stubBackend(initial: Application[]) {
     if (method === "GET" && /\/api\/applications\/(manage|mine)$/.test(url)) {
       return jsonResponse(store);
     }
+    if (method === "GET" && url.endsWith("/api/users")) {
+      return jsonResponse([
+        {
+          id: 1,
+          username: "admin@example.com",
+          role: "admin",
+          is_active: true,
+          must_change_password: false,
+          self_service: true,
+          apps_server: "",
+          teams: [],
+        },
+        {
+          id: 2,
+          username: "owner@example.com",
+          role: "user",
+          is_active: true,
+          must_change_password: false,
+          self_service: false,
+          apps_server: "",
+          teams: ["Red Team"],
+        },
+      ]);
+    }
     const retryMatch = url.match(/\/api\/applications\/(\d+)\/push-retry$/);
     if (method === "POST" && retryMatch) {
       const id = Number(retryMatch[1]);
@@ -68,7 +92,22 @@ function stubBackend(initial: Application[]) {
     }
     if (method === "PATCH" && byId) {
       const id = Number(byId[1]);
-      store = store.map((app) => (app.id === id ? { ...app, ...body } : app));
+      const selectedOwner = body.created_by
+        ? body.created_by === 1
+          ? "admin@example.com"
+          : "owner@example.com"
+        : undefined;
+      store = store.map((app) =>
+        app.id === id
+          ? {
+              ...app,
+              ...body,
+              ...(selectedOwner
+                ? { created_by_id: body.created_by, created_by: selectedOwner }
+                : {}),
+            }
+          : app,
+      );
       return jsonResponse(store.find((app) => app.id === id));
     }
     if (method === "DELETE" && byId) {
@@ -159,6 +198,74 @@ describe("ApplicationManager", () => {
     expect(screen.getByRole("radio", { name: /full url/i })).not.toBeChecked();
   });
 
+  it("lets an admin set the apps server and port on a new alias application", async () => {
+    const fetchMock = stubBackend([]);
+    render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
+
+    await screen.findByText(/No applications yet/i);
+    await userEvent.click(
+      screen.getByRole("button", { name: /new application/i }),
+    );
+
+    await userEvent.type(screen.getByLabelText("Name"), "Admin Alias");
+    await userEvent.type(
+      screen.getByLabelText("Local alias relative path"),
+      "adminalias",
+    );
+    await userEvent.type(screen.getByLabelText("Application port"), "8080");
+    // The admin-only apps server field is shown for alias apps.
+    const serverField = screen.getByLabelText("Apps server host or IP");
+    await userEvent.type(serverField, "apps.example.com");
+    await userEvent.click(
+      screen.getByRole("button", { name: /create application/i }),
+    );
+
+    expect(await screen.findByText("Admin Alias")).toBeInTheDocument();
+    const postCall = fetchMock.mock.calls.find(
+      ([, init]) => (init?.method ?? "GET") === "POST",
+    );
+    expect(JSON.parse((postCall![1] as RequestInit).body as string)).toMatchObject(
+      {
+        name: "Admin Alias",
+        url_type: "alias",
+        apps_port: "8080",
+        apps_server: "apps.example.com",
+      },
+    );
+  });
+
+  it("hides the apps server field from non-admins and sends only the port", async () => {
+    const fetchMock = stubBackend([]);
+    render(
+      <ApplicationManager isAdmin={false} teamOptions={["Threat Hunting"]} />,
+    );
+
+    await screen.findByText(/have not submitted any applications/i);
+    await userEvent.click(
+      screen.getByRole("button", { name: /new application/i }),
+    );
+
+    await userEvent.type(screen.getByLabelText("Name"), "Member Alias");
+    await userEvent.type(
+      screen.getByLabelText("Local alias relative path"),
+      "memberalias",
+    );
+    await userEvent.type(screen.getByLabelText("Application port"), "8080");
+    // No apps-server field for non-admins.
+    expect(screen.queryByLabelText("Apps server host or IP")).toBeNull();
+    await userEvent.click(
+      screen.getByRole("button", { name: /create application/i }),
+    );
+
+    expect(await screen.findByText("Member Alias")).toBeInTheDocument();
+    const postCall = fetchMock.mock.calls.find(
+      ([, init]) => (init?.method ?? "GET") === "POST",
+    );
+    const sent = JSON.parse((postCall![1] as RequestInit).body as string);
+    expect(sent).toMatchObject({ name: "Member Alias", apps_port: "8080" });
+    expect(sent).not.toHaveProperty("apps_server");
+  });
+
   it("selects and clears all teams with the Select all toggle", async () => {
     stubBackend([]);
     render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
@@ -218,10 +325,10 @@ describe("ApplicationManager", () => {
       url_type: "alias",
       apps_port: "8080",
     });
-    // The per-app server input was removed; it is never sent.
+    // Admins have an apps-server field; left blank it sends an empty server.
     expect(
-      JSON.parse((postCall![1] as RequestInit).body as string),
-    ).not.toHaveProperty("apps_server");
+      JSON.parse((postCall![1] as RequestInit).body as string).apps_server,
+    ).toBe("");
   });
 
   it("shows a port field (and no server field) for non-admins on an alias", async () => {
@@ -234,7 +341,9 @@ describe("ApplicationManager", () => {
     );
     // Alias mode is default: any user sets the port; no server input exists.
     expect(screen.getByLabelText(/application port/i)).toBeInTheDocument();
-    expect(screen.queryByLabelText(/apps server/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("Apps server host or IP"),
+    ).not.toBeInTheDocument();
   });
 
   it("hides the port field for a full URL", async () => {
@@ -417,28 +526,33 @@ describe("ApplicationManager", () => {
     expect(screen.getByText(/nginx reloaded/i)).toBeInTheDocument();
   });
 
-  it("does not show a retry button for a successful push", async () => {
+  it("does not show a push button for a full-url app", async () => {
     stubBackend([makeApp({ last_push_status: "ok", last_push_log: "ok" })]);
     render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
 
     await screen.findByText("Hunt Workbench");
     await userEvent.click(screen.getByRole("button", { name: /^edit$/i }));
     expect(
-      screen.queryByRole("button", { name: /retry push/i }),
+      screen.queryByRole("button", { name: /^push$/i }),
     ).not.toBeInTheDocument();
   });
 
-  it("retries a failed push and updates the status", async () => {
+  it("pushes an approved alias app and updates the status", async () => {
     const fetchMock = stubBackend([
-      makeApp({ last_push_status: "failed", last_push_log: "[FAIL] reload" }),
+      makeApp({
+        url: "hunt",
+        url_type: "alias",
+        last_push_status: "failed",
+        last_push_log: "[FAIL] reload",
+      }),
     ]);
     render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
 
     await screen.findByText("Hunt Workbench");
     await userEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-    // The failed indicator and the retry button are shown.
+    // The failed indicator and the Push button are shown.
     expect(screen.getByText(/proxy: failed/i)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: /retry push/i }));
+    await userEvent.click(screen.getByRole("button", { name: /^push$/i }));
 
     // The retry endpoint was called and the status flips to ok. The status now
     // appears both as the transient notice (next to the name) and in the
@@ -450,5 +564,41 @@ describe("ApplicationManager", () => {
       ),
     ).toBe(true);
     expect((await screen.findAllByText(/proxy: ok/i)).length).toBeGreaterThan(0);
+  });
+
+  it("shows publisher and push-needed notices to admins", async () => {
+    stubBackend([
+      makeApp({
+        created_by: "analyst@example.com",
+        needs_push: true,
+        pending_is_active: false,
+      }),
+    ]);
+    render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
+
+    expect(await screen.findByText(/published by analyst/i)).toBeInTheDocument();
+    expect(screen.getByText(/disable requested/i)).toBeInTheDocument();
+    expect(screen.getByText(/proxy config changed/i)).toBeInTheDocument();
+  });
+
+  it("lets an admin transfer application ownership", async () => {
+    const fetchMock = stubBackend([
+      makeApp({ created_by: "admin@example.com", created_by_id: 1 }),
+    ]);
+    render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
+
+    await screen.findByText("Hunt Workbench");
+    await userEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    await userEvent.selectOptions(screen.getByLabelText("Owner"), "2");
+    await userEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+    const patchCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).includes("/api/applications/1") &&
+        (init?.method ?? "GET") === "PATCH",
+    );
+    expect(JSON.parse((patchCall![1] as RequestInit).body as string)).toMatchObject({
+      created_by: 2,
+    });
   });
 });

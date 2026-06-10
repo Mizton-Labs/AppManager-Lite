@@ -12,6 +12,11 @@ function monogram(name: string): string {
   return initials.toUpperCase() || "?";
 }
 
+function publisherLabel(username: string | null | undefined): string {
+  if (!username) return "unknown";
+  return username.split("@")[0] || username;
+}
+
 /**
  * A single application tile: optional icon (or a generated monogram), the
  * application name, a short description, and small team-scope badges showing
@@ -48,6 +53,13 @@ export function AppCard({ app }: { app: Application }) {
               {team}
             </span>
           ))}
+        </span>
+      )}
+      {app.created_by && (
+        <span className="app-card-teams publisher-row">
+          <span className="tag publisher-tag">
+            published by {publisherLabel(app.created_by)}
+          </span>
         </span>
       )}
     </a>

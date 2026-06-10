@@ -24,6 +24,7 @@ def _seed_teams(request, admin, make_team):
 
 def _create_member(client, csrf, username, teams):
     """Create a standard user via the admin client; return their password."""
+    username = username if "@" in username else f"{username}@example.com"
     resp = client.post(
         "/api/users",
         json={"username": username, "role": "user", "teams": teams},
@@ -99,15 +100,17 @@ def test_member_team_query_returns_team_apps(admin) -> None:
     assert names == {"Hunt One", "Shared Case"}
 
 
-def test_member_forbidden_for_other_team(admin) -> None:
+def test_member_can_view_other_team_section(admin) -> None:
     client, csrf, _ = admin
+    _seed_app(client, csrf, "Hunt Tool", "https://example.com/hunt", ["Threat Hunting"])
     password = _create_member(client, csrf, "redder2", ["Red Team"])
     with TestClient(client.app) as member:
         member.post(
             "/api/auth/login", json={"username": "redder2", "password": password}
         )
         resp = member.get("/api/applications", params={"team": "Threat Hunting"})
-    assert resp.status_code == 403
+    assert resp.status_code == 200, resp.text
+    assert {a["name"] for a in resp.json()} == {"Hunt Tool"}
 
 
 def test_unknown_team_returns_404(admin) -> None:
@@ -366,7 +369,7 @@ def test_member_submission_is_pending_and_hidden(admin) -> None:
         assert created.status_code == 201, created.text
         body = created.json()
         assert body["approval_status"] == "pending"
-        assert body["created_by"] == "subm1"
+        assert body["created_by"] == "subm1@example.com"
 
         # Hidden from the member's own catalogue until approved...
         home = {a["name"] for a in member.get("/api/applications").json()}
@@ -375,7 +378,7 @@ def test_member_submission_is_pending_and_hidden(admin) -> None:
         mine = member.get("/api/applications/mine").json()
         mine_by_name = {a["name"]: a for a in mine}
         assert mine_by_name["Pending Tool"]["approval_status"] == "pending"
-        assert mine_by_name["Pending Tool"]["created_by"] == "subm1"
+        assert mine_by_name["Pending Tool"]["created_by"] == "subm1@example.com"
 
     # The admin sees it in the management view and on Home it stays hidden.
     manage = {a["name"] for a in client.get("/api/applications/manage").json()}
@@ -390,7 +393,7 @@ def test_self_service_member_submission_auto_approved(admin) -> None:
     password = _create_member(client, csrf, "selfsvc", ["Red Team"])
     # Grant self-service so the submission bypasses approval.
     users = client.get("/api/users").json()
-    uid = next(u["id"] for u in users if u["username"] == "selfsvc")
+    uid = next(u["id"] for u in users if u["username"] == "selfsvc@example.com")
     patched = client.patch(
         f"/api/users/{uid}",
         json={"self_service": True},
@@ -657,7 +660,7 @@ def test_url_mode_rejects_relative_path(admin) -> None:
     assert resp.status_code == 422
 
 
-def test_home_listing_never_exposes_creator(admin) -> None:
+def test_home_listing_exposes_publisher(admin) -> None:
     client, csrf, _ = admin
     _create_app(client, csrf, name="Owned", teams=["Red Team"])
     password = _create_member(client, csrf, "viewer", ["Red Team"])
@@ -667,7 +670,7 @@ def test_home_listing_never_exposes_creator(admin) -> None:
         )
         apps = member.get("/api/applications").json()
     assert apps, "expected at least one visible app"
-    assert all(a["created_by"] is None for a in apps)
+    assert any(a["created_by"] == "admin" for a in apps)
 
 
 
@@ -687,6 +690,24 @@ def test_admin_delete_application(admin) -> None:
         headers={"X-CSRF-Token": csrf},
     )
     assert again.status_code == 404
+
+
+def test_admin_can_transfer_application_ownership(admin) -> None:
+    client, csrf, _ = admin
+    new_owner = client.post(
+        "/api/users",
+        json={"username": "newowner@example.com", "role": "user", "teams": ["Red Team"]},
+        headers={"X-CSRF-Token": csrf},
+    ).json()["user"]
+    app_id = _create_app(client, csrf, name="Transfer Me").json()["id"]
+
+    resp = client.patch(
+        f"/api/applications/{app_id}",
+        json={"created_by": new_owner["id"]},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["created_by"] == "newowner@example.com"
 
 
 # ---------------------------------------------------------------------------
@@ -819,6 +840,3 @@ def test_create_rejects_logo_path_traversal(admin) -> None:
     ):
         resp = _create_app(client, csrf, icon_url=bad)
         assert resp.status_code == 422, f"expected 422 for {bad!r}, got {resp.status_code}"
-
-
-

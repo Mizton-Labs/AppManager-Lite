@@ -28,6 +28,7 @@ _HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 # An optional SSH login user (ssh user@host). Restricted so it cannot inject a
 # host or shell content when composed into "user@host" / used as an argv element.
 _SSH_USER_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def _validate_apps_server(value: str) -> str:
@@ -201,6 +202,8 @@ class CreateUserRequest(BaseModel):
         value = value.strip()
         if not value:
             raise ValueError("Username must not be empty.")
+        if not _EMAIL_RE.match(value):
+            raise ValueError("Username must be an email address.")
         return value
 
     @field_validator("role")
@@ -277,6 +280,7 @@ class ApplicationOut(BaseModel):
     # Creating user's name. Populated only in management/own-app responses so a
     # member listing never leaks who created another team's application.
     created_by: str | None = None
+    created_by_id: int | None = None
     # Reverse-proxy push result; populated only in management/own-app responses.
     last_push_status: str | None = None
     last_push_log: str = ""
@@ -287,6 +291,8 @@ class ApplicationOut(BaseModel):
     # A staged alias change awaiting approval (management/own-app responses
     # only). Empty unless the owner edited the alias and it is pending review.
     pending_alias: str = ""
+    pending_is_active: bool | None = None
+    needs_push: bool = False
 
 
 class CreateApplicationRequest(BaseModel):
@@ -356,6 +362,7 @@ class UpdateApplicationRequest(BaseModel):
     sort_order: int | None = Field(default=None, ge=0, le=100000)
     apps_server: str | None = Field(default=None, max_length=253)
     apps_port: str | None = Field(default=None, max_length=5)
+    created_by: int | None = None
 
     @field_validator("name")
     @classmethod

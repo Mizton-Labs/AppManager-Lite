@@ -139,10 +139,15 @@ same area with every application (and its creator), a tab for user management, a
 **Teams** tab for managing teams, and a **General Settings** tab for branding
 (application name and logo) and reverse-proxy configuration.
 
-When an administrator creates a user they can set the user's **apps server**
-(host/IP) — the default host where that user runs their applications, used to
-render reverse-proxy aliases. Each application carries its **own port** (see
-below), so there is no per-user port.
+When an administrator creates a user, the username must be an **email address**;
+it is the user's sign-in name. Administrators can also set the user's **apps server**
+(host/IP) — the host where that user runs their applications, used as the
+upstream for that user's reverse-proxy aliases. Each application carries its
+**own port** (see below), so there is no per-user port. A normal user only sets
+the port on an application; the upstream host comes from their apps server.
+Administrators have no per-user apps server, so when an administrator creates an
+application they can set **both** its apps host and port on the application
+itself.
 
 - **Approval workflow.** Submissions have one of three states: `pending`,
   `approved`, or `rejected`. Only `approved` applications appear on the Home and
@@ -151,6 +156,13 @@ below), so there is no per-user port.
   rejected — only disabled or deleted. A `rejected` application is retained
   (greyed out) rather than deleted. When a non-self-service owner substantively
   edits an approved application it returns to `pending`.
+- **Proxy push workflow.** Approved alias applications push their nginx config
+  automatically when an administrator or self-service user changes proxy-relevant
+  settings, including enable/disable. Disabling keeps the app's marked nginx
+  block in place but comments its directives; enabling writes the active block
+  again. Non-self-service owners can request alias or enable/disable changes;
+  administrators see those pending changes and push them by approving or by using
+  the admin-only **Push** action.
 - **Alias-change approval.** Changing the **alias** of an approved application is
   a special case: when a non-self-service owner edits the alias, the application
   keeps serving its **current** alias and configuration while the new alias is
@@ -186,8 +198,12 @@ below), so there is no per-user port.
   not subject to `http`/`https` validation.
 - **Application port.** Each alias application has its **own port**, which **any**
   user can set on the create/edit form (shown only for alias apps). The upstream
-  server host is resolved from the reverse-proxy settings (or the owner's apps
-  server) — it is not entered per application.
+  server host is the **owning user's apps server** (configured per user by an
+  administrator); an administrator can instead set the apps host **on the
+  application** (since admins have no per-user apps server). The reverse-proxy
+  settings host is only the SSH target used to push config — never the alias
+  upstream. If neither the application nor its owner has an apps host, the push
+  is skipped.
 - **Team selection.** The team picker offers a **Select all / Clear all** toggle
   in addition to the individual checkboxes.
 
@@ -244,27 +260,29 @@ Configure in General Settings:
   the UI; only the path is kept.
 - **Alias template** — the nginx `location` block (collapsed by default). The
   placeholders `APPS_SERVER`, `APPS_PORT` and `ALIAS` are substituted on push.
-  `APPS_PORT` is the application's own port (falling back to the owner's record);
-  `APPS_SERVER` is resolved as the application's own server (administrator-set,
-  if any), then the **NGINX Server Host/IP** from these settings, then the
-  **owning user's** apps server.
+  `APPS_PORT` is the application's own port. `APPS_SERVER` is the application's
+  own server (administrator-set, if any), otherwise the **owning user's** apps
+  server. The **NGINX Server Host/IP** above is only the SSH target used to push
+  the config — it is never used as `APPS_SERVER`.
 
-On approval the backend (using the system `ssh`/`scp`, key-based, non-interactive,
-with timeouts) verifies SSH access, that the conf file exists, that nginx is
-running, and that the file is writable; then it backs the file up
-(`<conf>-<epoch>-<alias>`), wraps the rendered block in a unique per-application
-marker (`# >>> appmanager-lite-app:<id> >>>` … `# <<< appmanager-lite-app:<id> <<<`), injects it before
-the file's last `}`, reloads nginx with `docker exec nginx nginx -s reload` (this
-version assumes nginx runs in a docker container named `nginx`), and verifies the
-reload. **If any step fails the original file is restored from the backup and the
-nginx error is captured.** The full transcript is stored on the application and
-copied to the audit log (no secrets). On the expanded application card
-administrators see the push status and a **View push log** button; if the push
-**failed** (or was reverted) a green **Retry push** button re-runs it while the
-failed indicator remains until a retry succeeds. After a push runs (create,
-approve, or retry) a transient **proxy: …** notice also appears next to the
-application name in the manager; it is shown once and clears when you navigate
-away (it is independent of the persistent indicator on the expanded card).
+On approval or push the backend (using the system `ssh`/`scp`, key-based,
+non-interactive, with timeouts) verifies SSH access, that the conf file exists,
+that nginx is running, and that the file is writable; then it backs the file up
+(`<conf>-<epoch>-<alias>`), renders the template inside a unique per-application
+marker (`# >>> appmanager-lite-app:<id> >>>` … `# <<< appmanager-lite-app:<id> <<<`), removes any
+older block with that marker, injects the new block before the file's last `}`,
+reloads nginx with `docker exec nginx nginx -s reload` (this version assumes nginx
+runs in a docker container named `nginx`), and verifies the reload. Disabled apps
+keep their marked block in the remote config, but the rendered nginx directives
+are commented out. **If any step fails the original file is restored from the
+backup and the nginx error is captured.** The timestamped transcript is stored on
+the application and copied to the audit log (no secrets). On the expanded
+application card administrators see the push status, a **View push log** button,
+and an admin-only **Push** button for approved alias apps. After a push runs
+(create, approve, or manual Push) a transient **proxy: …** notice also appears
+next to the application name in the manager; it is shown once and clears when you
+navigate away (it is independent of the persistent indicator on the expanded
+card).
 
 **Deleting an application** removes its alias block from the nginx config: the
 backend finds the block by its `appmanager-lite-app:<id>` marker, excises it (backup →

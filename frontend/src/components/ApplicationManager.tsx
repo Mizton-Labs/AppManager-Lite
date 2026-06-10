@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "../api";
 import type {
+  ApiUser,
   Application,
   ApprovalStatus,
   UpdateApplicationInput,
@@ -30,13 +31,17 @@ export function ApplicationManager(props: {
   // Populated from an action's returned push status and shown once next to the
   // application name. Cleared on reload (and therefore on leaving this view).
   const [pushNotices, setPushNotices] = useState<Record<number, string>>({});
+  const [pushBusy, setPushBusy] = useState<Record<number, boolean>>({});
+  const [pushMessages, setPushMessages] = useState<Record<number, string>>({});
+  const [ownerOptions, setOwnerOptions] = useState<ApiUser[]>([]);
 
   const reload = useCallback(async () => {
-    setApps(
-      isAdmin
-        ? await api.listManagedApplications()
-        : await api.listMyApplications(),
-    );
+    const [nextApps, nextUsers] = await Promise.all([
+      isAdmin ? api.listManagedApplications() : api.listMyApplications(),
+      isAdmin ? api.listUsers() : Promise.resolve([]),
+    ]);
+    setApps(nextApps);
+    setOwnerOptions(nextUsers.filter((user) => user.is_active));
   }, [isAdmin]);
 
   useEffect(() => {
@@ -70,8 +75,10 @@ export function ApplicationManager(props: {
   // Run an action that returns the affected application, then surface its push
   // status as a transient notice next to that application's name.
   const runPushAction = useCallback(
-    async (action: () => Promise<Application>) => {
+    async (appId: number, action: () => Promise<Application>) => {
       setError(null);
+      setPushBusy((current) => ({ ...current, [appId]: true }));
+      setPushMessages((current) => ({ ...current, [appId]: "" }));
       try {
         const result = await action();
         if (result && result.last_push_status) {
@@ -79,12 +86,32 @@ export function ApplicationManager(props: {
             ...current,
             [result.id]: result.last_push_status as string,
           }));
+          const ok = result.last_push_status === "ok";
+          setPushMessages((current) => ({
+            ...current,
+            [result.id]: ok
+              ? "Push completed successfully."
+              : `Push finished with status: ${result.last_push_status}.`,
+          }));
+          window.setTimeout(() => {
+            setPushMessages((current) => {
+              const next = { ...current };
+              delete next[result.id];
+              return next;
+            });
+          }, 5000);
         }
         await reload();
       } catch (err) {
+        setPushMessages((current) => ({
+          ...current,
+          [appId]: err instanceof ApiError ? err.message : "Push failed.",
+        }));
         setError(
           err instanceof ApiError ? err.message : "The operation failed.",
         );
+      } finally {
+        setPushBusy((current) => ({ ...current, [appId]: false }));
       }
     },
     [reload],
@@ -104,6 +131,7 @@ export function ApplicationManager(props: {
 
       {creating ? (
         <CreateApplicationCard
+          isAdmin={isAdmin}
           teamOptions={teamOptions}
           onCreated={(created) => {
             setCreating(false);
@@ -163,18 +191,21 @@ export function ApplicationManager(props: {
                   })
                 }
                 onSetApproval={(status) =>
-                  runPushAction(async () => {
+                  runPushAction(app.id, async () => {
                     return await api.updateApplication(app.id, {
                       approval_status: status,
                     });
                   })
                 }
                 onRetryPush={() =>
-                  runPushAction(async () => {
+                  runPushAction(app.id, async () => {
                     return await api.retryApplicationPush(app.id);
                   })
                 }
                 pushNotice={pushNotices[app.id]}
+                pushBusy={Boolean(pushBusy[app.id])}
+                pushMessage={pushMessages[app.id]}
+                ownerOptions={ownerOptions}
                 onDelete={() =>
                   runAction(async () => {
                     await api.deleteApplication(app.id);
@@ -204,6 +235,11 @@ function pushBadgeClass(status: string): string {
   if (status === "ok") return "ok";
   if (status === "skipped") return "warn";
   return "rejected";
+}
+
+function publisherLabel(username: string | null | undefined): string {
+  if (!username) return "unknown";
+  return username.split("@")[0] || username;
 }
 
 function TeamCheckboxes(props: {
@@ -435,6 +471,7 @@ function LogoField(props: {
 }
 
 function CreateApplicationCard(props: {
+  isAdmin: boolean;
   teamOptions: readonly string[];
   onCreated: (created: Application) => void;
   onCancel: () => void;
@@ -447,12 +484,14 @@ function CreateApplicationCard(props: {
   const [iconUrl, setIconUrl] = useState("");
   const [teams, setTeams] = useState<string[]>([]);
   const [appsPort, setAppsPort] = useState("");
+  const [appsServer, setAppsServer] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // Each alias application has its own port; any user can set it. The upstream
-  // server host is taken from the reverse-proxy settings (or the owner record),
-  // so it is not entered here.
+  // Each alias application has its own port, settable by any user. The upstream
+  // server host comes from the owning user's configured apps host; an admin
+  // (who has no per-user apps host) can set the host on the application itself.
   const showPort = urlType === "alias";
+  const showServer = props.isAdmin && urlType === "alias";
 
   function toggleTeam(team: string) {
     setTeams((current) =>
@@ -479,6 +518,7 @@ function CreateApplicationCard(props: {
         icon_url: icon,
         teams,
         ...(showPort ? { apps_port: appsPort.trim() } : {}),
+        ...(showServer ? { apps_server: appsServer.trim() } : {}),
       });
       props.onCreated(created);
     } catch (err) {
@@ -525,8 +565,28 @@ function CreateApplicationCard(props: {
               aria-label="Application port"
             />
             <span className="muted logo-hint">
-              The port your application listens on. The server host is taken from
-              the reverse-proxy settings.
+              The port your application listens on.{" "}
+              {props.isAdmin
+                ? "Set the server host below."
+                : "The server host comes from your account's apps server (set by an administrator)."}
+            </span>
+          </label>
+        )}
+
+        {showServer && (
+          <label className="field">
+            <span>Apps server (host/IP)</span>
+            <input
+              type="text"
+              value={appsServer}
+              onChange={(e) => setAppsServer(e.target.value)}
+              placeholder="apps.example.com"
+              aria-label="Apps server host or IP"
+            />
+            <span className="muted logo-hint">
+              The host where this application runs (used as the alias upstream).
+              Admins set this per application since they have no per-user apps
+              server.
             </span>
           </label>
         )}
@@ -583,6 +643,9 @@ function ApplicationRow(props: {
   onDelete: () => void;
   /** Transient reverse-proxy push status shown once next to the name. */
   pushNotice?: string;
+  pushBusy: boolean;
+  pushMessage?: string;
+  ownerOptions: readonly ApiUser[];
 }) {
   const { app, isAdmin } = props;
   const [editing, setEditing] = useState(false);
@@ -595,6 +658,8 @@ function ApplicationRow(props: {
   const [iconUrl, setIconUrl] = useState(app.icon_url);
   const [teams, setTeams] = useState<string[]>(app.teams);
   const [appsPort, setAppsPort] = useState(app.apps_port ?? "");
+  const [appsServer, setAppsServer] = useState(app.apps_server ?? "");
+  const [ownerId, setOwnerId] = useState(String(app.created_by_id ?? ""));
   const [logoError, setLogoError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -605,6 +670,8 @@ function ApplicationRow(props: {
     setIconUrl(app.icon_url);
     setTeams(app.teams);
     setAppsPort(app.apps_port ?? "");
+    setAppsServer(app.apps_server ?? "");
+    setOwnerId(String(app.created_by_id ?? ""));
   }, [
     app.name,
     app.url_type,
@@ -613,6 +680,8 @@ function ApplicationRow(props: {
     app.icon_url,
     app.teams,
     app.apps_port,
+    app.apps_server,
+    app.created_by_id,
   ]);
 
   const dirty = useMemo(
@@ -623,14 +692,18 @@ function ApplicationRow(props: {
       description !== app.description ||
       iconUrl !== app.icon_url ||
       appsPort !== (app.apps_port ?? "") ||
+      appsServer !== (app.apps_server ?? "") ||
+      ownerId !== String(app.created_by_id ?? "") ||
       teams.length !== app.teams.length ||
       teams.some((t) => !app.teams.includes(t)),
-    [name, urlType, url, description, iconUrl, appsPort, teams, app],
+    [name, urlType, url, description, iconUrl, appsPort, appsServer, ownerId, teams, app],
   );
 
   // Each alias application has its own port, editable by any user. The upstream
-  // server host comes from the reverse-proxy settings / owner record.
+  // server host comes from the owning user's configured apps host; an admin can
+  // set the host on the application itself.
   const showPort = urlType === "alias";
+  const showServer = isAdmin && urlType === "alias";
 
   function toggleTeam(team: string) {
     setTeams((current) =>
@@ -661,6 +734,16 @@ function ApplicationRow(props: {
               title={`Alias change to "${app.pending_alias}" awaiting approval`}
             >
               alias change pending
+            </span>
+          )}
+          {app.pending_is_active !== null && app.pending_is_active !== undefined && (
+            <span className="status-badge warn push-needed">
+              {app.pending_is_active ? "enable requested" : "disable requested"}
+            </span>
+          )}
+          {isAdmin && app.needs_push && (
+            <span className="status-badge rejected push-needed">
+              proxy config changed - push required
             </span>
           )}
           {props.pushNotice && (
@@ -695,7 +778,9 @@ function ApplicationRow(props: {
 
       {isAdmin && (
         <div className="row-actions approval-actions">
-          {app.approval_status !== "approved" && (
+          {(app.approval_status !== "approved" ||
+            app.pending_alias ||
+            app.pending_is_active !== null && app.pending_is_active !== undefined) && (
             <button
               type="button"
               className="btn approve"
@@ -737,6 +822,13 @@ function ApplicationRow(props: {
               ))}
             </div>
           )}
+          {app.created_by && (
+            <div className="tag-row publisher-row">
+              <span className="tag publisher-tag">
+                published by {publisherLabel(app.created_by)}
+              </span>
+            </div>
+          )}
         </>
       )}
 
@@ -755,15 +847,20 @@ function ApplicationRow(props: {
                 >
                   {showPushLog ? "Hide push log" : "View push log"}
                 </button>
-                {(app.last_push_status === "failed" ||
-                  app.last_push_status === "reverted") && (
+                {app.approval_status === "approved" && app.url_type === "alias" && (
                   <button
                     type="button"
-                    className="btn approve"
+                    className={props.pushBusy ? "btn warn" : "btn approve"}
                     onClick={props.onRetryPush}
+                    disabled={props.pushBusy}
                   >
-                    Retry push
+                    {props.pushBusy ? "Pushing…" : "Push"}
                   </button>
+                )}
+                {props.pushMessage && (
+                  <span className="muted push-action-message" role="status">
+                    {props.pushMessage}
+                  </span>
                 )}
               </div>
               {showPushLog && (
@@ -798,6 +895,35 @@ function ApplicationRow(props: {
                 inputMode="numeric"
                 aria-label="Application port"
               />
+            </label>
+          )}
+
+          {showServer && (
+            <label className="field">
+              <span>Apps server (host/IP)</span>
+              <input
+                type="text"
+                value={appsServer}
+                onChange={(e) => setAppsServer(e.target.value)}
+                placeholder="apps.example.com"
+                aria-label="Apps server host or IP"
+              />
+            </label>
+          )}
+
+          {isAdmin && props.ownerOptions.length > 0 && (
+            <label className="field">
+              <span>Owner</span>
+              <select
+                value={ownerId}
+                onChange={(e) => setOwnerId(e.target.value)}
+              >
+                {props.ownerOptions.map((owner) => (
+                  <option key={owner.id} value={owner.id}>
+                    {owner.username}
+                  </option>
+                ))}
+              </select>
             </label>
           )}
 
@@ -844,6 +970,8 @@ function ApplicationRow(props: {
                   icon_url: iconUrl,
                   teams,
                   ...(showPort ? { apps_port: appsPort.trim() } : {}),
+                  ...(showServer ? { apps_server: appsServer.trim() } : {}),
+                  ...(isAdmin && ownerId ? { created_by: Number(ownerId) } : {}),
                 });
                 setEditing(false);
               }}

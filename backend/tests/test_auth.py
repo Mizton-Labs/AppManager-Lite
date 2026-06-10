@@ -54,7 +54,7 @@ def test_state_change_requires_csrf(client: TestClient) -> None:
     )
     # No CSRF header -> rejected.
     resp = client.post(
-        "/api/users", json={"username": "x", "role": "user", "teams": []}
+        "/api/users", json={"username": "x@example.com", "role": "user", "teams": []}
     )
     assert resp.status_code == 403
 

@@ -26,6 +26,7 @@ import shlex
 import subprocess
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +93,8 @@ class PushResult:
     steps: list[str] = field(default_factory=list)
 
     def log(self, message: str) -> None:
-        self.steps.append(message)
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.steps.append(f"[{stamp}] {message}")
 
     @property
     def transcript(self) -> str:
@@ -182,6 +184,23 @@ def remove_marked_block(conf_text: str, begin: str, end: str) -> tuple[str, bool
     return "".join(lines), True
 
 
+def comment_alias_block(block: str) -> str:
+    """Comment every rendered nginx directive line in a marked app block.
+
+    The marker comments remain unchanged so future pushes/deletes can still find
+    and replace the block by application id.
+    """
+    commented: list[str] = []
+    for line in block.splitlines():
+        stripped = line.lstrip()
+        if not stripped or stripped.startswith("#"):
+            commented.append(line)
+            continue
+        indent = line[: len(line) - len(stripped)]
+        commented.append(f"{indent}# {stripped}")
+    return "\n".join(commented) + "\n"
+
+
 # --- SSH command seam (mocked in tests) ------------------------------------
 
 
@@ -240,6 +259,7 @@ def push_alias(
     alias: str,
     app_name: str,
     app_id: int,
+    is_active: bool = True,
 ) -> PushResult:
     """Push one application alias to the remote nginx server.
 
@@ -295,6 +315,8 @@ def push_alias(
     # surgically when the application is deleted.
     begin, end = app_marker(app_id)
     block = f"{begin}\n{block.rstrip(chr(10))}\n{end}\n"
+    if not is_active:
+        block = comment_alias_block(block)
 
     norm_alias = alias.strip().strip("/")
     timestamp = int(time.time())
@@ -342,18 +364,24 @@ def push_alias(
         return result
     result.log(f"[OK] Backup created: {backup_path}")
 
-    # 6) Read current conf, inject the rendered block before the last '}'.
+    # 6) Read current conf, replace any existing marked block, then inject the
+    # rendered block before the last '}'.
     r = _ssh(host, key_path, f"cat {q_conf}")
     if r.rc != 0:
         result.status = "failed"
         result.log(f"[FAIL] Could not read conf: {r.err or r.rc}")
         return result
     try:
-        new_conf = inject_before_last_brace(r.out + "\n", block)
+        current_conf, replaced = remove_marked_block(r.out + "\n", begin, end)
+        new_conf = inject_before_last_brace(current_conf, block)
     except ReverseProxyError as exc:
         result.status = "failed"
         result.log(f"[FAIL] Injection failed: {exc}")
         return result
+    if replaced:
+        result.log(f"[OK] Existing alias block replaced for app id={int(app_id)}")
+    else:
+        result.log(f"[OK] No existing alias block found for app id={int(app_id)}")
 
     # 7) Write the new conf atomically (write temp, then move into place).
     tmp_remote = f"{conf_path}.tmp-{timestamp}"
@@ -368,7 +396,8 @@ def push_alias(
         result.log(f"[FAIL] Writing new conf failed: {w.err or w.rc}")
         _revert(host, key_path, conf_path, backup_path, result)
         return result
-    result.log("[OK] Alias block injected and conf written")
+    mode = "commented disabled" if not is_active else "active"
+    result.log(f"[OK] Alias block written ({mode})")
 
     # 8) Reload nginx (assumed to run in a docker container named 'nginx').
     r = _ssh(host, key_path, "docker exec nginx nginx -s reload")
@@ -389,7 +418,8 @@ def push_alias(
     result.log("[OK] nginx config verified")
 
     result.status = "ok"
-    result.log(f"[DONE] Alias /{norm_alias}/ -> {apps_server}:{apps_port}")
+    state = "enabled" if is_active else "disabled"
+    result.log(f"[DONE] Alias /{norm_alias}/ -> {apps_server}:{apps_port} ({state})")
     return result
 
 
@@ -557,4 +587,3 @@ def remove_alias(settings: dict, *, app_id: int) -> PushResult:
     result.status = "ok"
     result.log(f"[DONE] Removed alias block for app id={int(app_id)}")
     return result
-
