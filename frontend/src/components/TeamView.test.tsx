@@ -43,7 +43,7 @@ describe("TeamView", () => {
       await screen.findByRole("link", { name: /Adversary Emulation Range/ }),
     ).toBeInTheDocument();
     const [url] = fetchMock.mock.calls[0];
-    expect(String(url)).toContain("applications?team=Red%20Team");
+    expect(String(url)).toContain("applications?publisher_team=Red%20Team");
   });
 
   it("shows unknown team for a slug outside the visible team list", () => {
@@ -68,7 +68,7 @@ describe("TeamView", () => {
     renderAt("/teams/red-team", ["Red Team"]);
 
     expect(
-      await screen.findByText(/No applications have been configured for this team/i),
+      await screen.findByText(/No apps are available or shared from this team/i),
     ).toBeInTheDocument();
   });
 });

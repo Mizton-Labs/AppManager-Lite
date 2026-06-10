@@ -132,6 +132,11 @@ export const api = {
         : "applications",
     ),
 
+  listApplicationsByPublisherTeam: (publisherTeam: string) =>
+    request<Application[]>(
+      `applications?publisher_team=${encodeURIComponent(publisherTeam)}`,
+    ),
+
   listAllApplications: () =>
     request<Application[]>("applications?include_inactive=true"),
 
