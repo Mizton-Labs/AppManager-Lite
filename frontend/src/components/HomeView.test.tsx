@@ -62,13 +62,13 @@ describe("HomeView", () => {
     expect(within(ownedSection).queryByText("Team Tool")).not.toBeInTheDocument();
   });
 
-  it("shows a team-scope badge on each card", async () => {
-    stubHome([makeApp({ id: 1, teams: ["Threat Hunting"] })], []);
+  it("shows a publisher-team badge on each card", async () => {
+    stubHome([makeApp({ id: 1, teams: ["Threat Hunting"], publisher_team: "Red Team" })], []);
     render(<HomeView teams={["Threat Hunting"]} />);
 
     await screen.findByRole("link", { name: /Hunt Workbench/ });
-    // The card renders the team name as a badge.
-    expect(screen.getAllByText("Threat Hunting").length).toBeGreaterThan(0);
+    expect(screen.getByText("Team: Red Team")).toBeInTheDocument();
+    expect(screen.queryByText("Threat Hunting")).toBeNull();
   });
 
   it("shows a no-shared-applications message when empty", async () => {
