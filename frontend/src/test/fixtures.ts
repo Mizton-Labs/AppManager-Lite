@@ -14,6 +14,7 @@ export function makeApp(overrides: Partial<Application> = {}): Application {
     approval_status: "approved",
     sort_order: 0,
     created_by: null,
+    publisher_team: "",
     ...overrides,
   };
 }

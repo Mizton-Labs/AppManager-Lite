@@ -118,6 +118,41 @@ def test_member_can_view_other_team_section(admin) -> None:
     assert {a["name"] for a in resp.json()} == {"Hunt Tool"}
 
 
+def test_team_query_keeps_visibility_but_reports_publisher_team(admin) -> None:
+    client, csrf, _ = admin
+    password = _create_member(client, csrf, "publisher", ["Red Team"])
+    with TestClient(client.app) as publisher:
+        login = publisher.post(
+            "/api/auth/login", json={"username": "publisher", "password": password}
+        )
+        pcsrf = login.json()["csrf_token"]
+        created = publisher.post(
+            "/api/applications",
+            json={
+                "name": "Cross Shared",
+                "url": "https://example.com/cross",
+                "teams": ["Threat Hunting"],
+            },
+            headers={"X-CSRF-Token": pcsrf},
+        )
+        assert created.status_code == 201, created.text
+        app_id = created.json()["id"]
+
+    approved = client.patch(
+        f"/api/applications/{app_id}",
+        json={"approval_status": "approved"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert approved.status_code == 200, approved.text
+
+    resp = client.get("/api/applications", params={"team": "Threat Hunting"})
+    assert resp.status_code == 200, resp.text
+    app = next(a for a in resp.json() if a["id"] == app_id)
+    assert app["teams"] == ["Threat Hunting"]
+    assert app["publisher_team"] == "Red Team"
+    assert app["created_by"] == "publisher@example.com"
+
+
 def test_unknown_team_returns_404(admin) -> None:
     client, _csrf, _ = admin
     resp = client.get("/api/applications", params={"team": "Nonexistent Team"})

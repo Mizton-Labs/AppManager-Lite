@@ -50,6 +50,7 @@ def _app_out(
         sort_order=app["sort_order"],
         created_by=app.get("created_by_username"),
         created_by_id=app.get("created_by"),
+        publisher_team=app.get("publisher_team", ""),
         last_push_status=app.get("last_push_status") if include_creator else None,
         last_push_log=app.get("last_push_log", "") if include_creator else "",
         last_push_at=app.get("last_push_at") if include_creator else None,
