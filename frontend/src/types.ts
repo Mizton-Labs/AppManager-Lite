@@ -36,6 +36,42 @@ export interface GeneratedPassword {
   password: string;
 }
 
+export type BundleMappingSource = "username" | "user_apps_server" | "user_role";
+
+export interface BundleTemplateMapping {
+  field_name: string;
+  source: BundleMappingSource;
+}
+
+export interface BundleTemplate {
+  id: number;
+  name: string;
+  content: string;
+  mappings: BundleTemplateMapping[];
+}
+
+export interface BundleOption {
+  id: number;
+  name: string;
+}
+
+export interface BundleDownload {
+  content: string;
+  filename: string;
+}
+
+export interface CreateBundleTemplateInput {
+  name: string;
+  content: string;
+  mappings: BundleTemplateMapping[];
+}
+
+export interface UpdateBundleTemplateInput {
+  name?: string;
+  content?: string;
+  mappings?: BundleTemplateMapping[];
+}
+
 /** An administrator-managed team (sidebar section + membership scope). */
 export interface Team {
   id: number;

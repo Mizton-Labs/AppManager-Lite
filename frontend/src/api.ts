@@ -3,6 +3,10 @@ import type {
   Application,
   AuditEntry,
   BrandingSettings,
+  BundleDownload,
+  BundleOption,
+  BundleTemplate,
+  CreateBundleTemplateInput,
   CreateApplicationInput,
   CreateTeamInput,
   CreateUserInput,
@@ -10,6 +14,7 @@ import type {
   ReverseProxySettings,
   SessionState,
   Team,
+  UpdateBundleTemplateInput,
   UpdateApplicationInput,
   UpdateBrandingSettingsInput,
   UpdateReverseProxySettingsInput,
@@ -77,6 +82,21 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   return data as T;
 }
 
+async function requestText(path: string): Promise<BundleDownload> {
+  const response = await fetch(apiBase() + path, {
+    method: "GET",
+    headers: { Accept: "text/plain" },
+    credentials: "same-origin",
+  });
+  const content = await response.text();
+  if (!response.ok) {
+    throw new ApiError(response.status, content || `Request failed (${response.status})`);
+  }
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const match = disposition.match(/filename="?([^";]+)"?/i);
+  return { content, filename: match?.[1] ?? "bundle.txt" };
+}
+
 export const api = {
   getSession: () => request<SessionState>("session"),
 
@@ -97,6 +117,11 @@ export const api = {
       method: "POST",
       body: { current_password, new_password, confirm_password },
     }),
+
+  listAccountBundles: () => request<BundleOption[]>("account/bundles"),
+
+  downloadAccountBundle: (id: number) =>
+    requestText(`account/bundles/${id}/download`),
 
   listTeams: () => request<Team[]>("teams"),
 
@@ -176,6 +201,26 @@ export const api = {
     }),
 
   /** Team management (administrators only; reads are open to any signed-in user). */
+  listBundleTemplates: () =>
+    request<BundleTemplate[]>("settings/bundle-templates"),
+
+  createBundleTemplate: (input: CreateBundleTemplateInput) =>
+    request<BundleTemplate>("settings/bundle-templates", {
+      method: "POST",
+      body: input,
+    }),
+
+  updateBundleTemplate: (id: number, input: UpdateBundleTemplateInput) =>
+    request<BundleTemplate>(`settings/bundle-templates/${id}`, {
+      method: "PATCH",
+      body: input,
+    }),
+
+  deleteBundleTemplate: (id: number) =>
+    request<{ detail: string }>(`settings/bundle-templates/${id}`, {
+      method: "DELETE",
+    }),
+
   createTeam: (input: CreateTeamInput) =>
     request<Team>("settings/teams", { method: "POST", body: input }),
 

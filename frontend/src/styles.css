@@ -366,6 +366,11 @@ textarea {
   resize: vertical;
 }
 
+textarea {
+  min-height: 7rem;
+  resize: vertical;
+}
+
 input:focus,
 select:focus,
 textarea:focus,
@@ -580,6 +585,21 @@ textarea:focus,
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
+}
+
+.bundle-mapping-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 240px) auto;
+  gap: 0.75rem;
+  align-items: end;
+}
+
+.bundle-mapping-picker .btn {
+  width: fit-content;
+}
+
+.bundle-template-list {
+  margin-top: 1rem;
 }
 
 /* Detail list */
@@ -1206,6 +1226,10 @@ textarea:focus,
   .brand-title,
   .header-right .btn-label {
     display: none;
+  }
+
+  .bundle-mapping-row {
+    grid-template-columns: 1fr;
   }
 }
 
