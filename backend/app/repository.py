@@ -647,6 +647,50 @@ def list_applications_for_teams(
     return [_row_to_application(conn, r) for r in rows]
 
 
+def list_applications_for_publisher_team(
+    conn: sqlite3.Connection,
+    publisher_team: str,
+    *,
+    visible_team_names: list[str] | None = None,
+    active_only: bool = True,
+) -> list[dict[str, Any]]:
+    """Approved apps from publishers in ``publisher_team``.
+
+    ``visible_team_names`` applies the current user's app-sharing visibility. When
+    omitted, all approved apps from the publisher team are returned (admin path).
+    """
+    if visible_team_names is not None and not visible_team_names:
+        return []
+    params: list[Any] = [publisher_team]
+    sql = """
+        SELECT DISTINCT a.*, u.username AS created_by_username
+        FROM applications a
+        LEFT JOIN users u ON u.id = a.created_by
+        JOIN user_teams publisher_ut ON publisher_ut.user_id = a.created_by
+        JOIN teams publisher_t ON publisher_t.id = publisher_ut.team_id
+    """
+    if visible_team_names is not None:
+        placeholders = ",".join("?" for _ in visible_team_names)
+        sql += f"""
+        JOIN application_teams at ON at.application_id = a.id
+        JOIN teams visible_t ON visible_t.id = at.team_id
+        WHERE publisher_t.name = ?
+          AND visible_t.name IN ({placeholders})
+          AND a.approval_status = 'approved'
+        """
+        params.extend(visible_team_names)
+    else:
+        sql += """
+        WHERE publisher_t.name = ?
+          AND a.approval_status = 'approved'
+        """
+    if active_only:
+        sql += " AND a.is_active = 1"
+    sql += " ORDER BY a.sort_order, a.name, a.id"
+    rows = conn.execute(sql, params).fetchall()
+    return [_row_to_application(conn, r) for r in rows]
+
+
 # Approval-aware ordering for management views: actionable (pending) first,
 # then approved, then rejected; ties broken by display order.
 _MANAGE_ORDER = (

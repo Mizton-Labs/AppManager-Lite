@@ -8,7 +8,8 @@ import { AppCard } from "./AppCard";
 /**
  * Per-team view: the applications configured for a single team. The team is
  * resolved from the URL slug against all configured teams the account can see in
- * the sidebar. Each team page shows apps shared to that team.
+ * the sidebar. Each team page shows visible apps published by users assigned to
+ * that team; app sharing still controls whether a given user can see the app.
  */
 export function TeamView(props: { teams: readonly string[] }) {
   const { slug } = useParams();
@@ -40,7 +41,7 @@ function TeamApplications(props: { team: string }) {
     setLoading(true);
     setError(null);
     api
-      .listApplications(team)
+      .listApplicationsByPublisherTeam(team)
       .then((result) => {
         if (active) setApps(result);
       })
@@ -77,9 +78,7 @@ function TeamApplications(props: { team: string }) {
       ) : apps.length === 0 ? (
         <section className="card">
           <p className="muted">
-            No applications have been configured for this team yet. An
-            administrator can add them from Settings &rarr; Application
-            Manager.
+            No apps are available or shared from this team.
           </p>
         </section>
       ) : (
