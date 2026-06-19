@@ -38,6 +38,7 @@ export function setBranding(branding: {
   current.appName = (branding.app_name ?? "").trim();
   current.appLogo = (branding.app_logo ?? "").trim();
   current.collaborators = (branding.collaborators ?? []).filter(Boolean);
+  document.title = getAppName();
   applyFavicon();
 }
 

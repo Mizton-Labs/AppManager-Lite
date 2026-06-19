@@ -605,4 +605,33 @@ describe("ApplicationManager", () => {
       created_by: 2,
     });
   });
+
+  it("reorders applications with move buttons and persists sort_order", async () => {
+    const fetchMock = stubBackend([
+      makeApp({ id: 1, name: "First App", sort_order: 0 }),
+      makeApp({ id: 2, name: "Second App", sort_order: 1 }),
+    ]);
+    render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
+
+    await screen.findByText("First App");
+    await userEvent.click(screen.getByRole("button", { name: /move second app up/i }));
+
+    const orderUpdates = fetchMock.mock.calls
+      .filter(
+        ([url, init]) =>
+          String(url).includes("/api/applications/") &&
+          (init?.method ?? "GET") === "PATCH" &&
+          JSON.parse((init?.body ?? "{}") as string).sort_order !== undefined,
+      )
+      .map(([url, init]) => ({
+        url: String(url),
+        body: JSON.parse((init!.body ?? "{}") as string),
+      }));
+    expect(orderUpdates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ url: expect.stringContaining("/api/applications/2"), body: { sort_order: 0 } }),
+        expect.objectContaining({ url: expect.stringContaining("/api/applications/1"), body: { sort_order: 1 } }),
+      ]),
+    );
+  });
 });
