@@ -202,6 +202,70 @@ def test_publisher_team_section_respects_app_visibility(admin) -> None:
     assert all(a["id"] != app_id for a in threat_section.json())
 
 
+def test_home_listing_uses_application_sort_order(admin) -> None:
+    client, csrf, _ = admin
+    _seed_app(client, csrf, "Last", "https://example.com/last", ["Red Team"])
+    _seed_app(client, csrf, "First", "https://example.com/first", ["Red Team"])
+    apps = client.get("/api/applications").json()
+    ids = {app["name"]: app["id"] for app in apps}
+
+    client.patch(
+        f"/api/applications/{ids['Last']}",
+        json={"sort_order": 20},
+        headers={"X-CSRF-Token": csrf},
+    )
+    client.patch(
+        f"/api/applications/{ids['First']}",
+        json={"sort_order": 10},
+        headers={"X-CSRF-Token": csrf},
+    )
+
+    ordered = [app["name"] for app in client.get("/api/applications").json()]
+    assert ordered.index("First") < ordered.index("Last")
+
+
+def test_publisher_team_section_uses_application_sort_order(admin) -> None:
+    client, csrf, _ = admin
+    password = _create_member(client, csrf, "sortpublisher", ["Red Team"])
+    user_id = next(
+        u["id"] for u in client.get("/api/users").json() if u["username"] == "sortpublisher@example.com"
+    )
+    client.patch(
+        f"/api/users/{user_id}",
+        json={"self_service": True},
+        headers={"X-CSRF-Token": csrf},
+    )
+    with TestClient(client.app) as publisher:
+        login = publisher.post(
+            "/api/auth/login", json={"username": "sortpublisher", "password": password}
+        )
+        pcsrf = login.json()["csrf_token"]
+        first_created = publisher.post(
+            "/api/applications",
+            json={"name": "Second", "url": "https://example.com/second", "teams": ["Red Team"]},
+            headers={"X-CSRF-Token": pcsrf},
+        ).json()
+        second_created = publisher.post(
+            "/api/applications",
+            json={"name": "First", "url": "https://example.com/first", "teams": ["Red Team"]},
+            headers={"X-CSRF-Token": pcsrf},
+        ).json()
+        publisher.patch(
+            f"/api/applications/{first_created['id']}",
+            json={"sort_order": 20},
+            headers={"X-CSRF-Token": pcsrf},
+        )
+        publisher.patch(
+            f"/api/applications/{second_created['id']}",
+            json={"sort_order": 10},
+            headers={"X-CSRF-Token": pcsrf},
+        )
+
+    section = client.get("/api/applications", params={"publisher_team": "Red Team"})
+    names = [app["name"] for app in section.json()]
+    assert names.index("First") < names.index("Second")
+
+
 def test_unknown_team_returns_404(admin) -> None:
     client, _csrf, _ = admin
     resp = client.get("/api/applications", params={"team": "Nonexistent Team"})

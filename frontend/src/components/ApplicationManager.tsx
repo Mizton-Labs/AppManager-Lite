@@ -72,6 +72,32 @@ export function ApplicationManager(props: {
     [reload],
   );
 
+  const moveApp = useCallback(
+    async (appId: number, direction: -1 | 1) => {
+      const index = apps.findIndex((app) => app.id === appId);
+      const targetIndex = index + direction;
+      if (index < 0 || targetIndex < 0 || targetIndex >= apps.length) return;
+      const next = [...apps];
+      [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
+      setApps(next);
+      setError(null);
+      try {
+        await Promise.all(
+          next.map((app, sortOrder) =>
+            app.sort_order === sortOrder
+              ? Promise.resolve()
+              : api.updateApplication(app.id, { sort_order: sortOrder }),
+          ),
+        );
+        await reload();
+      } catch (err) {
+        setError(err instanceof ApiError ? err.message : "Unable to reorder applications.");
+        await reload();
+      }
+    },
+    [apps, reload],
+  );
+
   // Run an action that returns the affected application, then surface its push
   // status as a transient notice next to that application's name.
   const runPushAction = useCallback(
@@ -172,11 +198,15 @@ export function ApplicationManager(props: {
           </p>
         ) : (
           <div className="user-list">
-            {apps.map((app) => (
+            {apps.map((app, index) => (
               <ApplicationRow
                 key={app.id}
                 app={app}
                 isAdmin={isAdmin}
+                canMoveUp={index > 0}
+                canMoveDown={index < apps.length - 1}
+                onMoveUp={() => void moveApp(app.id, -1)}
+                onMoveDown={() => void moveApp(app.id, 1)}
                 teamOptions={teamOptions}
                 onSave={(input) =>
                   runAction(async () => {
@@ -635,6 +665,10 @@ function CreateApplicationCard(props: {
 function ApplicationRow(props: {
   app: Application;
   isAdmin: boolean;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
   teamOptions: readonly string[];
   onSave: (input: UpdateApplicationInput) => void;
   onToggleActive: () => void;
@@ -759,6 +793,26 @@ function ApplicationRow(props: {
           )}
         </div>
         <div className="row-actions">
+          <button
+            type="button"
+            className="btn ghost btn-sm"
+            onClick={props.onMoveUp}
+            disabled={!props.canMoveUp}
+            title="Move up"
+            aria-label={`Move ${app.name} up`}
+          >
+            ↑
+          </button>
+          <button
+            type="button"
+            className="btn ghost btn-sm"
+            onClick={props.onMoveDown}
+            disabled={!props.canMoveDown}
+            title="Move down"
+            aria-label={`Move ${app.name} down`}
+          >
+            ↓
+          </button>
           <button
             type="button"
             className="btn ghost"
