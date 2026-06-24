@@ -19,6 +19,11 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_list(name: str) -> list[str]:
+    raw = os.environ.get(name, "")
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 def _normalize_prefix(value: str) -> str:
     """Validate and normalize a base path prefix.
 
@@ -71,6 +76,71 @@ class Settings:
             os.environ.get("APP_SESSION_TTL_SECONDS", str(12 * 60 * 60))
         )
         self.credentials_file: Path = self.data_dir / "first-run-admin-credentials.txt"
+
+        self.sso_auto_provision: bool = _env_bool("APP_SSO_AUTO_PROVISION", True)
+        self.sso_local_login_enabled: bool = _env_bool(
+            "APP_SSO_LOCAL_LOGIN_ENABLED", True
+        )
+        self.sso_default_role: str = os.environ.get("APP_SSO_DEFAULT_ROLE", "user")
+        if self.sso_default_role not in {"admin", "user"}:
+            raise ValueError("APP_SSO_DEFAULT_ROLE must be 'admin' or 'user'")
+        self.sso_email_domain_allowlist: list[str] = [
+            domain.lower().lstrip("@")
+            for domain in _env_list("APP_SSO_EMAIL_DOMAIN_ALLOWLIST")
+        ]
+
+        self.oidc_enabled: bool = _env_bool("APP_OIDC_ENABLED", False)
+        self.oidc_provider: str = os.environ.get("APP_OIDC_PROVIDER", "oidc").strip()
+        self.oidc_label: str = os.environ.get("APP_OIDC_LABEL", "Single Sign-On").strip()
+        self.oidc_client_id: str = os.environ.get("APP_OIDC_CLIENT_ID", "").strip()
+        self.oidc_client_secret: str = os.environ.get(
+            "APP_OIDC_CLIENT_SECRET", ""
+        ).strip()
+        self.oidc_issuer: str = os.environ.get("APP_OIDC_ISSUER", "").strip().rstrip("/")
+        self.oidc_authorization_endpoint: str = os.environ.get(
+            "APP_OIDC_AUTHORIZATION_ENDPOINT", ""
+        ).strip()
+        self.oidc_token_endpoint: str = os.environ.get(
+            "APP_OIDC_TOKEN_ENDPOINT", ""
+        ).strip()
+        self.oidc_userinfo_endpoint: str = os.environ.get(
+            "APP_OIDC_USERINFO_ENDPOINT", ""
+        ).strip()
+        self.oidc_jwks_uri: str = os.environ.get("APP_OIDC_JWKS_URI", "").strip()
+        self.oidc_scopes: str = os.environ.get(
+            "APP_OIDC_SCOPES", "openid email profile"
+        ).strip()
+        self.microsoft_tenant: str = os.environ.get(
+            "APP_MICROSOFT_TENANT", "common"
+        ).strip()
+
+        self.saml_enabled: bool = _env_bool("APP_SAML_ENABLED", False)
+        self.saml_label: str = os.environ.get("APP_SAML_LABEL", "SAML SSO").strip()
+        self.saml_sp_entity_id: str = os.environ.get(
+            "APP_SAML_SP_ENTITY_ID", ""
+        ).strip()
+        self.saml_idp_entity_id: str = os.environ.get(
+            "APP_SAML_IDP_ENTITY_ID", ""
+        ).strip()
+        self.saml_idp_sso_url: str = os.environ.get(
+            "APP_SAML_IDP_SSO_URL", ""
+        ).strip()
+        self.saml_idp_x509_cert: str = os.environ.get(
+            "APP_SAML_IDP_X509_CERT", ""
+        ).strip()
+        self.saml_nameid_format: str = os.environ.get(
+            "APP_SAML_NAMEID_FORMAT",
+            "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
+        ).strip()
+        self.saml_email_attribute: str = os.environ.get(
+            "APP_SAML_EMAIL_ATTRIBUTE", "email"
+        ).strip()
+        self.saml_first_name_attribute: str = os.environ.get(
+            "APP_SAML_FIRST_NAME_ATTRIBUTE", "firstName"
+        ).strip()
+        self.saml_last_name_attribute: str = os.environ.get(
+            "APP_SAML_LAST_NAME_ATTRIBUTE", "lastName"
+        ).strip()
 
         # Logging. The application owns a single consolidated log file so the
         # same output is produced whether it runs backgrounded, in the

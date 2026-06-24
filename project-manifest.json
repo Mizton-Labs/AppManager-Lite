@@ -11,7 +11,7 @@
     "summary": "A FastAPI + SQLite backend exposes a JSON API under /api and also serves the built React single-page app. The frontend is a Vite-built SPA that uses relative URLs so one build runs at the site root or behind a subpath reverse proxy.",
     "style": "monorepo, single deployable (backend serves the frontend)",
     "runtimeTopology": "One uvicorn process serves /api and the SPA; SQLite is the datastore; an optional remote nginx is configured over SSH to publish local-alias applications.",
-    "auth": "Argon2id password hashing, server-side sessions, HttpOnly + SameSite=Strict + Secure session cookie, and an X-CSRF-Token header on state-changing requests. Roles (admin, user) and team membership are enforced server-side."
+    "auth": "Argon2id password hashing, optional OIDC/OAuth2 and SAML 2.0 SSO, server-side sessions, HttpOnly + SameSite=Strict + Secure session cookie, and an X-CSRF-Token header on state-changing requests. Roles (admin, user) and team membership are enforced server-side."
   },
   "entrypoints": {
     "backend": "backend/app/main.py:app (ASGI app via app.main:app)",
@@ -36,12 +36,13 @@
         { "path": "backend/app/schemas.py", "role": "Pydantic request/response models and field validation (the API contract)." },
         { "path": "backend/app/deps.py", "role": "Dependencies: get_db, get_current_user, require_admin, verify_csrf." },
         { "path": "backend/app/sessions.py", "role": "Server-side session and CSRF token management." },
+        { "path": "backend/app/sso.py", "role": "OIDC/SAML SSO provider resolution, flow-state storage, token/assertion handling, and user linking." },
         { "path": "backend/app/security.py", "role": "Argon2id hashing and password generation." },
         { "path": "backend/app/audit.py", "role": "Audit-trail writer (categories: application, user, system)." },
         { "path": "backend/app/teams.py", "role": "Team slug helper (teams are administrator-managed; none are seeded)." },
         { "path": "backend/app/reverse_proxy.py", "role": "Render and push application aliases to a remote nginx over SSH." },
         { "path": "backend/app/logging_config.py", "role": "Consolidated logging configuration." },
-        { "path": "backend/app/routers/auth.py", "role": "Session, login, logout, and own-password endpoints." },
+        { "path": "backend/app/routers/auth.py", "role": "Session, local login, SSO login/callback, logout, and own-password endpoints." },
         { "path": "backend/app/routers/users.py", "role": "User management and the readable team list (GET /api/teams)." },
         { "path": "backend/app/routers/applications.py", "role": "Application CRUD, approval workflow, and reverse-proxy push/retry." },
         { "path": "backend/app/routers/settings.py", "role": "Reverse-proxy and branding settings plus team CRUD/reorder." },
@@ -113,6 +114,9 @@
         "starlette>=1.0.1",
         "uvicorn[standard]>=0.30,<0.35",
         "argon2-cffi>=23.1,<24",
+        "authlib>=1.3,<2",
+        "python3-saml>=1.16,<2",
+        "python-multipart>=0.0.20,<1",
         "pydantic>=2.7,<3"
       ],
       "devDependencies": ["pytest>=9.0.3,<10", "httpx>=0.27,<0.29"]
@@ -169,7 +173,26 @@
       { "name": "APP_LOG_DIR", "default": "./logs", "type": "path", "purpose": "Directory for the consolidated log file." },
       { "name": "APP_LOG_FILE", "default": "app.log", "type": "string", "purpose": "Consolidated log file name." },
       { "name": "APP_LOG_LEVEL", "default": "INFO", "type": "string", "purpose": "Log level (DEBUG, INFO, WARNING, ERROR)." },
-      { "name": "APP_LOG_TO_FILE", "default": "1", "type": "boolean", "purpose": "Write logs to the file (console output is always on)." }
+      { "name": "APP_LOG_TO_FILE", "default": "1", "type": "boolean", "purpose": "Write logs to the file (console output is always on)." },
+      { "name": "APP_SSO_LOCAL_LOGIN_ENABLED", "default": "1", "type": "boolean", "purpose": "Show and accept local username/password login when SSO is configured." },
+      { "name": "APP_SSO_AUTO_PROVISION", "default": "1", "type": "boolean", "purpose": "Create local users on first successful SSO sign-in." },
+      { "name": "APP_SSO_DEFAULT_ROLE", "default": "user", "type": "string", "purpose": "Role assigned to auto-provisioned SSO users." },
+      { "name": "APP_SSO_EMAIL_DOMAIN_ALLOWLIST", "default": "", "type": "string", "purpose": "Optional comma-separated email domain allowlist for SSO sign-ins." },
+      { "name": "APP_OIDC_ENABLED", "default": "0", "type": "boolean", "purpose": "Enable OIDC/OAuth2 login." },
+      { "name": "APP_OIDC_PROVIDER", "default": "oidc", "type": "string", "purpose": "OIDC provider preset: google, microsoft, okta, auth0, keycloak, or generic." },
+      { "name": "APP_OIDC_LABEL", "default": "Single Sign-On", "type": "string", "purpose": "Login button label for OIDC." },
+      { "name": "APP_OIDC_CLIENT_ID", "default": "", "type": "secret", "purpose": "OIDC client/application ID." },
+      { "name": "APP_OIDC_CLIENT_SECRET", "default": "", "type": "secret", "purpose": "OIDC client secret, including Microsoft Entra/SPN secret values." },
+      { "name": "APP_OIDC_ISSUER", "default": "", "type": "url", "purpose": "OIDC issuer URL for discovery or validation." },
+      { "name": "APP_OIDC_SCOPES", "default": "openid email profile", "type": "string", "purpose": "OIDC scopes requested during login." },
+      { "name": "APP_MICROSOFT_TENANT", "default": "common", "type": "string", "purpose": "Microsoft Entra tenant for the microsoft OIDC provider preset." },
+      { "name": "APP_SAML_ENABLED", "default": "0", "type": "boolean", "purpose": "Enable SAML 2.0 login." },
+      { "name": "APP_SAML_LABEL", "default": "SAML SSO", "type": "string", "purpose": "Login button label for SAML." },
+      { "name": "APP_SAML_SP_ENTITY_ID", "default": "metadata URL", "type": "string", "purpose": "Optional SAML service-provider entity ID." },
+      { "name": "APP_SAML_IDP_ENTITY_ID", "default": "", "type": "string", "purpose": "SAML identity-provider entity ID." },
+      { "name": "APP_SAML_IDP_SSO_URL", "default": "", "type": "url", "purpose": "SAML identity-provider SSO URL." },
+      { "name": "APP_SAML_IDP_X509_CERT", "default": "", "type": "secret", "purpose": "SAML identity-provider signing certificate." },
+      { "name": "APP_SAML_EMAIL_ATTRIBUTE", "default": "email", "type": "string", "purpose": "SAML assertion attribute used as local username/email." }
     ]
   },
   "api": {
@@ -180,7 +203,13 @@
     "routes": [
       { "method": "GET", "path": "/api/health", "auth": "anonymous", "csrf": false, "summary": "Liveness check." },
       { "method": "GET", "path": "/api/session", "auth": "anonymous", "csrf": false, "summary": "Current session and branding (works before authentication)." },
+      { "method": "GET", "path": "/api/auth/sso/config", "auth": "anonymous", "csrf": false, "summary": "Read enabled SSO login providers for the login page." },
       { "method": "POST", "path": "/api/auth/login", "auth": "anonymous", "csrf": false, "summary": "Authenticate and start a session." },
+      { "method": "GET", "path": "/api/auth/oidc/login", "auth": "anonymous", "csrf": false, "summary": "Start OIDC authorization-code login." },
+      { "method": "GET", "path": "/api/auth/oidc/callback", "auth": "anonymous", "csrf": false, "summary": "Handle OIDC provider callback and start a local session." },
+      { "method": "GET", "path": "/api/auth/saml/login", "auth": "anonymous", "csrf": false, "summary": "Start SAML service-provider initiated login." },
+      { "method": "POST", "path": "/api/auth/saml/acs", "auth": "anonymous", "csrf": false, "summary": "Handle SAML assertion consumer service callback and start a local session." },
+      { "method": "GET", "path": "/api/auth/saml/metadata", "auth": "anonymous", "csrf": false, "summary": "Expose SAML service-provider metadata." },
       { "method": "POST", "path": "/api/auth/logout", "auth": "user", "csrf": true, "summary": "End the current session." },
       { "method": "POST", "path": "/api/account/password", "auth": "user", "csrf": true, "summary": "Change the signed-in user's own password." },
       { "method": "GET", "path": "/api/teams", "auth": "user", "csrf": false, "summary": "List teams (name, order, icon) for any signed-in user." },
@@ -236,6 +265,12 @@
         "columns": ["id", "user_id", "csrf_token", "created_at", "expires_at"],
         "primaryKey": ["id"],
         "foreignKeys": ["user_id -> users.id (cascade)"]
+      },
+      {
+        "name": "sso_auth_flows",
+        "description": "Short-lived OIDC/SAML state and nonce values used to validate SSO callbacks.",
+        "columns": ["state", "protocol", "nonce", "created_at", "expires_at"],
+        "primaryKey": ["state"]
       },
       {
         "name": "applications",

@@ -32,6 +32,20 @@ export interface SessionState {
   configured: boolean;
 }
 
+
+export interface SsoProvider {
+  protocol: "oidc" | "saml";
+  label: string;
+  login_url: string;
+}
+
+
+export interface SsoConfig {
+  enabled: boolean;
+  local_login_enabled: boolean;
+  providers: SsoProvider[];
+}
+
 export interface GeneratedPassword {
   user: ApiUser;
   password: string;
