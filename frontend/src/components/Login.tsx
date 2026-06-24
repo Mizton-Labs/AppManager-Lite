@@ -1,6 +1,6 @@
-import { useState } from "react";
-import { api, ApiError } from "../api";
-import type { SessionState } from "../types";
+import { useEffect, useState } from "react";
+import { api, apiBase, ApiError } from "../api";
+import type { SessionState, SsoConfig } from "../types";
 import { getAppName, getLogoSrc } from "../branding";
 
 export function Login(props: { onAuthenticated: (session: SessionState) => void }) {
@@ -8,6 +8,28 @@ export function Login(props: { onAuthenticated: (session: SessionState) => void 
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [ssoConfig, setSsoConfig] = useState<SsoConfig | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    api
+      .getSsoConfig()
+      .then((config) => {
+        if (active) {
+          setSsoConfig(config);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setSsoConfig({ enabled: false, local_login_enabled: true, providers: [] });
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const showLocalLogin = ssoConfig?.local_login_enabled !== false;
 
   async function onSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -37,28 +59,47 @@ export function Login(props: { onAuthenticated: (session: SessionState) => void 
         <h1 className="brand">{getAppName()}</h1>
         <p className="muted">Sign in to access the lab portal.</p>
 
-        <label className="field">
-          <span>Username</span>
-          <input
-            type="text"
-            autoComplete="username"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            required
-            autoFocus
-          />
-        </label>
+        {ssoConfig?.enabled && (
+          <div className="stack">
+            {ssoConfig.providers.map((provider) => (
+              <a
+                key={provider.protocol}
+                className="btn primary"
+                href={apiBase() + provider.login_url}
+              >
+                Sign in with {provider.label}
+              </a>
+            ))}
+          </div>
+        )}
 
-        <label className="field">
-          <span>Password</span>
-          <input
-            type="password"
-            autoComplete="current-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-          />
-        </label>
+        {showLocalLogin && (
+          <>
+            {ssoConfig?.enabled && <p className="muted">Or use local credentials.</p>}
+            <label className="field">
+              <span>Username</span>
+              <input
+                type="text"
+                autoComplete="username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                required
+                autoFocus
+              />
+            </label>
+
+            <label className="field">
+              <span>Password</span>
+              <input
+                type="password"
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+              />
+            </label>
+          </>
+        )}
 
         {error && (
           <p className="alert error" role="alert">
@@ -66,9 +107,11 @@ export function Login(props: { onAuthenticated: (session: SessionState) => void 
           </p>
         )}
 
-        <button type="submit" className="btn primary" disabled={busy}>
-          {busy ? "Signing in…" : "Sign in"}
-        </button>
+        {showLocalLogin && (
+          <button type="submit" className="btn primary" disabled={busy}>
+            {busy ? "Signing in..." : "Sign in"}
+          </button>
+        )}
       </form>
     </div>
   );
