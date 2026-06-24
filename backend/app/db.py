@@ -50,6 +50,14 @@ CREATE TABLE IF NOT EXISTS sessions (
     expires_at TEXT    NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS sso_auth_flows (
+    state      TEXT    PRIMARY KEY,
+    protocol   TEXT    NOT NULL CHECK (protocol IN ('oidc', 'saml')),
+    nonce      TEXT    NOT NULL DEFAULT '',
+    created_at TEXT    NOT NULL DEFAULT (datetime('now')),
+    expires_at TEXT    NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS applications (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     name            TEXT    NOT NULL,
@@ -128,6 +136,7 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sso_auth_flows_expires ON sso_auth_flows(expires_at);
 CREATE INDEX IF NOT EXISTS idx_user_teams_team ON user_teams(team_id);
 CREATE INDEX IF NOT EXISTS idx_application_teams_team
     ON application_teams(team_id);

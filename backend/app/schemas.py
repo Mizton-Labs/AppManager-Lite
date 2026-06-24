@@ -304,6 +304,18 @@ class SessionOut(BaseModel):
     configured: bool = False
 
 
+class SsoProviderOut(BaseModel):
+    protocol: str
+    label: str
+    login_url: str
+
+
+class SsoConfigOut(BaseModel):
+    enabled: bool
+    local_login_enabled: bool
+    providers: list[SsoProviderOut] = Field(default_factory=list)
+
+
 class BundleTemplateMapping(BaseModel):
     field_name: str = Field(min_length=1, max_length=80)
     source: str = Field(min_length=1, max_length=80)

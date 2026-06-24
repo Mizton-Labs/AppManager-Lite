@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+import secrets
 import sqlite3
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.responses import PlainTextResponse, RedirectResponse
 
-from .. import audit, repository, security, sessions
+from .. import audit, repository, security, sessions, sso
 from ..config import get_settings
 from ..deps import get_current_user, get_db, verify_csrf
 from ..schemas import (
@@ -17,6 +19,8 @@ from ..schemas import (
     LoginRequest,
     MessageOut,
     SessionOut,
+    SsoConfigOut,
+    SsoProviderOut,
     UserOut,
 )
 
@@ -49,6 +53,19 @@ def _clear_session_cookie(response: Response) -> None:
         secure=settings.secure_cookies,
         samesite="strict",
     )
+
+
+def _post_login_redirect() -> str:
+    settings = get_settings()
+    return f"{settings.base_prefix}/" if settings.base_prefix else "/"
+
+
+def _create_session_response(
+    response: Response, conn: sqlite3.Connection, user: dict[str, Any]
+) -> dict[str, str]:
+    created = sessions.create_session(conn, user["id"])
+    _set_session_cookie(response, created["session_id"])
+    return created
 
 
 def _user_out(user: dict[str, Any]) -> UserOut:
@@ -104,6 +121,32 @@ def read_session(
     )
 
 
+@router.get("/auth/sso/config", response_model=SsoConfigOut)
+def sso_config() -> SsoConfigOut:
+    settings = get_settings()
+    providers: list[SsoProviderOut] = []
+    if settings.enable_auth and settings.oidc_enabled:
+        label = settings.oidc_label or sso.provider_label(settings.oidc_provider)
+        providers.append(
+            SsoProviderOut(
+                protocol="oidc", label=label, login_url="auth/oidc/login"
+            )
+        )
+    if settings.enable_auth and settings.saml_enabled:
+        providers.append(
+            SsoProviderOut(
+                protocol="saml",
+                label=settings.saml_label or "SAML SSO",
+                login_url="auth/saml/login",
+            )
+        )
+    return SsoConfigOut(
+        enabled=bool(providers),
+        local_login_enabled=settings.sso_local_login_enabled,
+        providers=providers,
+    )
+
+
 @router.post("/auth/login", response_model=SessionOut)
 def login(
     payload: LoginRequest,
@@ -113,6 +156,11 @@ def login(
     settings = get_settings()
     if not settings.enable_auth:
         return SessionOut(authenticated=True, enable_auth=False, **_branding(conn))
+    if not settings.sso_local_login_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Local password login is disabled",
+        )
 
     row = repository.get_user_by_username(conn, payload.username)
     if row is None:
@@ -144,10 +192,9 @@ def login(
             detail="Invalid username or password",
         )
 
-    created = sessions.create_session(conn, row["id"])
-    _set_session_cookie(response, created["session_id"])
     user = repository.get_user_by_id(conn, row["id"])
     assert user is not None
+    created = _create_session_response(response, conn, user)
     logger.info("Login succeeded for username=%r (id=%s)", row["username"], row["id"])
     audit.record(
         conn,
@@ -164,6 +211,132 @@ def login(
         user=_user_out(user),
         csrf_token=created["csrf_token"],
         **_branding(conn),
+    )
+
+
+@router.get("/auth/oidc/login")
+def oidc_login(
+    request: Request,
+    conn: sqlite3.Connection = Depends(get_db),
+) -> RedirectResponse:
+    settings = get_settings()
+    if not settings.enable_auth or not settings.oidc_enabled:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    state = secrets.token_urlsafe(32)
+    nonce = secrets.token_urlsafe(32)
+    sso.create_flow(conn, protocol="oidc", state=state, nonce=nonce)
+    redirect_uri = str(request.url_for("oidc_callback"))
+    url = sso.oidc_login_url(
+        settings, redirect_uri=redirect_uri, state=state, nonce=nonce
+    )
+    return RedirectResponse(url, status_code=status.HTTP_302_FOUND)
+
+
+@router.get("/auth/oidc/callback", name="oidc_callback")
+def oidc_callback(
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    conn: sqlite3.Connection = Depends(get_db),
+) -> RedirectResponse:
+    settings = get_settings()
+    if not settings.enable_auth or not settings.oidc_enabled:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=f"OIDC error: {error}"
+        )
+    if not code or not state:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="OIDC callback is missing code or state",
+        )
+    flow = sso.consume_flow(conn, protocol="oidc", state=state)
+    claims = sso.oidc_claims_from_callback(
+        settings,
+        code=code,
+        redirect_uri=str(request.url_for("oidc_callback")),
+        expected_nonce=flow["nonce"],
+    )
+    email = str(claims.get("email") or claims.get("preferred_username") or "")
+    user = sso.user_from_sso_claims(conn, settings, email=email)
+    redirect = RedirectResponse(_post_login_redirect(), status_code=status.HTTP_302_FOUND)
+    _create_session_response(redirect, conn, user)
+    logger.info("OIDC login succeeded for username=%r (id=%s)", user["username"], user["id"])
+    audit.record(
+        conn,
+        category=audit.CATEGORY_USER,
+        action="oidc_login",
+        actor=user,
+        target_type="user",
+        target_id=user["id"],
+        target_name=user["username"],
+    )
+    return redirect
+
+
+@router.get("/auth/saml/login")
+async def saml_login(
+    request: Request,
+    conn: sqlite3.Connection = Depends(get_db),
+) -> RedirectResponse:
+    settings = get_settings()
+    if not settings.enable_auth or not settings.saml_enabled:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    state = secrets.token_urlsafe(32)
+    sso.create_flow(conn, protocol="saml", state=state)
+    auth = await sso.saml_auth(request, settings)
+    return RedirectResponse(auth.login(return_to=state), status_code=status.HTTP_302_FOUND)
+
+
+@router.post("/auth/saml/acs", name="saml_acs")
+async def saml_acs(
+    request: Request,
+    conn: sqlite3.Connection = Depends(get_db),
+) -> RedirectResponse:
+    settings = get_settings()
+    if not settings.enable_auth or not settings.saml_enabled:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    form = await request.form()
+    relay_state = str(form.get("RelayState") or "")
+    if not relay_state:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="SAML response is missing RelayState",
+        )
+    sso.consume_flow(conn, protocol="saml", state=relay_state)
+    auth = await sso.saml_auth(request, settings)
+    auth.process_response(request_id=None)
+    if auth.get_errors() or not auth.is_authenticated():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="SAML response validation failed",
+        )
+    email = sso.email_from_saml_auth(auth, settings)
+    user = sso.user_from_sso_claims(conn, settings, email=email)
+    redirect = RedirectResponse(_post_login_redirect(), status_code=status.HTTP_302_FOUND)
+    _create_session_response(redirect, conn, user)
+    logger.info("SAML login succeeded for username=%r (id=%s)", user["username"], user["id"])
+    audit.record(
+        conn,
+        category=audit.CATEGORY_USER,
+        action="saml_login",
+        actor=user,
+        target_type="user",
+        target_id=user["id"],
+        target_name=user["username"],
+    )
+    return redirect
+
+
+@router.get("/auth/saml/metadata", name="saml_metadata")
+def saml_metadata(request: Request) -> PlainTextResponse:
+    settings = get_settings()
+    if not settings.enable_auth or not settings.saml_enabled:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    return PlainTextResponse(
+        sso.saml_metadata_xml(settings, request), media_type="application/samlmetadata+xml"
     )
 
 

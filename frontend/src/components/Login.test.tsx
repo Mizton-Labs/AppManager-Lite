@@ -20,15 +20,29 @@ describe("Login", () => {
         role: "admin",
         is_active: true,
         must_change_password: true,
+        self_service: true,
+        apps_server: "",
+        apps_server_ip: "",
         teams: [],
       },
       csrf_token: "csrf-1",
+      app_name: "",
+      app_logo: "",
+      collaborators: [],
+      configured: false,
     };
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => session,
-    } as Response);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ enabled: false, local_login_enabled: true, providers: [] }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => session,
+      } as Response);
     vi.stubGlobal("fetch", fetchMock);
 
     const onAuthenticated = vi.fn();
@@ -42,11 +56,18 @@ describe("Login", () => {
   });
 
   it("shows the server error message when sign-in fails", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 401,
-      json: async () => ({ detail: "Invalid username or password" }),
-    } as Response);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ enabled: false, local_login_enabled: true, providers: [] }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        json: async () => ({ detail: "Invalid username or password" }),
+      } as Response);
     vi.stubGlobal("fetch", fetchMock);
 
     render(<Login onAuthenticated={vi.fn()} />);
@@ -58,5 +79,29 @@ describe("Login", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Invalid username or password",
     );
+  });
+
+  it("renders SSO provider links when enabled", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        enabled: true,
+        local_login_enabled: true,
+        providers: [
+          { protocol: "oidc", label: "Google", login_url: "auth/oidc/login" },
+          { protocol: "saml", label: "SAML SSO", login_url: "auth/saml/login" },
+        ],
+      }),
+    } as Response);
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Login onAuthenticated={vi.fn()} />);
+
+    expect(await screen.findByRole("link", { name: "Sign in with Google" }))
+      .toHaveAttribute("href", "http://localhost:3000/api/auth/oidc/login");
+    expect(screen.getByRole("link", { name: "Sign in with SAML SSO" }))
+      .toHaveAttribute("href", "http://localhost:3000/api/auth/saml/login");
+    expect(screen.getByLabelText("Username")).toBeInTheDocument();
   });
 });

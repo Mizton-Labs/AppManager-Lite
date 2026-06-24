@@ -31,9 +31,10 @@ bootstraps its own dependencies.
   time.
 - **Auth:** Argon2id password hashing, server-side sessions, and an
   HttpOnly + SameSite=Strict + Secure session cookie. State-changing requests
-  require an `X-CSRF-Token` header. Roles (`admin`, `user`) and team membership
-  are enforced server-side, as are application ownership, team scope, and the
-  approval workflow.
+  require an `X-CSRF-Token` header. Optional SSO supports OpenID Connect/OAuth2
+  providers and SAML 2.0 identity providers. Roles (`admin`, `user`) and team
+  membership are enforced server-side, as are application ownership, team scope,
+  and the approval workflow.
 
 ```text
 AppManager-Lite/
@@ -126,6 +127,91 @@ once to **Settings → General Settings** to set the initial branding
 (application name and logo). Saving the **Application Basic Information** card
 marks the deployment as configured; subsequent sign-ins land on the Home page as
 usual. The "configured" state is stored server-side in the single settings row.
+
+### SSO authentication
+
+Local username/password authentication is enabled by default. You can also enable
+OIDC/OAuth2, SAML 2.0, or both. SSO provider secrets are read from environment
+variables at startup; they are not stored in SQLite or exposed to the frontend.
+
+Callback URLs to register with your identity provider are based on the public app
+origin plus the optional `APP_BASE_PREFIX`:
+
+- OIDC/OAuth2 redirect URI: `https://<host><APP_BASE_PREFIX>/api/auth/oidc/callback`
+- SAML ACS URL: `https://<host><APP_BASE_PREFIX>/api/auth/saml/acs`
+- SAML SP metadata URL: `https://<host><APP_BASE_PREFIX>/api/auth/saml/metadata`
+
+Examples without a prefix:
+
+- `https://apps.example.com/api/auth/oidc/callback`
+- `https://apps.example.com/api/auth/saml/acs`
+- `https://apps.example.com/api/auth/saml/metadata`
+
+Examples with `APP_BASE_PREFIX=/home`:
+
+- `https://apps.example.com/home/api/auth/oidc/callback`
+- `https://apps.example.com/home/api/auth/saml/acs`
+- `https://apps.example.com/home/api/auth/saml/metadata`
+
+Shared SSO settings:
+
+- `APP_SSO_LOCAL_LOGIN_ENABLED` — keep the local password form available
+  (`true` by default). Keep this enabled for at least one break-glass admin
+  account unless your IdP availability is guaranteed.
+- `APP_SSO_AUTO_PROVISION` — create local users on first successful SSO sign-in
+  (`true` by default). If disabled, an administrator must create matching local
+  users first.
+- `APP_SSO_DEFAULT_ROLE` — role for auto-provisioned users, `user` by default.
+- `APP_SSO_EMAIL_DOMAIN_ALLOWLIST` — optional comma-separated domain allowlist,
+  for example `example.com,example.org`.
+
+OIDC/OAuth2 settings:
+
+- `APP_OIDC_ENABLED=1`
+- `APP_OIDC_PROVIDER` — `google`, `microsoft`, `okta`, `auth0`, `keycloak`, or
+  `generic`. Google and Microsoft have built-in endpoint presets; other OIDC
+  providers use issuer discovery or explicit endpoint overrides.
+- `APP_OIDC_LABEL` — optional login button label.
+- `APP_OIDC_CLIENT_ID` — client/application ID from the provider.
+- `APP_OIDC_CLIENT_SECRET` — client secret. For Microsoft Entra ID, this is the
+  application/SPN client secret value.
+- `APP_OIDC_ISSUER` — issuer URL, required for generic discovery and most
+  non-preset providers.
+- `APP_OIDC_SCOPES` — defaults to `openid email profile`.
+- `APP_MICROSOFT_TENANT` — Microsoft tenant ID/domain, or `common` by default.
+- `APP_OIDC_AUTHORIZATION_ENDPOINT`, `APP_OIDC_TOKEN_ENDPOINT`,
+  `APP_OIDC_USERINFO_ENDPOINT`, and `APP_OIDC_JWKS_URI` — optional explicit
+  endpoint overrides for providers that do not publish standard discovery.
+
+Provider notes:
+
+- Google: create an OAuth client for a web application, add the OIDC callback URL
+  as an authorized redirect URI, set `APP_OIDC_PROVIDER=google`, and provide the
+  client ID/secret.
+- Microsoft Entra ID: create an app registration, add a web redirect URI using
+  the OIDC callback URL, create a client secret, set `APP_OIDC_PROVIDER=microsoft`,
+  `APP_MICROSOFT_TENANT=<tenant-id-or-domain>`, and provide the client ID/secret.
+- Okta/Auth0/Keycloak/generic OIDC: configure an application that allows the OIDC
+  callback URL, then set the issuer URL and client ID/secret. If discovery is not
+  available, provide the explicit endpoint override variables.
+
+SAML 2.0 settings:
+
+- `APP_SAML_ENABLED=1`
+- `APP_SAML_LABEL` — optional login button label.
+- `APP_SAML_SP_ENTITY_ID` — optional service-provider entity ID. Defaults to the
+  SAML metadata URL.
+- `APP_SAML_IDP_ENTITY_ID` — IdP entity ID.
+- `APP_SAML_IDP_SSO_URL` — IdP single sign-on URL.
+- `APP_SAML_IDP_X509_CERT` — IdP signing certificate, PEM body without the
+  surrounding `BEGIN/END CERTIFICATE` lines or as accepted by your deployment
+  environment.
+- `APP_SAML_EMAIL_ATTRIBUTE` — assertion attribute used as the local username;
+  defaults to `email`. If absent, the SAML NameID is used.
+
+For SAML, import the AppManager Lite SP metadata URL into the IdP when supported,
+or manually configure the ACS URL, SP entity ID, and NameID/email attribute. SAML
+assertions must be signed; unsigned assertions are rejected.
 
 ## Application management
 
