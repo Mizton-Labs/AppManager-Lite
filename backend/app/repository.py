@@ -7,6 +7,7 @@ can compose inside a single transaction.
 from __future__ import annotations
 
 import json
+import secrets
 import sqlite3
 from typing import Any
 
@@ -294,6 +295,23 @@ def create_user(
     user = get_user_by_id(conn, user_id)
     assert user is not None
     return user
+
+
+def create_sso_user(
+    conn: sqlite3.Connection,
+    *,
+    username: str,
+    role: str = "user",
+) -> dict[str, Any]:
+    """Create a locally linked SSO user with an unshared random password."""
+    return create_user(
+        conn,
+        username=username,
+        password=secrets.token_urlsafe(48),
+        role=role,
+        teams=[],
+        must_change_password=False,
+    )
 
 
 def update_user(

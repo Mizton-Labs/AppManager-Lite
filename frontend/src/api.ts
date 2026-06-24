@@ -13,6 +13,7 @@ import type {
   GeneratedPassword,
   ReverseProxySettings,
   SessionState,
+  SsoConfig,
   Team,
   UpdateBundleTemplateInput,
   UpdateApplicationInput,
@@ -99,6 +100,8 @@ async function requestText(path: string): Promise<BundleDownload> {
 
 export const api = {
   getSession: () => request<SessionState>("session"),
+
+  getSsoConfig: () => request<SsoConfig>("auth/sso/config"),
 
   login: (username: string, password: string) =>
     request<SessionState>("auth/login", {
