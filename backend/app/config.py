@@ -77,10 +77,19 @@ class Settings:
         )
         self.credentials_file: Path = self.data_dir / "first-run-admin-credentials.txt"
 
-        self.sso_auto_provision: bool = _env_bool("APP_SSO_AUTO_PROVISION", True)
-        self.sso_local_login_enabled: bool = _env_bool(
-            "APP_SSO_LOCAL_LOGIN_ENABLED", True
+        auth_mode = os.environ.get("APP_AUTH_MODE", "").strip().lower()
+        if auth_mode and auth_mode not in {"local", "sso", "both"}:
+            raise ValueError("APP_AUTH_MODE must be 'local', 'sso', or 'both'")
+        self.auth_mode: str = auth_mode or "both"
+        sso_auth_enabled = auth_mode in {"sso", "both"} if auth_mode else True
+        local_login_enabled = (
+            auth_mode in {"local", "both"}
+            if auth_mode
+            else _env_bool("APP_SSO_LOCAL_LOGIN_ENABLED", True)
         )
+
+        self.sso_auto_provision: bool = _env_bool("APP_SSO_AUTO_PROVISION", True)
+        self.sso_local_login_enabled: bool = local_login_enabled
         self.sso_default_role: str = os.environ.get("APP_SSO_DEFAULT_ROLE", "user")
         if self.sso_default_role not in {"admin", "user"}:
             raise ValueError("APP_SSO_DEFAULT_ROLE must be 'admin' or 'user'")
@@ -89,7 +98,9 @@ class Settings:
             for domain in _env_list("APP_SSO_EMAIL_DOMAIN_ALLOWLIST")
         ]
 
-        self.oidc_enabled: bool = _env_bool("APP_OIDC_ENABLED", False)
+        self.oidc_enabled: bool = sso_auth_enabled and _env_bool(
+            "APP_OIDC_ENABLED", False
+        )
         self.oidc_provider: str = os.environ.get("APP_OIDC_PROVIDER", "oidc").strip()
         self.oidc_label: str = os.environ.get("APP_OIDC_LABEL", "Single Sign-On").strip()
         self.oidc_client_id: str = os.environ.get("APP_OIDC_CLIENT_ID", "").strip()
@@ -114,7 +125,9 @@ class Settings:
             "APP_MICROSOFT_TENANT", "common"
         ).strip()
 
-        self.saml_enabled: bool = _env_bool("APP_SAML_ENABLED", False)
+        self.saml_enabled: bool = sso_auth_enabled and _env_bool(
+            "APP_SAML_ENABLED", False
+        )
         self.saml_label: str = os.environ.get("APP_SAML_LABEL", "SAML SSO").strip()
         self.saml_sp_entity_id: str = os.environ.get(
             "APP_SAML_SP_ENTITY_ID", ""

@@ -91,13 +91,14 @@ def oidc_endpoints(settings: Settings) -> OidcEndpoints:
         )
     if provider in {"microsoft", "azure"}:
         tenant = settings.microsoft_tenant or "common"
-        issuer = f"https://login.microsoftonline.com/{tenant}/v2.0"
+        base = f"https://login.microsoftonline.com/{tenant}"
+        issuer = f"{base}/v2.0"
         return OidcEndpoints(
             issuer=issuer,
-            authorization_endpoint=f"{issuer}/oauth2/v2.0/authorize",
-            token_endpoint=f"{issuer}/oauth2/v2.0/token",
+            authorization_endpoint=f"{base}/oauth2/v2.0/authorize",
+            token_endpoint=f"{base}/oauth2/v2.0/token",
             userinfo_endpoint="https://graph.microsoft.com/oidc/userinfo",
-            jwks_uri=f"{issuer}/discovery/v2.0/keys",
+            jwks_uri=f"{base}/discovery/v2.0/keys",
         )
 
     if all(
