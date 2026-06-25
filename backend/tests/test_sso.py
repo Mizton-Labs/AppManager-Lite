@@ -27,6 +27,14 @@ def _client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **env: str) -> Test
     return TestClient(create_app())
 
 
+def _admin_password(tmp_path: Path) -> str:
+    text = (tmp_path / "data" / "first-run-admin-credentials.txt").read_text()
+    for line in text.splitlines():
+        if line.startswith("password:"):
+            return line.split("password:", 1)[1].strip()
+    raise AssertionError("first-run admin password not found")
+
+
 def test_sso_config_lists_enabled_providers(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -59,6 +67,100 @@ def test_sso_config_lists_enabled_providers(
             },
         ],
     }
+
+
+def test_auth_mode_local_hides_sso_providers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    with _client(
+        monkeypatch,
+        tmp_path,
+        APP_AUTH_MODE="local",
+        APP_OIDC_ENABLED="1",
+        APP_OIDC_PROVIDER="google",
+        APP_OIDC_CLIENT_ID="client-id",
+    ) as client:
+        body = client.get("/api/auth/sso/config").json()
+        oidc_login = client.get("/api/auth/oidc/login", follow_redirects=False)
+
+    assert body == {"enabled": False, "local_login_enabled": True, "providers": []}
+    assert oidc_login.status_code == 404
+
+
+def test_auth_mode_sso_disables_local_login(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    with _client(
+        monkeypatch,
+        tmp_path,
+        APP_AUTH_MODE="sso",
+        APP_OIDC_ENABLED="1",
+        APP_OIDC_PROVIDER="google",
+        APP_OIDC_CLIENT_ID="client-id",
+    ) as client:
+        config = client.get("/api/auth/sso/config").json()
+        resp = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "unused"},
+        )
+
+    assert config["enabled"] is True
+    assert config["local_login_enabled"] is False
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "Local password login is disabled"
+
+
+def test_auth_mode_both_enables_sso_and_local_login(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    with _client(
+        monkeypatch,
+        tmp_path,
+        APP_AUTH_MODE="both",
+        APP_OIDC_ENABLED="1",
+        APP_OIDC_PROVIDER="google",
+        APP_OIDC_CLIENT_ID="client-id",
+    ) as client:
+        config = client.get("/api/auth/sso/config").json()
+        resp = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": _admin_password(tmp_path)},
+        )
+
+    assert config["enabled"] is True
+    assert config["local_login_enabled"] is True
+    assert resp.status_code == 200
+
+
+def test_microsoft_oidc_endpoints_do_not_duplicate_v2_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    with _client(
+        monkeypatch,
+        tmp_path,
+        APP_OIDC_ENABLED="1",
+        APP_OIDC_PROVIDER="microsoft",
+        APP_OIDC_CLIENT_ID="client-id",
+        APP_MICROSOFT_TENANT="tenant-id",
+    ):
+        from app.config import get_settings
+        from app.sso import oidc_endpoints
+
+        endpoints = oidc_endpoints(get_settings())
+
+    assert endpoints.issuer == "https://login.microsoftonline.com/tenant-id/v2.0"
+    assert (
+        endpoints.authorization_endpoint
+        == "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/authorize"
+    )
+    assert (
+        endpoints.token_endpoint
+        == "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token"
+    )
+    assert (
+        endpoints.jwks_uri
+        == "https://login.microsoftonline.com/tenant-id/discovery/v2.0/keys"
+    )
 
 
 def test_oidc_login_redirect_contains_callback_state_and_nonce(
