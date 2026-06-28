@@ -263,7 +263,7 @@
       {
         "name": "sessions",
         "description": "Server-side sessions with CSRF token and expiry.",
-        "columns": ["id", "user_id", "csrf_token", "created_at", "expires_at"],
+        "columns": ["id", "user_id", "csrf_token", "auth_method", "created_at", "expires_at"],
         "primaryKey": ["id"],
         "foreignKeys": ["user_id -> users.id (cascade)"]
       },
