@@ -373,10 +373,10 @@ describe("ApplicationManager", () => {
 
     await userEvent.type(screen.getByLabelText("Name"), "Internal Wiki");
     // Alias is the default mode; type into the alias input directly. The input
-    // accepts only letters, digits, and dashes (separators are stripped).
+    // accepts letters, digits, underscores, and dashes (separators are stripped).
     await userEvent.type(
       screen.getByLabelText(/local alias relative path/i),
-      "wiki-home",
+      "wiki_home",
     );
     await userEvent.click(
       screen.getByRole("button", { name: /create application/i }),
@@ -389,7 +389,7 @@ describe("ApplicationManager", () => {
     expect(JSON.parse((postCall![1] as RequestInit).body as string)).toMatchObject(
       {
         name: "Internal Wiki",
-        url: "wiki-home",
+        url: "wiki_home",
         url_type: "alias",
       },
     );
