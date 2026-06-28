@@ -218,6 +218,51 @@ def test_oidc_callback_provisions_user_and_session(
     assert session["authenticated"] is True
     assert session["user"]["username"] == "new.user@example.com"
     assert session["user"]["role"] == "user"
+    assert session["auth_method"] == "oidc"
+
+
+def test_oidc_session_keeps_existing_password_reset_flag_but_marks_sso(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    with _client(
+        monkeypatch,
+        tmp_path,
+        APP_OIDC_ENABLED="1",
+        APP_OIDC_PROVIDER="google",
+        APP_OIDC_CLIENT_ID="client-id",
+        APP_SSO_AUTO_PROVISION="0",
+    ) as client:
+        from app import repository, sso
+        from app.db import get_connection
+
+        with get_connection() as conn:
+            repository.create_user(
+                conn,
+                username="existing.user@example.com",
+                password="TemporaryPass123",
+                role="user",
+                teams=[],
+                must_change_password=True,
+            )
+
+        login = client.get("/api/auth/oidc/login", follow_redirects=False)
+        state = parse_qs(urlparse(login.headers["location"]).query)["state"][0]
+        monkeypatch.setattr(
+            sso,
+            "oidc_claims_from_callback",
+            lambda *args, **kwargs: {"email": "existing.user@example.com"},
+        )
+        resp = client.get(
+            f"/api/auth/oidc/callback?code=abc&state={state}",
+            follow_redirects=False,
+        )
+        session = client.get("/api/session").json()
+
+    assert resp.status_code == 302
+    assert session["authenticated"] is True
+    assert session["auth_method"] == "oidc"
+    assert session["user"]["username"] == "existing.user@example.com"
+    assert session["user"]["must_change_password"] is True
 
 
 def test_oidc_callback_rejects_invalid_state(

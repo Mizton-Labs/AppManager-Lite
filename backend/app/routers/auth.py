@@ -61,9 +61,13 @@ def _post_login_redirect() -> str:
 
 
 def _create_session_response(
-    response: Response, conn: sqlite3.Connection, user: dict[str, Any]
+    response: Response,
+    conn: sqlite3.Connection,
+    user: dict[str, Any],
+    *,
+    auth_method: str = "local",
 ) -> dict[str, str]:
-    created = sessions.create_session(conn, user["id"])
+    created = sessions.create_session(conn, user["id"], auth_method=auth_method)
     _set_session_cookie(response, created["session_id"])
     return created
 
@@ -117,6 +121,7 @@ def read_session(
         enable_auth=True,
         user=_user_out(user),
         csrf_token=session["csrf_token"],
+        auth_method=session["auth_method"],
         **branding,
     )
 
@@ -262,7 +267,7 @@ def oidc_callback(
     email = str(claims.get("email") or claims.get("preferred_username") or "")
     user = sso.user_from_sso_claims(conn, settings, email=email)
     redirect = RedirectResponse(_post_login_redirect(), status_code=status.HTTP_302_FOUND)
-    _create_session_response(redirect, conn, user)
+    _create_session_response(redirect, conn, user, auth_method="oidc")
     logger.info("OIDC login succeeded for username=%r (id=%s)", user["username"], user["id"])
     audit.record(
         conn,
@@ -316,7 +321,7 @@ async def saml_acs(
     email = sso.email_from_saml_auth(auth, settings)
     user = sso.user_from_sso_claims(conn, settings, email=email)
     redirect = RedirectResponse(_post_login_redirect(), status_code=status.HTTP_302_FOUND)
-    _create_session_response(redirect, conn, user)
+    _create_session_response(redirect, conn, user, auth_method="saml")
     logger.info("SAML login succeeded for username=%r (id=%s)", user["username"], user["id"])
     audit.record(
         conn,

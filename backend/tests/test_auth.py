@@ -43,6 +43,7 @@ def test_login_sets_forced_change_flag(client: TestClient) -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["authenticated"] is True
+    assert body["auth_method"] == "local"
     assert body["user"]["must_change_password"] is True
     assert body["csrf_token"]
 

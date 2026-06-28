@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     id         TEXT    PRIMARY KEY,
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     csrf_token TEXT    NOT NULL,
+    auth_method TEXT   NOT NULL DEFAULT 'local'
+                        CHECK (auth_method IN ('local', 'oidc', 'saml')),
     created_at TEXT    NOT NULL DEFAULT (datetime('now')),
     expires_at TEXT    NOT NULL
 );
@@ -224,6 +226,10 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     _add_column(conn, "users", "apps_server", "TEXT NOT NULL DEFAULT ''")
     _add_column(conn, "users", "apps_server_ip", "TEXT NOT NULL DEFAULT ''")
     _add_column(conn, "users", "apps_port", "TEXT NOT NULL DEFAULT ''")
+
+    # Sessions record how the user authenticated so SSO sessions can bypass
+    # local-password-only first-login requirements without clearing the flag.
+    _add_column(conn, "sessions", "auth_method", "TEXT NOT NULL DEFAULT 'local'")
 
     # Applications gained an owner, a URL kind, and an approval state. Existing
     # rows default to an admin-curated, approved, full-URL app.
