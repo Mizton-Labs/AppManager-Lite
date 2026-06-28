@@ -12,7 +12,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from .. import audit, repository
+from .. import audit, repository, reverse_proxy
 from ..deps import get_db, require_admin, verify_csrf
 from ..repository import TeamConflictError
 from ..schemas import (
@@ -33,13 +33,23 @@ from ..schemas import (
 router = APIRouter(tags=["settings"])
 
 
-def _settings_out(row: dict[str, Any]) -> ReverseProxySettingsOut:
+def _settings_out(
+    row: dict[str, Any], protected_alias_result: reverse_proxy.PushResult | None = None
+) -> ReverseProxySettingsOut:
     return ReverseProxySettingsOut(
         nginx_host=row.get("nginx_host", ""),
         nginx_user=row.get("nginx_user", ""),
         nginx_conf_path=row.get("nginx_conf_path", ""),
         ssh_key_path=row.get("ssh_key_path", ""),
+        appmanager_proxy_host=row.get("appmanager_proxy_host", ""),
+        appmanager_proxy_port=row.get("appmanager_proxy_port", ""),
         alias_template=row.get("alias_template", ""),
+        protected_alias_auth_status=(
+            "" if protected_alias_result is None else protected_alias_result.status
+        ),
+        protected_alias_auth_log=(
+            "" if protected_alias_result is None else protected_alias_result.transcript
+        ),
     )
 
 
@@ -79,8 +89,11 @@ def update_reverse_proxy_settings(
         nginx_user=payload.nginx_user,
         nginx_conf_path=payload.nginx_conf_path,
         ssh_key_path=payload.ssh_key_path,
+        appmanager_proxy_host=payload.appmanager_proxy_host,
+        appmanager_proxy_port=payload.appmanager_proxy_port,
         alias_template=payload.alias_template,
     )
+    protected_alias_result = reverse_proxy.ensure_proxy_auth_config(row)
     # Record which fields changed -- never the key path contents beyond a flag.
     changed = [
         name
@@ -89,6 +102,8 @@ def update_reverse_proxy_settings(
             "nginx_user",
             "nginx_conf_path",
             "ssh_key_path",
+            "appmanager_proxy_host",
+            "appmanager_proxy_port",
             "alias_template",
         )
         if getattr(payload, name) is not None
@@ -98,9 +113,12 @@ def update_reverse_proxy_settings(
         category=audit.CATEGORY_SYSTEM,
         action="settings_update",
         actor=actor,
-        detail=f"reverse_proxy fields={','.join(changed) or 'none'}",
+        detail=(
+            f"reverse_proxy fields={','.join(changed) or 'none'} "
+            f"protected_alias_auth={protected_alias_result.status}"
+        ),
     )
-    return _settings_out(row)
+    return _settings_out(row, protected_alias_result)
 
 
 @router.get("/settings/branding", response_model=BrandingSettingsOut)

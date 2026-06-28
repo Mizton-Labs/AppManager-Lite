@@ -12,10 +12,13 @@ import pytest
 from app import reverse_proxy
 from app.reverse_proxy import (
     DEFAULT_ALIAS_TEMPLATE,
+    PROXY_AUTH_BEGIN,
+    PROXY_AUTH_END,
     PushResult,
     ReverseProxyError,
     _Run,
     app_marker,
+    ensure_proxy_auth_config,
     inject_before_last_brace,
     push_alias,
     remove_alias,
@@ -27,6 +30,8 @@ _SETTINGS = {
     "nginx_host": "proxy.example.com",
     "nginx_conf_path": "/etc/nginx/conf.d/apps.conf",
     "ssh_key_path": "/data/keys/k",
+    "appmanager_proxy_host": "appmanager",
+    "appmanager_proxy_port": "8000",
     "alias_template": DEFAULT_ALIAS_TEMPLATE,
 }
 
@@ -265,6 +270,46 @@ def test_push_result_transcript() -> None:
     assert lines[0].endswith(" a")
     assert lines[1].endswith(" b")
     assert lines[0].startswith("[")
+
+
+def test_ensure_proxy_auth_config_injects_when_missing(monkeypatch) -> None:
+    runner = _FakeRunner([("cat ", _Run(0, "http {\n  server {\n  }\n}", ""))])
+    _install(monkeypatch, runner)
+
+    result = ensure_proxy_auth_config(_SETTINGS)
+
+    assert result.status == "ok", result.transcript
+    assert PROXY_AUTH_BEGIN in runner.last_written
+    assert "proxy_pass http://appmanager:8000/api/auth/proxy-check;" in runner.last_written
+    assert any("nginx -s reload" in c for c in runner.calls)
+    assert any("nginx -t" in c for c in runner.calls)
+
+
+def test_ensure_proxy_auth_config_skips_existing_marker(monkeypatch) -> None:
+    conf = f"http {{\n  server {{\n    {PROXY_AUTH_BEGIN}\n    {PROXY_AUTH_END}\n  }}\n}}"
+    runner = _FakeRunner([("cat ", _Run(0, conf, ""))])
+    _install(monkeypatch, runner)
+
+    result = ensure_proxy_auth_config(_SETTINGS)
+
+    assert result.status == "ok"
+    assert "already present" in result.transcript
+    assert not any(c.startswith("WRITE:") for c in runner.calls)
+
+
+def test_ensure_proxy_auth_config_reverts_on_reload_failure(monkeypatch) -> None:
+    runner = _FakeRunner(
+        [
+            ("cat ", _Run(0, "http {\n  server {\n  }\n}", "")),
+            ("nginx -s reload", _Run(1, "", "reload error")),
+        ]
+    )
+    _install(monkeypatch, runner)
+
+    result = ensure_proxy_auth_config(_SETTINGS)
+
+    assert result.status == "reverted", result.transcript
+    assert any("[REVERT]" in s for s in result.steps)
 
 
 # --- marker + removal ----------------------------------------------------

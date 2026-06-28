@@ -41,7 +41,11 @@ const SAMPLE: ReverseProxySettings = {
   nginx_user: "deploy",
   nginx_conf_path: "/etc/nginx/conf.d/apps.conf",
   ssh_key_path: "/data/keys/proxy_ed25519",
+  appmanager_proxy_host: "appmanager",
+  appmanager_proxy_port: "8000",
   alias_template: "location /ALIAS/ { proxy_pass http://APPS_SERVER:APPS_PORT/; }",
+  protected_alias_auth_status: "",
+  protected_alias_auth_log: "",
 };
 
 afterEach(() => vi.unstubAllGlobals());
@@ -59,6 +63,8 @@ describe("GeneralSettings", () => {
     ).toBeInTheDocument();
     // The SSH user field is shown and loaded.
     expect(screen.getByDisplayValue("deploy")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("appmanager")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("8000")).toBeInTheDocument();
     expect(screen.getByRole("note")).toHaveTextContent(
       "Alias authentication requirement",
     );
@@ -100,6 +106,8 @@ describe("GeneralSettings", () => {
     expect(JSON.parse((patch![1] as RequestInit).body as string)).toMatchObject({
       nginx_host: "new-proxy.example.com",
       nginx_user: "ubuntu",
+      appmanager_proxy_host: "appmanager",
+      appmanager_proxy_port: "8000",
     });
   });
 
