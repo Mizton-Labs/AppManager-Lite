@@ -6,6 +6,21 @@ import { fileToLogoDataUrl } from "../lib/image";
 import { resolveIconSrc } from "../lib/links";
 import { PlusIcon, XIcon } from "./icons";
 
+const AUTH_PROXY_SNIPPET = `location = /api/auth/proxy-check {
+    proxy_pass http://APPMANAGER_HOST:APPMANAGER_PORT/api/auth/proxy-check;
+    proxy_set_header Host $host;
+    proxy_set_header Cookie $http_cookie;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_pass_request_body off;
+    proxy_set_header Content-Length "";
+}
+
+location @appmanager_login {
+    return 302 /?next=$request_uri;
+}`;
+
 /**
  * General Settings (admin). Three cards:
  *
@@ -275,6 +290,19 @@ function ReverseProxyConfiguration() {
         Configure the nginx server used to serve application aliases. Aliases are
         pushed when an application is approved.
       </p>
+
+      <div className="alert warn" role="note">
+        <strong>Alias authentication requirement.</strong> To protect direct alias
+        links, the nginx server must call AppManager before proxying apps. Add
+        this snippet inside the same <code>server</code> block that serves aliases,
+        replacing <code>APPMANAGER_HOST</code> and <code>APPMANAGER_PORT</code> with
+        the backend address:
+        <pre className="settings-snippet"><code>{AUTH_PROXY_SNIPPET}</code></pre>
+        The alias template must also include <code>auth_request /api/auth/proxy-check;</code>{" "}
+        and <code>error_page 401 = @appmanager_login;</code>. AppManager and aliases
+        should be served from the same domain so the session cookie is sent to
+        alias requests.
+      </div>
 
       {error && (
         <p className="alert error" role="alert">

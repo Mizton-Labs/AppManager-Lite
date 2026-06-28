@@ -3,6 +3,21 @@ import { api, apiBase, ApiError } from "../api";
 import type { SessionState, SsoConfig } from "../types";
 import { getAppName, getLogoSrc } from "../branding";
 
+function safeNextPath(): string {
+  const next = new URLSearchParams(window.location.search).get("next")?.trim() ?? "";
+  if (!next.startsWith("/") || next.startsWith("//")) return "";
+  return next;
+}
+
+function ssoLoginHref(loginUrl: string): string {
+  const url = new URL(loginUrl, apiBase());
+  const next = safeNextPath();
+  if (next) {
+    url.searchParams.set("next", next);
+  }
+  return url.toString();
+}
+
 export function Login(props: { onAuthenticated: (session: SessionState) => void }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -38,6 +53,10 @@ export function Login(props: { onAuthenticated: (session: SessionState) => void 
     try {
       const session = await api.login(username, password);
       props.onAuthenticated(session);
+      const next = safeNextPath();
+      if (next) {
+        window.location.assign(next);
+      }
     } catch (err) {
       setError(
         err instanceof ApiError ? err.message : "Unable to sign in. Try again.",
@@ -65,7 +84,7 @@ export function Login(props: { onAuthenticated: (session: SessionState) => void 
               <a
                 key={provider.protocol}
                 className="btn primary"
-                href={apiBase() + provider.login_url}
+                href={ssoLoginHref(provider.login_url)}
               >
                 Sign in with {provider.label}
               </a>

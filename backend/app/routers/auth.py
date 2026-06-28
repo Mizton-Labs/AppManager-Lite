@@ -9,6 +9,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import PlainTextResponse, RedirectResponse
+from starlette.responses import Response as StarletteResponse
 
 from .. import audit, repository, security, sessions, sso
 from ..config import get_settings
@@ -60,6 +61,10 @@ def _post_login_redirect() -> str:
     return f"{settings.base_prefix}/" if settings.base_prefix else "/"
 
 
+def _redirect_after_login(return_to: str | None = None) -> str:
+    return sso.safe_return_to(return_to) or _post_login_redirect()
+
+
 def _create_session_response(
     response: Response,
     conn: sqlite3.Connection,
@@ -84,6 +89,25 @@ def _user_out(user: dict[str, Any]) -> UserOut:
         apps_server_ip=user.get("apps_server_ip", ""),
         teams=user["teams"],
     )
+
+
+@router.get("/auth/proxy-check", status_code=status.HTTP_204_NO_CONTENT)
+def proxy_check(
+    request: Request, conn: sqlite3.Connection = Depends(get_db)
+) -> StarletteResponse:
+    settings = get_settings()
+    if not settings.enable_auth:
+        return StarletteResponse(status_code=status.HTTP_204_NO_CONTENT)
+    session_id = request.cookies.get(sessions.SESSION_COOKIE_NAME)
+    if not session_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+    session = sessions.get_session(conn, session_id)
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+    user = repository.get_user_by_id(conn, session["user_id"])
+    if user is None or not user["is_active"]:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+    return StarletteResponse(status_code=status.HTTP_204_NO_CONTENT)
 
 
 def _branding(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -222,6 +246,7 @@ def login(
 @router.get("/auth/oidc/login")
 def oidc_login(
     request: Request,
+    next: str | None = None,
     conn: sqlite3.Connection = Depends(get_db),
 ) -> RedirectResponse:
     settings = get_settings()
@@ -229,7 +254,7 @@ def oidc_login(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(32)
-    sso.create_flow(conn, protocol="oidc", state=state, nonce=nonce)
+    sso.create_flow(conn, protocol="oidc", state=state, nonce=nonce, return_to=next or "")
     redirect_uri = str(request.url_for("oidc_callback"))
     url = sso.oidc_login_url(
         settings, redirect_uri=redirect_uri, state=state, nonce=nonce
@@ -266,7 +291,9 @@ def oidc_callback(
     )
     email = str(claims.get("email") or claims.get("preferred_username") or "")
     user = sso.user_from_sso_claims(conn, settings, email=email)
-    redirect = RedirectResponse(_post_login_redirect(), status_code=status.HTTP_302_FOUND)
+    redirect = RedirectResponse(
+        _redirect_after_login(flow["return_to"]), status_code=status.HTTP_302_FOUND
+    )
     _create_session_response(redirect, conn, user, auth_method="oidc")
     logger.info("OIDC login succeeded for username=%r (id=%s)", user["username"], user["id"])
     audit.record(
@@ -284,13 +311,14 @@ def oidc_callback(
 @router.get("/auth/saml/login")
 async def saml_login(
     request: Request,
+    next: str | None = None,
     conn: sqlite3.Connection = Depends(get_db),
 ) -> RedirectResponse:
     settings = get_settings()
     if not settings.enable_auth or not settings.saml_enabled:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     state = secrets.token_urlsafe(32)
-    sso.create_flow(conn, protocol="saml", state=state)
+    sso.create_flow(conn, protocol="saml", state=state, return_to=next or "")
     auth = await sso.saml_auth(request, settings)
     return RedirectResponse(auth.login(return_to=state), status_code=status.HTTP_302_FOUND)
 
@@ -310,7 +338,7 @@ async def saml_acs(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="SAML response is missing RelayState",
         )
-    sso.consume_flow(conn, protocol="saml", state=relay_state)
+    flow = sso.consume_flow(conn, protocol="saml", state=relay_state)
     auth = await sso.saml_auth(request, settings)
     auth.process_response(request_id=None)
     if auth.get_errors() or not auth.is_authenticated():
@@ -320,7 +348,9 @@ async def saml_acs(
         )
     email = sso.email_from_saml_auth(auth, settings)
     user = sso.user_from_sso_claims(conn, settings, email=email)
-    redirect = RedirectResponse(_post_login_redirect(), status_code=status.HTTP_302_FOUND)
+    redirect = RedirectResponse(
+        _redirect_after_login(flow["return_to"]), status_code=status.HTTP_302_FOUND
+    )
     _create_session_response(redirect, conn, user, auth_method="saml")
     logger.info("SAML login succeeded for username=%r (id=%s)", user["username"], user["id"])
     audit.record(

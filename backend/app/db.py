@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS sso_auth_flows (
     state      TEXT    PRIMARY KEY,
     protocol   TEXT    NOT NULL CHECK (protocol IN ('oidc', 'saml')),
     nonce      TEXT    NOT NULL DEFAULT '',
+    return_to  TEXT    NOT NULL DEFAULT '',
     created_at TEXT    NOT NULL DEFAULT (datetime('now')),
     expires_at TEXT    NOT NULL
 );
@@ -230,6 +231,7 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     # Sessions record how the user authenticated so SSO sessions can bypass
     # local-password-only first-login requirements without clearing the flag.
     _add_column(conn, "sessions", "auth_method", "TEXT NOT NULL DEFAULT 'local'")
+    _add_column(conn, "sso_auth_flows", "return_to", "TEXT NOT NULL DEFAULT ''")
 
     # Applications gained an owner, a URL kind, and an approval state. Existing
     # rows default to an admin-curated, approved, full-URL app.

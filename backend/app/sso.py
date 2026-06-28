@@ -34,16 +34,34 @@ def sso_enabled(settings: Settings) -> bool:
     return bool(settings.enable_auth and (settings.oidc_enabled or settings.saml_enabled))
 
 
+def safe_return_to(value: str | None) -> str:
+    value = (value or "").strip()
+    if not value.startswith("/") or value.startswith("//"):
+        return ""
+    return value
+
+
 def create_flow(
-    conn: sqlite3.Connection, *, protocol: str, state: str, nonce: str = ""
+    conn: sqlite3.Connection,
+    *,
+    protocol: str,
+    state: str,
+    nonce: str = "",
+    return_to: str = "",
 ) -> None:
     conn.execute("DELETE FROM sso_auth_flows WHERE expires_at <= datetime('now')")
     conn.execute(
         """
-        INSERT INTO sso_auth_flows (state, protocol, nonce, expires_at)
-        VALUES (?, ?, ?, datetime('now', ?))
+        INSERT INTO sso_auth_flows (state, protocol, nonce, return_to, expires_at)
+        VALUES (?, ?, ?, ?, datetime('now', ?))
         """,
-        (state, protocol, nonce, f"+{FLOW_TTL_MINUTES} minutes"),
+        (
+            state,
+            protocol,
+            nonce,
+            safe_return_to(return_to),
+            f"+{FLOW_TTL_MINUTES} minutes",
+        ),
     )
 
 
