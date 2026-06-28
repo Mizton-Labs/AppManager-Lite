@@ -14,6 +14,7 @@ function makeSession(
     authenticated: true,
     enable_auth: true,
     csrf_token: "csrf",
+    auth_method: "local",
     app_name: "",
     app_logo: "",
     collaborators: [],

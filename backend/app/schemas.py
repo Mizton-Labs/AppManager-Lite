@@ -293,6 +293,9 @@ class SessionOut(BaseModel):
     enable_auth: bool
     user: UserOut | None = None
     csrf_token: str | None = None
+    # How the current session was established. Local password sessions still
+    # enforce local password reset; SSO sessions do not.
+    auth_method: str = "local"
     # Configurable branding, readable pre-authentication so the login page can
     # render the deployment's own name and logo.
     app_name: str = ""

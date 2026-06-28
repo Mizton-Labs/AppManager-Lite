@@ -133,6 +133,10 @@ usual. The "configured" state is stored server-side in the single settings row.
 Local username/password authentication is enabled by default. You can also enable
 OIDC/OAuth2, SAML 2.0, or both. SSO provider secrets are read from environment
 variables at startup; they are not stored in SQLite or exposed to the frontend.
+If a user signs in through SSO, AppManager Lite does not force that session
+through the local password-reset screen, even when the local account has a
+pending password change. The flag remains in place and is still enforced if the
+same user signs in with a local password.
 
 Callback URLs to register with your identity provider are based on the public app
 origin plus the optional `APP_BASE_PREFIX`:

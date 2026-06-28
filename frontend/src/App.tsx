@@ -54,7 +54,11 @@ export function App() {
 
   const user = session.user;
 
-  if (session.enable_auth && user?.must_change_password) {
+  if (
+    session.enable_auth &&
+    session.auth_method === "local" &&
+    user?.must_change_password
+  ) {
     return (
       <ForcedChange
         username={user.username}
