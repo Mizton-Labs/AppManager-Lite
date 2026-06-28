@@ -198,7 +198,9 @@ def test_oidc_callback_provisions_user_and_session(
         APP_OIDC_PROVIDER="google",
         APP_OIDC_CLIENT_ID="client-id",
     ) as client:
-        login = client.get("/api/auth/oidc/login", follow_redirects=False)
+        login = client.get(
+            "/api/auth/oidc/login?next=/grafana/", follow_redirects=False
+        )
         state = parse_qs(urlparse(login.headers["location"]).query)["state"][0]
 
         from app import sso
@@ -215,6 +217,7 @@ def test_oidc_callback_provisions_user_and_session(
         session = client.get("/api/session").json()
 
     assert resp.status_code == 302
+    assert resp.headers["location"] == "/grafana/"
     assert session["authenticated"] is True
     assert session["user"]["username"] == "new.user@example.com"
     assert session["user"]["role"] == "user"

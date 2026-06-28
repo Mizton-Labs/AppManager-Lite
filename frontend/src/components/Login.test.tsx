@@ -7,6 +7,7 @@ import { setCsrfToken } from "../api";
 afterEach(() => {
   vi.unstubAllGlobals();
   setCsrfToken(null);
+  window.history.pushState({}, "", "/");
 });
 
 describe("Login", () => {
@@ -83,6 +84,7 @@ describe("Login", () => {
   });
 
   it("renders SSO provider links when enabled", async () => {
+    window.history.pushState({}, "", "/?next=/grafana/");
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
@@ -100,9 +102,34 @@ describe("Login", () => {
     render(<Login onAuthenticated={vi.fn()} />);
 
     expect(await screen.findByRole("link", { name: "Sign in with Google" }))
-      .toHaveAttribute("href", "http://localhost:3000/api/auth/oidc/login");
+      .toHaveAttribute(
+        "href",
+        "http://localhost:3000/api/auth/oidc/login?next=%2Fgrafana%2F",
+      );
     expect(screen.getByRole("link", { name: "Sign in with SAML SSO" }))
-      .toHaveAttribute("href", "http://localhost:3000/api/auth/saml/login");
+      .toHaveAttribute(
+        "href",
+        "http://localhost:3000/api/auth/saml/login?next=%2Fgrafana%2F",
+      );
     expect(screen.getByLabelText("Username")).toBeInTheDocument();
+  });
+
+  it("ignores unsafe next values in SSO links", async () => {
+    window.history.pushState({}, "", "/?next=https://evil.example/path");
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        enabled: true,
+        local_login_enabled: true,
+        providers: [{ protocol: "oidc", label: "SSO", login_url: "auth/oidc/login" }],
+      }),
+    } as Response);
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Login onAuthenticated={vi.fn()} />);
+
+    expect(await screen.findByRole("link", { name: "Sign in with SSO" }))
+      .toHaveAttribute("href", "http://localhost:3000/api/auth/oidc/login");
   });
 });

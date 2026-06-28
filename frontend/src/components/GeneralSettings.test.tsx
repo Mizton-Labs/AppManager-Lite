@@ -59,6 +59,10 @@ describe("GeneralSettings", () => {
     ).toBeInTheDocument();
     // The SSH user field is shown and loaded.
     expect(screen.getByDisplayValue("deploy")).toBeInTheDocument();
+    expect(screen.getByRole("note")).toHaveTextContent(
+      "Alias authentication requirement",
+    );
+    expect(screen.getByText(/location = \/api\/auth\/proxy-check/)).toBeInTheDocument();
   });
 
   it("keeps the alias template collapsed by default", async () => {
