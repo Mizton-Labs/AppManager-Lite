@@ -50,6 +50,10 @@ def app_marker(app_id: int) -> tuple[str, str]:
     token = f"appmanager-lite-app:{int(app_id)}"
     return (f"# >>> {token} >>>", f"# <<< {token} <<<")
 
+
+PROXY_AUTH_BEGIN = "# >>> appmanager-lite-proxy-auth >>>"
+PROXY_AUTH_END = "# <<< appmanager-lite-proxy-auth <<<"
+
 # Default alias template seeded into the settings table. Administrators may edit
 # it in General Settings. Tabs/indentation are preserved verbatim so the
 # rendered nginx block matches operator expectations.
@@ -80,6 +84,32 @@ DEFAULT_ALIAS_TEMPLATE = """\
 \t}
     #--------------------------------------------------------------------------------------------
 \t#############################################################################################
+"""
+
+
+def render_proxy_auth_block(*, appmanager_host: str, appmanager_port: str) -> str:
+    appmanager_host = (appmanager_host or "").strip()
+    appmanager_port = (appmanager_port or "").strip()
+    if not _HOST_RE.match(appmanager_host):
+        raise ReverseProxyError(f"Invalid AppManager backend host: {appmanager_host!r}")
+    if not _PORT_RE.match(appmanager_port) or not (1 <= int(appmanager_port) <= 65535):
+        raise ReverseProxyError(f"Invalid AppManager backend port: {appmanager_port!r}")
+    return f"""{PROXY_AUTH_BEGIN}
+location = /api/auth/proxy-check {{
+    proxy_pass http://{appmanager_host}:{appmanager_port}/api/auth/proxy-check;
+    proxy_set_header Host $host;
+    proxy_set_header Cookie $http_cookie;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_pass_request_body off;
+    proxy_set_header Content-Length "";
+}}
+
+location @appmanager_login {{
+    return 302 /?next=$request_uri;
+}}
+{PROXY_AUTH_END}
 """
 
 
@@ -422,6 +452,115 @@ def push_alias(
     result.status = "ok"
     state = "enabled" if is_active else "disabled"
     result.log(f"[DONE] Alias /{norm_alias}/ -> {apps_server}:{apps_port} ({state})")
+    return result
+
+
+def ensure_proxy_auth_config(settings: dict) -> PushResult:
+    """Ensure the shared nginx auth_request locations exist in the remote config."""
+    result = PushResult()
+    host = (settings.get("nginx_host") or "").strip()
+    user = (settings.get("nginx_user") or "").strip()
+    conf_path = (settings.get("nginx_conf_path") or "").strip()
+    key_path = (settings.get("ssh_key_path") or "").strip()
+    appmanager_host = (settings.get("appmanager_proxy_host") or "").strip()
+    appmanager_port = (settings.get("appmanager_proxy_port") or "").strip()
+
+    if not (host and conf_path and key_path and appmanager_host and appmanager_port):
+        result.status = "skipped"
+        result.log(
+            "Skipped: nginx host, conf path, SSH key path, AppManager backend host, "
+            "and AppManager backend port are required."
+        )
+        return result
+    if not _HOST_RE.match(host):
+        result.status = "failed"
+        result.log(f"[FAIL] Invalid nginx host: {host!r}")
+        return result
+    if user and not _SSH_USER_RE.match(user):
+        result.status = "failed"
+        result.log(f"[FAIL] Invalid SSH user: {user!r}")
+        return result
+    host = f"{user}@{host}" if user else host
+    try:
+        block = render_proxy_auth_block(
+            appmanager_host=appmanager_host, appmanager_port=appmanager_port
+        )
+    except ReverseProxyError as exc:
+        result.status = "failed"
+        result.log(f"Render failed: {exc}")
+        return result
+
+    timestamp = int(time.time())
+    backup_path = f"{conf_path}-{timestamp}-proxy-auth"
+    tmp_remote = f"{conf_path}.tmp-{timestamp}"
+    q_conf = shlex.quote(conf_path)
+    q_backup = shlex.quote(backup_path)
+    q_tmp = shlex.quote(tmp_remote)
+
+    for label, cmd in (
+        ("SSH access", "echo ok"),
+        ("Conf file exists", f"test -f {q_conf}"),
+        ("nginx is running", "docker exec nginx nginx -v"),
+        ("Write access", f"test -w {q_conf}"),
+    ):
+        r = _ssh(host, key_path, cmd)
+        if r.rc != 0:
+            result.status = "failed"
+            result.log(f"[FAIL] {label}: {r.err or r.rc}")
+            return result
+        result.log(f"[OK] {label}")
+
+    r = _ssh(host, key_path, f"cat {q_conf}")
+    if r.rc != 0:
+        result.status = "failed"
+        result.log(f"[FAIL] Could not read conf: {r.err or r.rc}")
+        return result
+    current_conf = r.out + "\n"
+    if PROXY_AUTH_BEGIN in current_conf and PROXY_AUTH_END in current_conf:
+        result.status = "ok"
+        result.log("[OK] Protected alias auth config already present")
+        return result
+
+    r = _ssh(host, key_path, f"cp {q_conf} {q_backup}")
+    if r.rc != 0:
+        result.status = "failed"
+        result.log(f"[FAIL] Backup copy failed: {r.err or r.rc}")
+        return result
+    result.log(f"[OK] Backup created: {backup_path}")
+
+    try:
+        new_conf = inject_before_last_brace(current_conf, block)
+    except ReverseProxyError as exc:
+        result.status = "failed"
+        result.log(f"[FAIL] Injection failed: {exc}")
+        return result
+
+    write_cmd = [*_ssh_base(host, key_path), f"cat > {q_tmp} && mv {q_tmp} {q_conf}"]
+    w = _run_with_input(write_cmd, new_conf)
+    if w.rc != 0:
+        result.status = "failed"
+        result.log(f"[FAIL] Writing new conf failed: {w.err or w.rc}")
+        _revert(host, key_path, conf_path, backup_path, result)
+        return result
+    result.log("[OK] Protected alias auth config written")
+
+    r = _ssh(host, key_path, "docker exec nginx nginx -s reload")
+    if r.rc != 0:
+        result.status = "reverted"
+        result.log(f"[FAIL] nginx reload failed: {r.err or r.rc}")
+        _revert(host, key_path, conf_path, backup_path, result)
+        return result
+    result.log("[OK] nginx reloaded")
+
+    r = _ssh(host, key_path, "docker exec nginx nginx -t")
+    if r.rc != 0:
+        result.status = "reverted"
+        result.log(f"[FAIL] nginx -t after reload failed: {r.err or r.rc}")
+        _revert(host, key_path, conf_path, backup_path, result)
+        return result
+    result.status = "ok"
+    result.log("[OK] nginx config verified")
+    result.log("[DONE] Protected alias auth config ready")
     return result
 
 

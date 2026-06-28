@@ -136,7 +136,11 @@ export interface ReverseProxySettings {
   nginx_user: string;
   nginx_conf_path: string;
   ssh_key_path: string;
+  appmanager_proxy_host: string;
+  appmanager_proxy_port: string;
   alias_template: string;
+  protected_alias_auth_status: string;
+  protected_alias_auth_log: string;
 }
 
 export interface UpdateReverseProxySettingsInput {
@@ -144,6 +148,8 @@ export interface UpdateReverseProxySettingsInput {
   nginx_user?: string;
   nginx_conf_path?: string;
   ssh_key_path?: string;
+  appmanager_proxy_host?: string;
+  appmanager_proxy_port?: string;
   alias_template?: string;
 }
 

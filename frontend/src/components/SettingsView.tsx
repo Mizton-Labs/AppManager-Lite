@@ -16,7 +16,7 @@ type Tab = "apps" | "users" | "teams" | "general";
  *
  * On first run (a fresh deployment that has not been configured yet) an
  * administrator lands here with the General Settings tab open and a short setup
- * prompt; saving the basic information completes setup.
+  * prompt; saving reverse-proxy protected alias configuration completes setup.
  */
 export function SettingsView(props: {
   isAdmin: boolean;
@@ -51,8 +51,8 @@ export function SettingsView(props: {
 
       {firstRun && (
         <p className="alert success" role="status">
-          Welcome! Finish setup by setting your application name and logo under
-          General Settings, then save.
+          Welcome! Finish setup by setting branding and reverse-proxy protected
+          alias authentication under General Settings, then save.
         </p>
       )}
 
@@ -98,7 +98,7 @@ export function SettingsView(props: {
       ) : showTeams ? (
         <TeamManagement onTeamsChanged={props.onTeamsChanged} />
       ) : showGeneral ? (
-        <GeneralSettings onConfigured={props.onConfigured} />
+        <GeneralSettings firstRun={firstRun} onConfigured={props.onConfigured} />
       ) : (
         <ApplicationManager isAdmin={isAdmin} teamOptions={appTeamOptions} />
       )}

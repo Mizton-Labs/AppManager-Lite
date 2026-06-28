@@ -1026,6 +1026,8 @@ def get_settings_row(conn: sqlite3.Connection) -> dict[str, Any]:
             "nginx_user": "",
             "nginx_conf_path": "",
             "ssh_key_path": "",
+            "appmanager_proxy_host": "",
+            "appmanager_proxy_port": "",
             "alias_template": "",
             "app_name": "",
             "app_logo": "",
@@ -1042,6 +1044,8 @@ def update_settings_row(
     nginx_user: str | None = None,
     nginx_conf_path: str | None = None,
     ssh_key_path: str | None = None,
+    appmanager_proxy_host: str | None = None,
+    appmanager_proxy_port: str | None = None,
     alias_template: str | None = None,
     app_name: str | None = None,
     app_logo: str | None = None,
@@ -1059,6 +1063,10 @@ def update_settings_row(
         columns["nginx_conf_path"] = nginx_conf_path
     if ssh_key_path is not None:
         columns["ssh_key_path"] = ssh_key_path
+    if appmanager_proxy_host is not None:
+        columns["appmanager_proxy_host"] = appmanager_proxy_host
+    if appmanager_proxy_port is not None:
+        columns["appmanager_proxy_port"] = appmanager_proxy_port
     if alias_template is not None:
         columns["alias_template"] = alias_template
     if app_name is not None:

@@ -159,7 +159,7 @@ describe("PortalShell", () => {
     // The first-login wizard sends the admin straight to Settings with the
     // setup prompt visible.
     expect(
-      await screen.findByText(/finish setup by setting your application name/i),
+      await screen.findByText(/finish setup by setting branding/i),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("heading", { name: /application basic information/i }),
