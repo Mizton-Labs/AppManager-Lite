@@ -784,6 +784,15 @@ def test_alias_application_round_trips_verbatim(admin) -> None:
     assert body["url"] == "grafana"
 
 
+def test_alias_accepts_underscore(admin) -> None:
+    client, csrf, _ = admin
+    resp = _create_app(client, csrf, url="wiki_home", url_type="alias")
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["url"] == "wiki_home"
+    assert body["url_type"] == "alias"
+
+
 def test_alias_rejects_path_separators(admin) -> None:
     client, csrf, _ = admin
     # Aliases are a single URL-safe segment: separators are rejected.
