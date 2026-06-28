@@ -35,18 +35,29 @@ location @appmanager_login {
  * The SSH key itself is never stored or shown here -- only the path to a key
  * file on the server.
  */
-export function GeneralSettings(props: { onConfigured?: () => void } = {}) {
+export function GeneralSettings(
+  props: { firstRun?: boolean; onConfigured?: () => void } = {},
+) {
   return (
     <>
-      <ApplicationBasicInformation onSaved={props.onConfigured} />
-      <ReverseProxyConfiguration />
+      <ApplicationBasicInformation
+        markConfigured={!props.firstRun}
+        onSaved={props.onConfigured}
+      />
+      <ReverseProxyConfiguration
+        firstRun={props.firstRun}
+        onConfigured={props.onConfigured}
+      />
       <AboutCollaborators />
     </>
   );
 }
 
 /** Configurable application name + logo (generic branding). */
-function ApplicationBasicInformation(props: { onSaved?: () => void }) {
+function ApplicationBasicInformation(props: {
+  markConfigured: boolean;
+  onSaved?: () => void;
+}) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -106,8 +117,7 @@ function ApplicationBasicInformation(props: { onSaved?: () => void }) {
       const result = await api.updateBrandingSettings({
         app_name: appName.trim(),
         app_logo: appLogo.trim(),
-        // Saving the basic information completes first-time setup.
-        configured: true,
+        configured: props.markConfigured ? true : undefined,
       });
       setAppName(result.app_name);
       setAppLogo(result.app_logo);
@@ -213,7 +223,10 @@ function ApplicationBasicInformation(props: { onSaved?: () => void }) {
  * conf file path on that host, the path to the local SSH key used to push
  * config, and the alias template (collapsed by default).
  */
-function ReverseProxyConfiguration() {
+function ReverseProxyConfiguration(props: {
+  firstRun?: boolean;
+  onConfigured?: () => void | Promise<void>;
+}) {
   const [settings, setSettings] = useState<ReverseProxySettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -225,7 +238,11 @@ function ReverseProxyConfiguration() {
   const [sshUser, setSshUser] = useState("");
   const [confPath, setConfPath] = useState("");
   const [keyPath, setKeyPath] = useState("");
+  const [appmanagerHost, setAppmanagerHost] = useState("");
+  const [appmanagerPort, setAppmanagerPort] = useState("8000");
   const [template, setTemplate] = useState("");
+  const [setupLog, setSetupLog] = useState("");
+  const [setupStatus, setSetupStatus] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -238,7 +255,11 @@ function ReverseProxyConfiguration() {
         setSshUser(result.nginx_user);
         setConfPath(result.nginx_conf_path);
         setKeyPath(result.ssh_key_path);
+        setAppmanagerHost(result.appmanager_proxy_host || window.location.hostname);
+        setAppmanagerPort(result.appmanager_proxy_port || "8000");
         setTemplate(result.alias_template);
+        setSetupLog(result.protected_alias_auth_log);
+        setSetupStatus(result.protected_alias_auth_status);
       })
       .catch((err) => {
         if (active) {
@@ -266,10 +287,18 @@ function ReverseProxyConfiguration() {
         nginx_user: sshUser.trim(),
         nginx_conf_path: confPath.trim(),
         ssh_key_path: keyPath.trim(),
+        appmanager_proxy_host: appmanagerHost.trim(),
+        appmanager_proxy_port: appmanagerPort.trim(),
         alias_template: template,
       });
       setSettings(result);
+      setSetupLog(result.protected_alias_auth_log);
+      setSetupStatus(result.protected_alias_auth_status);
       setSaved(true);
+      if (props.firstRun && result.protected_alias_auth_status === "ok") {
+        await api.updateBrandingSettings({ configured: true });
+        await props.onConfigured?.();
+      }
     } catch (err) {
       setError(
         err instanceof ApiError ? err.message : "Failed to save settings.",
@@ -313,6 +342,19 @@ function ReverseProxyConfiguration() {
         <p className="alert success" role="status">
           Settings saved.
         </p>
+      )}
+      {setupStatus && (
+        <div
+          className={setupStatus === "ok" ? "alert success" : "alert error"}
+          role="status"
+        >
+          <strong>
+            {setupStatus === "ok"
+              ? "Protected alias authentication configured."
+              : "Protected alias authentication setup did not complete."}
+          </strong>
+          {setupLog && <pre className="settings-snippet"><code>{setupLog}</code></pre>}
+        </div>
       )}
 
       <form className="create-form" onSubmit={onSubmit}>
@@ -360,6 +402,33 @@ function ReverseProxyConfiguration() {
             the database or shown here.
           </span>
         </label>
+
+        <div className="form-row">
+          <label className="field">
+            <span>AppManager backend host/IP reachable from nginx</span>
+            <input
+              type="text"
+              value={appmanagerHost}
+              onChange={(e) => setAppmanagerHost(e.target.value)}
+              placeholder={window.location.hostname || "127.0.0.1"}
+              required={props.firstRun}
+            />
+            <span className="muted logo-hint">
+              Suggested from this browser: {window.location.hostname || "127.0.0.1"}.
+              Confirm this is the address nginx can use to reach AppManager.
+            </span>
+          </label>
+          <label className="field">
+            <span>AppManager backend port reachable from nginx</span>
+            <input
+              type="text"
+              value={appmanagerPort}
+              onChange={(e) => setAppmanagerPort(e.target.value)}
+              placeholder="8000"
+              required={props.firstRun}
+            />
+          </label>
+        </div>
 
         <div className="field">
           <button

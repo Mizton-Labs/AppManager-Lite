@@ -383,6 +383,10 @@ Configure in General Settings:
 - **Local SSH key path** — path to a **private key file on this server** used for
   key-based SSH. The key contents are never stored in the database or shown in
   the UI; only the path is kept.
+- **AppManager backend host/IP and port reachable from nginx** — the address nginx
+  uses for `auth_request` checks back to AppManager. The UI suggests the current
+  browser hostname and port `8000`, but the administrator must confirm values that
+  are reachable from the nginx host/container network.
 - **Alias template** — the nginx `location` block (collapsed by default). The
   placeholders `APPS_SERVER`, `APPS_PORT` and `ALIAS` are substituted on push.
   `APPS_PORT` is the application's own port. `APPS_SERVER` is the application's
@@ -403,13 +407,14 @@ auth_request /api/auth/proxy-check;
 error_page 401 = @appmanager_login;
 ```
 
-The nginx `server` block that serves aliases must also include this shared
-snippet, with `APPMANAGER_HOST` and `APPMANAGER_PORT` replaced by the backend
-address reachable from nginx:
+When Reverse Proxy Configuration is saved with nginx SSH settings and the
+AppManager backend host/port, AppManager checks the nginx config for a marked
+shared auth block and pushes it if it is missing. The injected block is:
 
 ```nginx
+# >>> appmanager-lite-proxy-auth >>>
 location = /api/auth/proxy-check {
-    proxy_pass http://APPMANAGER_HOST:APPMANAGER_PORT/api/auth/proxy-check;
+    proxy_pass http://<appmanager-backend-host>:<port>/api/auth/proxy-check;
     proxy_set_header Host $host;
     proxy_set_header Cookie $http_cookie;
     proxy_set_header X-Real-IP $remote_addr;
@@ -422,7 +427,13 @@ location = /api/auth/proxy-check {
 location @appmanager_login {
     return 302 /?next=$request_uri;
 }
+# <<< appmanager-lite-proxy-auth <<<
 ```
+
+The setup result and log are shown immediately in General Settings. If the marked
+block already exists, AppManager leaves it in place and reports that protected
+alias auth is already configured. If reload or validation fails, AppManager
+restores the backup and shows the nginx error transcript.
 
 AppManager and alias paths should be served from the same domain so the browser
 sends the AppManager session cookie to direct alias requests. If TLS terminates
@@ -430,10 +441,10 @@ at nginx, configure uvicorn to trust forwarded headers from that proxy, for
 example `FORWARDED_ALLOW_IPS=<nginx-ip>`.
 
 Existing deployments keep the alias template stored in the database. To migrate
-an existing deployment, add the shared nginx snippet above to the server block,
-update the alias template in Settings → General Settings so each alias location
-contains the two `auth_request` lines, then re-push approved alias applications
-from the Application Manager.
+an existing deployment, save the new AppManager backend host/port in General
+Settings so AppManager can push the shared nginx auth block, update the alias
+template so each alias location contains the two `auth_request` lines, then
+re-push approved alias applications from the Application Manager.
 
 On approval or push the backend (using the system `ssh`/`scp`, key-based,
 non-interactive, with timeouts) verifies SSH access, that the conf file exists,

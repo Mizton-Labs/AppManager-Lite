@@ -42,8 +42,18 @@ def test_reverse_proxy_settings_default_template(admin) -> None:
     assert body["ssh_key_path"] == ""
 
 
-def test_update_reverse_proxy_settings(admin) -> None:
+def test_update_reverse_proxy_settings(admin, monkeypatch) -> None:
     client, csrf, _ = admin
+
+    def run(argv, *, timeout=20):
+        cmd = argv[-1]
+        if "cat " in cmd:
+            return _Run(0, "http {\n  server {\n  }\n}", "")
+        return _Run(0, "", "")
+
+    monkeypatch.setattr(reverse_proxy, "_run", run)
+    monkeypatch.setattr(reverse_proxy, "_run_with_input", lambda argv, stdin_text: _Run(0, "", ""))
+
     resp = client.patch(
         "/api/settings/reverse-proxy",
         json={
@@ -51,6 +61,8 @@ def test_update_reverse_proxy_settings(admin) -> None:
             "nginx_user": "deploy",
             "nginx_conf_path": "/etc/nginx/conf.d/apps.conf",
             "ssh_key_path": "/data/keys/proxy_ed25519",
+            "appmanager_proxy_host": "appmanager",
+            "appmanager_proxy_port": "8000",
         },
         headers={"X-CSRF-Token": csrf},
     )
@@ -60,6 +72,10 @@ def test_update_reverse_proxy_settings(admin) -> None:
     assert body["nginx_user"] == "deploy"
     assert body["nginx_conf_path"] == "/etc/nginx/conf.d/apps.conf"
     assert body["ssh_key_path"] == "/data/keys/proxy_ed25519"
+    assert body["appmanager_proxy_host"] == "appmanager"
+    assert body["appmanager_proxy_port"] == "8000"
+    assert body["protected_alias_auth_status"] == "ok"
+    assert "Protected alias auth config ready" in body["protected_alias_auth_log"]
     # Persisted.
     again = client.get("/api/settings/reverse-proxy").json()
     assert again["nginx_host"] == "proxy.example.com"
@@ -90,6 +106,16 @@ def test_settings_reject_bad_ssh_user(admin) -> None:
     resp = client.patch(
         "/api/settings/reverse-proxy",
         json={"nginx_user": "root; rm -rf /"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 422
+
+
+def test_settings_reject_alias_template_without_auth(admin) -> None:
+    client, csrf, _ = admin
+    resp = client.patch(
+        "/api/settings/reverse-proxy",
+        json={"alias_template": "location /ALIAS/ { proxy_pass http://x; }"},
         headers={"X-CSRF-Token": csrf},
     )
     assert resp.status_code == 422

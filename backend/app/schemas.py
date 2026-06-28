@@ -572,7 +572,11 @@ class ReverseProxySettingsOut(BaseModel):
     nginx_user: str = ""
     nginx_conf_path: str = ""
     ssh_key_path: str = ""
+    appmanager_proxy_host: str = ""
+    appmanager_proxy_port: str = ""
     alias_template: str = ""
+    protected_alias_auth_status: str = ""
+    protected_alias_auth_log: str = ""
 
 
 class UpdateReverseProxySettingsRequest(BaseModel):
@@ -580,6 +584,8 @@ class UpdateReverseProxySettingsRequest(BaseModel):
     nginx_user: str | None = Field(default=None, max_length=64)
     nginx_conf_path: str | None = Field(default=None, max_length=4096)
     ssh_key_path: str | None = Field(default=None, max_length=4096)
+    appmanager_proxy_host: str | None = Field(default=None, max_length=253)
+    appmanager_proxy_port: str | None = Field(default=None, max_length=5)
     alias_template: str | None = Field(default=None, max_length=65536)
 
     @field_validator("nginx_host")
@@ -619,6 +625,42 @@ class UpdateReverseProxySettingsRequest(BaseModel):
     @classmethod
     def _check_key_path(cls, value: str | None) -> str | None:
         return None if value is None else _validate_path_setting(value, "SSH key path")
+
+    @field_validator("appmanager_proxy_host")
+    @classmethod
+    def _check_appmanager_host(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return ""
+        if not _HOST_RE.match(value):
+            raise ValueError(
+                "AppManager backend host must be a bare hostname or IP."
+            )
+        return value
+
+    @field_validator("appmanager_proxy_port")
+    @classmethod
+    def _check_appmanager_port(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _validate_apps_port(value)
+
+    @field_validator("alias_template")
+    @classmethod
+    def _check_alias_template_auth(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if value and (
+            "auth_request /api/auth/proxy-check;" not in value
+            or "error_page 401 = @appmanager_login;" not in value
+        ):
+            raise ValueError(
+                "Alias template must include auth_request /api/auth/proxy-check; "
+                "and error_page 401 = @appmanager_login;"
+            )
+        return value
 
 
 class BrandingSettingsOut(BaseModel):

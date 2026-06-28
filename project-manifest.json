@@ -297,7 +297,7 @@
       {
         "name": "settings",
         "description": "Single pinned row (id = 1) for reverse-proxy and branding configuration.",
-        "columns": ["id", "nginx_host", "nginx_user", "nginx_conf_path", "ssh_key_path", "alias_template", "app_name", "app_logo", "configured", "updated_at"],
+        "columns": ["id", "nginx_host", "nginx_user", "nginx_conf_path", "ssh_key_path", "appmanager_proxy_host", "appmanager_proxy_port", "alias_template", "app_name", "app_logo", "configured", "updated_at"],
         "primaryKey": ["id"]
       }
     ]
