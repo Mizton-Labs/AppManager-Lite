@@ -23,6 +23,7 @@ export interface SessionState {
   enable_auth: boolean;
   user: ApiUser | null;
   csrf_token: string | null;
+  auth_method: "local" | "oidc" | "saml";
   /** Configurable branding, present even before authentication. */
   app_name: string;
   app_logo: string;

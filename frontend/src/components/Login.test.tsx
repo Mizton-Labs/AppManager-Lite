@@ -26,6 +26,7 @@ describe("Login", () => {
         teams: [],
       },
       csrf_token: "csrf-1",
+      auth_method: "local",
       app_name: "",
       app_logo: "",
       collaborators: [],
