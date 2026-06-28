@@ -390,6 +390,51 @@ Configure in General Settings:
   server. The **NGINX Server Host/IP** above is only the SSH target used to push
   the config — it is never used as `APPS_SERVER`.
 
+### Protecting direct alias links
+
+Aliases are served by nginx, not by the FastAPI process. To require AppManager
+authentication even when a user opens `/some-alias/` directly, nginx must use
+`auth_request` to ask AppManager whether the browser has a valid `app_session`
+cookie. The default alias template includes the required per-alias directives for
+new installs:
+
+```nginx
+auth_request /api/auth/proxy-check;
+error_page 401 = @appmanager_login;
+```
+
+The nginx `server` block that serves aliases must also include this shared
+snippet, with `APPMANAGER_HOST` and `APPMANAGER_PORT` replaced by the backend
+address reachable from nginx:
+
+```nginx
+location = /api/auth/proxy-check {
+    proxy_pass http://APPMANAGER_HOST:APPMANAGER_PORT/api/auth/proxy-check;
+    proxy_set_header Host $host;
+    proxy_set_header Cookie $http_cookie;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_pass_request_body off;
+    proxy_set_header Content-Length "";
+}
+
+location @appmanager_login {
+    return 302 /?next=$request_uri;
+}
+```
+
+AppManager and alias paths should be served from the same domain so the browser
+sends the AppManager session cookie to direct alias requests. If TLS terminates
+at nginx, configure uvicorn to trust forwarded headers from that proxy, for
+example `FORWARDED_ALLOW_IPS=<nginx-ip>`.
+
+Existing deployments keep the alias template stored in the database. To migrate
+an existing deployment, add the shared nginx snippet above to the server block,
+update the alias template in Settings → General Settings so each alias location
+contains the two `auth_request` lines, then re-push approved alias applications
+from the Application Manager.
+
 On approval or push the backend (using the system `ssh`/`scp`, key-based,
 non-interactive, with timeouts) verifies SSH access, that the conf file exists,
 that nginx is running, and that the file is writable; then it backs the file up
