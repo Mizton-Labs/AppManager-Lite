@@ -46,6 +46,8 @@ def test_render_substitutes_placeholders() -> None:
     assert "proxy_pass http://apps.example.com:8080/;" in block
     assert "location /grafana/" in block
     assert "location = /grafana" in block
+    assert "auth_request /api/auth/proxy-check;" in block
+    assert "error_page 401 = @appmanager_login;" in block
     assert "Grafana" in block
     assert "1700000000" in block
     for placeholder in ("APPS_SERVER", "APPS_PORT", "ALIAS"):

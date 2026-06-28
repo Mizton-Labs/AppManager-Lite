@@ -22,6 +22,11 @@ def test_protected_route_requires_auth(client: TestClient) -> None:
     assert client.get("/api/users").status_code == 401
 
 
+def test_proxy_check_requires_session(client: TestClient) -> None:
+    resp = client.get("/api/auth/proxy-check")
+    assert resp.status_code == 401
+
+
 def test_first_run_credentials_file_is_private(client: TestClient, tmp_path) -> None:
     creds = tmp_path / "data" / "first-run-admin-credentials.txt"
     assert creds.is_file()
@@ -46,6 +51,17 @@ def test_login_sets_forced_change_flag(client: TestClient) -> None:
     assert body["auth_method"] == "local"
     assert body["user"]["must_change_password"] is True
     assert body["csrf_token"]
+
+
+def test_proxy_check_accepts_valid_session(client: TestClient) -> None:
+    login = client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": client.admin_password},  # type: ignore[attr-defined]
+    )
+    assert login.status_code == 200
+    resp = client.get("/api/auth/proxy-check")
+    assert resp.status_code == 204
+    assert not resp.content
 
 
 def test_state_change_requires_csrf(client: TestClient) -> None:

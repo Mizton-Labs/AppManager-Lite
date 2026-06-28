@@ -205,6 +205,7 @@
       { "method": "GET", "path": "/api/health", "auth": "anonymous", "csrf": false, "summary": "Liveness check." },
       { "method": "GET", "path": "/api/session", "auth": "anonymous", "csrf": false, "summary": "Current session and branding (works before authentication)." },
       { "method": "GET", "path": "/api/auth/sso/config", "auth": "anonymous", "csrf": false, "summary": "Read enabled SSO login providers for the login page." },
+      { "method": "GET", "path": "/api/auth/proxy-check", "auth": "anonymous", "csrf": false, "summary": "Nginx auth_request endpoint for protecting reverse-proxied aliases." },
       { "method": "POST", "path": "/api/auth/login", "auth": "anonymous", "csrf": false, "summary": "Authenticate and start a session." },
       { "method": "GET", "path": "/api/auth/oidc/login", "auth": "anonymous", "csrf": false, "summary": "Start OIDC authorization-code login." },
       { "method": "GET", "path": "/api/auth/oidc/callback", "auth": "anonymous", "csrf": false, "summary": "Handle OIDC provider callback and start a local session." },
@@ -269,8 +270,8 @@
       },
       {
         "name": "sso_auth_flows",
-        "description": "Short-lived OIDC/SAML state and nonce values used to validate SSO callbacks.",
-        "columns": ["state", "protocol", "nonce", "created_at", "expires_at"],
+        "description": "Short-lived OIDC/SAML state, nonce, and safe return path values used to validate SSO callbacks.",
+        "columns": ["state", "protocol", "nonce", "return_to", "created_at", "expires_at"],
         "primaryKey": ["state"]
       },
       {

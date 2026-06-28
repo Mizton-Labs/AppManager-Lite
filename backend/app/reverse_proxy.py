@@ -61,6 +61,8 @@ DEFAULT_ALIAS_TEMPLATE = """\
 \t\treturn 301 /ALIAS/;
 \t}
 \tlocation /ALIAS/ {
+\t\tauth_request /api/auth/proxy-check;
+\t\terror_page 401 = @appmanager_login;
 \t\tproxy_pass http://APPS_SERVER:APPS_PORT/;
 \t\tproxy_read_timeout 7200s;
 \t\tproxy_next_upstream error timeout invalid_header http_500 http_502 http_503 http_504;

@@ -37,6 +37,7 @@ def test_reverse_proxy_settings_default_template(admin) -> None:
     body = resp.json()
     # Seeded with the default alias template; secrets/keys are never stored.
     assert "location /ALIAS/" in body["alias_template"]
+    assert "auth_request /api/auth/proxy-check;" in body["alias_template"]
     assert body["nginx_host"] == ""
     assert body["ssh_key_path"] == ""
 
