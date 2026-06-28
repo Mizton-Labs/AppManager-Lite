@@ -130,6 +130,8 @@ CREATE TABLE IF NOT EXISTS settings (
     nginx_user      TEXT    NOT NULL DEFAULT '',
     nginx_conf_path TEXT    NOT NULL DEFAULT '',
     ssh_key_path    TEXT    NOT NULL DEFAULT '',
+    appmanager_proxy_host TEXT NOT NULL DEFAULT '',
+    appmanager_proxy_port TEXT NOT NULL DEFAULT '',
     alias_template  TEXT    NOT NULL DEFAULT '',
     app_name        TEXT    NOT NULL DEFAULT '',
     app_logo        TEXT    NOT NULL DEFAULT '',
@@ -266,6 +268,8 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
 
     # The reverse-proxy config gained an optional SSH user (ssh user@host).
     _add_column(conn, "settings", "nginx_user", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "settings", "appmanager_proxy_host", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "settings", "appmanager_proxy_port", "TEXT NOT NULL DEFAULT ''")
 
     # Configurable branding: an admin-defined application name and logo (a small
     # raster data URI), plus a one-time "configured" flag that drives the
