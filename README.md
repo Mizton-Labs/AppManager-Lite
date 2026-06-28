@@ -317,9 +317,9 @@ itself.
   resolved against the deployment base at render time, so an external reverse
   proxy can map it to an internal service; the create form shows the server URL
   prefix greyed-out before the input so the full resulting URL is visible. An
-  alias may contain only **letters, digits, and dashes** and is at most **30
-  characters** (the requirement is shown next to the field, and a leading slash
-  is stripped). A **full URL** is validated as `http`/`https`. Alias links are
+  alias may contain only **letters, digits, underscores, and dashes** and is at
+  most **30 characters** (the requirement is shown next to the field, and a
+  leading slash is stripped). A **full URL** is validated as `http`/`https`. Alias links are
   not subject to `http`/`https` validation.
 - **Application port.** Each alias application has its **own port**, which **any**
   user can set on the create/edit form (shown only for alias apps). The upstream

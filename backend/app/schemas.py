@@ -22,11 +22,11 @@ BUNDLE_MAPPING_SOURCES = (
 )
 
 # A local alias becomes part of a URL path, so it is restricted to URL-safe
-# characters: letters, digits, and dashes only, with a hard length cap. This
-# keeps it safe to substitute into a reverse-proxy location and link as a bare
-# relative path (no scheme, host, traversal, or separators possible).
+# characters: letters, digits, underscores, and dashes, with a hard length cap.
+# This keeps it safe to substitute into a reverse-proxy location and link as a
+# bare relative path (no scheme, host, traversal, or separators possible).
 ALIAS_MAX_LEN = 30
-_ALIAS_RE = re.compile(r"^[A-Za-z0-9-]+$")
+_ALIAS_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 # A bare hostname or IPv4 address used as the user's apps server. Restricted to
 # DNS/IP characters so it can be safely substituted into an nginx proxy_pass and
@@ -179,9 +179,9 @@ def _validate_alias(value: str) -> str:
 
     The alias is rendered as a link relative to the deployment base URL and is
     resolved by an upstream reverse proxy. To keep it URL-safe and prevent open
-    redirects or injection it must be letters, digits, and dashes only, at most
-    ``ALIAS_MAX_LEN`` characters. A single leading slash is accepted and
-    stripped (so ``/grafana`` and ``grafana`` are equivalent).
+    redirects or injection it must be letters, digits, underscores, and dashes
+    only, at most ``ALIAS_MAX_LEN`` characters. A single leading slash is
+    accepted and stripped (so ``/grafana`` and ``grafana`` are equivalent).
     """
     value = value.strip().lstrip("/")
     if not value:
@@ -192,7 +192,8 @@ def _validate_alias(value: str) -> str:
         )
     if not _ALIAS_RE.match(value):
         raise ValueError(
-            "Alias may contain only letters, digits, and dashes (e.g. my-app)."
+            "Alias may contain only letters, digits, underscores, and dashes "
+            "(e.g. my_app)."
         )
     return value
 

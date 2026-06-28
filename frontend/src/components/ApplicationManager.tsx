@@ -386,21 +386,21 @@ function UrlFields(props: {
               value={props.url}
               // Strip a leading slash and any disallowed characters so the
               // displayed prefix + alias matches how the server stores and
-              // validates it (letters, digits, and dashes only).
+              // validates it (letters, digits, underscores, and dashes only).
               onChange={(e) =>
                 props.onUrlChange(
-                  e.target.value.replace(/^\/+/, "").replace(/[^A-Za-z0-9-]/g, ""),
+                  e.target.value.replace(/^\/+/, "").replace(/[^A-Za-z0-9_-]/g, ""),
                 )
               }
               placeholder="my-dashboard"
               aria-label="Local alias relative path"
-              pattern="[A-Za-z0-9-]{1,30}"
+              pattern="[A-Za-z0-9_-]{1,30}"
               maxLength={30}
               required
             />
           </span>
           <span className="muted logo-hint">
-            Letters, digits, and dashes only; maximum 30 characters.
+            Letters, digits, underscores, and dashes only; maximum 30 characters.
           </span>
         </label>
       ) : (
