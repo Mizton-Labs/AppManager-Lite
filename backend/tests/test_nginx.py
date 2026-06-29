@@ -59,6 +59,22 @@ def test_render_substitutes_placeholders() -> None:
         assert placeholder not in block
 
 
+def test_render_omits_auth_lines_when_alias_auth_disabled() -> None:
+    block = render_alias_block(
+        DEFAULT_ALIAS_TEMPLATE,
+        apps_server="apps.example.com",
+        apps_port="8080",
+        alias="grafana",
+        app_name="Grafana",
+        alias_auth_required=False,
+    )
+
+    assert "location /grafana/" in block
+    assert "proxy_pass http://apps.example.com:8080/;" in block
+    assert "auth_request /api/auth/proxy-check;" not in block
+    assert "error_page 401 = @appmanager_login;" not in block
+
+
 @pytest.mark.parametrize(
     "alias,server,port",
     [

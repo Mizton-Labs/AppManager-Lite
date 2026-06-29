@@ -56,8 +56,12 @@ def _app_out(
         last_push_at=app.get("last_push_at") if include_creator else None,
         apps_server=app.get("apps_server", "") if include_creator else "",
         apps_port=app.get("apps_port", "") if include_creator else "",
+        alias_auth_required=bool(app.get("alias_auth_required", True)),
         pending_alias=app.get("pending_alias", "") if include_creator else "",
         pending_is_active=app.get("pending_is_active") if include_creator else None,
+        pending_alias_auth_required=(
+            app.get("pending_alias_auth_required") if include_creator else None
+        ),
         needs_push=bool(app.get("needs_push")) if include_creator else False,
     )
 
@@ -75,6 +79,7 @@ def _nginx_config_changed(
         ("url_type", payload.url_type),
         ("apps_port", payload.apps_port),
         ("is_active", payload.is_active),
+        ("alias_auth_required", payload.alias_auth_required),
     )
     if any(value is not None and value != existing[key] for key, value in checks):
         return True
@@ -139,6 +144,7 @@ def _push_alias_on_approval(
                         app_name=app["name"],
                         app_id=application_id,
                         is_active=app["is_active"],
+                        alias_auth_required=app["alias_auth_required"],
                     )
 
             transcript = result.transcript[:_MAX_PUSH_LOG]
@@ -359,6 +365,7 @@ def create_application(
         created_by=created_by,
         apps_server=apps_server,
         apps_port=apps_port,
+        alias_auth_required=payload.alias_auth_required,
     )
     logger.info(
         "Application created id=%s name=%r url_type=%s teams=%s approval=%s "
@@ -425,9 +432,11 @@ def update_application(
         if repository.get_user_by_id(conn, payload.created_by) is None:
             raise HTTPException(status_code=404, detail="New owner not found")
 
-    has_staged_change = bool(existing.get("pending_alias")) or existing.get(
-        "pending_is_active"
-    ) is not None
+    has_staged_change = (
+        bool(existing.get("pending_alias"))
+        or existing.get("pending_is_active") is not None
+        or existing.get("pending_alias_auth_required") is not None
+    )
     # An approved application cannot be rejected; only disable or delete it.
     # Staged changes on an otherwise-approved app can be approved, but they are
     # not modelled as a rejected application state.
@@ -467,6 +476,7 @@ def update_application(
                 payload.teams,
                 payload.is_active,
                 payload.apps_port,
+                payload.alias_auth_required,
             )
         )
         new_status = (
@@ -496,6 +506,14 @@ def update_application(
         and payload.is_active is not None
         and payload.is_active != existing["is_active"]
     )
+    stages_alias_auth = (
+        not is_admin
+        and not actor.get("self_service")
+        and existing["approval_status"] == "approved"
+        and resolved_url_type == "alias"
+        and payload.alias_auth_required is not None
+        and payload.alias_auth_required != existing["alias_auth_required"]
+    )
     if stages_alias:
         # Do not change the live URL; record the requested alias as pending and
         # leave the application active and approved on its current config until
@@ -513,6 +531,13 @@ def update_application(
     else:
         is_active_for_update = payload.is_active
         pending_is_active_for_update = None
+    if stages_alias_auth:
+        alias_auth_required_for_update: bool | None = None
+        pending_alias_auth_required_for_update: bool | None = payload.alias_auth_required
+        new_status = "approved"
+    else:
+        alias_auth_required_for_update = payload.alias_auth_required
+        pending_alias_auth_required_for_update = None
 
     config_changed = _nginx_config_changed(existing, payload, is_admin=is_admin)
     mark_needs_push = (
@@ -539,8 +564,10 @@ def update_application(
         # be changed by any user (owner or admin).
         apps_server=payload.apps_server if is_admin else None,
         apps_port=payload.apps_port,
+        alias_auth_required=alias_auth_required_for_update,
         pending_alias=pending_alias_for_update,
         pending_is_active=pending_is_active_for_update,
+        pending_alias_auth_required=pending_alias_auth_required_for_update,
         needs_push=True if mark_needs_push else None,
     )
     assert updated is not None
@@ -578,6 +605,23 @@ def update_application(
             target_id=application_id,
             target_name=updated["name"],
             detail=f"pending_is_active={payload.is_active}",
+        )
+    if stages_alias_auth:
+        logger.info(
+            "Application alias auth change staged id=%s pending=%s by=%r",
+            application_id,
+            payload.alias_auth_required,
+            actor.get("username"),
+        )
+        audit.record(
+            conn,
+            category=audit.CATEGORY_APPLICATION,
+            action="alias_auth_change_requested",
+            actor=actor,
+            target_type="application",
+            target_id=application_id,
+            target_name=updated["name"],
+            detail=f"pending_alias_auth_required={payload.alias_auth_required}",
         )
     if is_admin and payload.approval_status is not None:
         logger.info(
@@ -626,6 +670,7 @@ def update_application(
     #      live URL and cleared before the push renders the proxy config.
     staged = existing.get("pending_alias") or ""
     staged_is_active = existing.get("pending_is_active")
+    staged_alias_auth = existing.get("pending_alias_auth_required")
     normal_approval = (
         is_admin
         and payload.approval_status == "approved"
@@ -638,6 +683,11 @@ def update_application(
         is_admin
         and payload.approval_status == "approved"
         and staged_is_active is not None
+    )
+    staged_alias_auth_approval = (
+        is_admin
+        and payload.approval_status == "approved"
+        and staged_alias_auth is not None
     )
     if staged_approval:
         repository.update_application(
@@ -685,15 +735,49 @@ def update_application(
             target_name=updated["name"],
             detail=f"is_active={bool(staged_is_active)}",
         )
+    if staged_alias_auth_approval:
+        repository.update_application(
+            conn,
+            application_id,
+            alias_auth_required=bool(staged_alias_auth),
+            clear_pending_alias_auth_required=True,
+        )
+        logger.info(
+            "Applied staged alias auth change id=%s required=%s by=%r",
+            application_id,
+            bool(staged_alias_auth),
+            actor.get("username"),
+        )
+        audit.record(
+            conn,
+            category=audit.CATEGORY_APPLICATION,
+            action="alias_auth_change_approved",
+            actor=actor,
+            target_type="application",
+            target_id=application_id,
+            target_name=updated["name"],
+            detail=f"alias_auth_required={bool(staged_alias_auth)}",
+        )
     auto_config_push = (
         (is_admin or actor.get("self_service"))
         and config_changed
         and existing["approval_status"] == "approved"
         and (updated["approval_status"] == "approved")
         and (existing["url_type"] == "alias" or updated["url_type"] == "alias")
-        and not (normal_approval or staged_approval or staged_active_approval)
+        and not (
+            normal_approval
+            or staged_approval
+            or staged_active_approval
+            or staged_alias_auth_approval
+        )
     )
-    if normal_approval or staged_approval or staged_active_approval or auto_config_push:
+    if (
+        normal_approval
+        or staged_approval
+        or staged_active_approval
+        or staged_alias_auth_approval
+        or auto_config_push
+    ):
         conn.commit()
         _push_alias_on_approval(application_id, actor)
     result = repository.get_application(conn, application_id, include_creator=True)

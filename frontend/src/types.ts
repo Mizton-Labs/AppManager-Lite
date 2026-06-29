@@ -192,10 +192,14 @@ export interface Application {
   /** Per-app apps server/port (alias apps); management/own-app responses only. */
   apps_server?: string;
   apps_port?: string;
+  /** Whether AppManager auth protects the alias before proxying. */
+  alias_auth_required: boolean;
   /** A staged alias change awaiting approval; management/own-app responses only. */
   pending_alias?: string;
   /** A staged enable/disable change awaiting approval; management/own-app only. */
   pending_is_active?: boolean | null;
+  /** A staged alias auth change awaiting approval; management/own-app only. */
+  pending_alias_auth_required?: boolean | null;
   /** True when current approved proxy config needs an admin push. */
   needs_push?: boolean;
 }
@@ -211,6 +215,7 @@ export interface CreateApplicationInput {
   sort_order?: number;
   apps_server?: string;
   apps_port?: string;
+  alias_auth_required?: boolean;
   created_by?: number;
 }
 
@@ -226,6 +231,7 @@ export interface UpdateApplicationInput {
   sort_order?: number;
   apps_server?: string;
   apps_port?: string;
+  alias_auth_required?: boolean;
 }
 
 /** Which subsystem an audit entry belongs to (one per audit-view tab). */
