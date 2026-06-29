@@ -568,9 +568,15 @@ def _row_to_application(
         "sort_order": row["sort_order"],
         "apps_server": row["apps_server"],
         "apps_port": row["apps_port"],
+        "alias_auth_required": bool(row["alias_auth_required"]),
         "pending_alias": row["pending_alias"],
         "pending_is_active": (
             None if row["pending_is_active"] is None else bool(row["pending_is_active"])
+        ),
+        "pending_alias_auth_required": (
+            None
+            if row["pending_alias_auth_required"] is None
+            else bool(row["pending_alias_auth_required"])
         ),
         "needs_push": bool(row["needs_push"]),
         "publisher_team": publisher_teams[0] if publisher_teams else "",
@@ -787,13 +793,15 @@ def create_application(
     created_by: int | None = None,
     apps_server: str = "",
     apps_port: str = "",
+    alias_auth_required: bool = True,
 ) -> dict[str, Any]:
     cur = conn.execute(
         """
         INSERT INTO applications
             (name, description, url, url_type, icon_url, is_active,
-             approval_status, created_by, sort_order, apps_server, apps_port)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             approval_status, created_by, sort_order, apps_server, apps_port,
+             alias_auth_required)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             name,
@@ -807,6 +815,7 @@ def create_application(
             sort_order,
             apps_server,
             apps_port,
+            int(alias_auth_required),
         ),
     )
     application_id = int(cur.lastrowid)
@@ -859,9 +868,12 @@ def update_application(
     teams: list[str] | None = None,
     apps_server: str | None = None,
     apps_port: str | None = None,
+    alias_auth_required: bool | None = None,
     pending_alias: str | None = None,
     pending_is_active: bool | None = None,
     clear_pending_is_active: bool = False,
+    pending_alias_auth_required: bool | None = None,
+    clear_pending_alias_auth_required: bool = False,
     needs_push: bool | None = None,
 ) -> dict[str, Any] | None:
     if get_application(conn, application_id) is None:
@@ -891,12 +903,18 @@ def update_application(
         columns["apps_server"] = apps_server
     if apps_port is not None:
         columns["apps_port"] = apps_port
+    if alias_auth_required is not None:
+        columns["alias_auth_required"] = int(alias_auth_required)
     if pending_alias is not None:
         columns["pending_alias"] = pending_alias
     if pending_is_active is not None:
         columns["pending_is_active"] = int(pending_is_active)
     if clear_pending_is_active:
         columns["pending_is_active"] = None
+    if pending_alias_auth_required is not None:
+        columns["pending_alias_auth_required"] = int(pending_alias_auth_required)
+    if clear_pending_alias_auth_required:
+        columns["pending_alias_auth_required"] = None
     if needs_push is not None:
         columns["needs_push"] = int(needs_push)
     if columns:

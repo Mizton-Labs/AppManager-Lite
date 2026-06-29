@@ -321,6 +321,14 @@ itself.
   most **30 characters** (the requirement is shown next to the field, and a
   leading slash is stripped). A **full URL** is validated as `http`/`https`. Alias links are
   not subject to `http`/`https` validation.
+- **Alias authentication.** Local aliases require an AppManager session by
+  default. The create/edit form includes a per-app toggle to exclude an alias
+  from AppManager authentication when the upstream app has its own auth or is
+  safe to expose. Disabling auth removes the alias block's
+  `auth_request /api/auth/proxy-check;` and
+  `error_page 401 = @appmanager_login;` directives and shows a warning. Admins
+  and self-service owners apply this immediately; non-self-service owners stage
+  the change for admin approval.
 - **Application port.** Each alias application has its **own port**, which **any**
   user can set on the create/edit form (shown only for alias apps). The upstream
   server host is the **owning user's apps server** (configured per user by an

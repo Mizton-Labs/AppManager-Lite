@@ -140,6 +140,7 @@ def render_alias_block(
     apps_port: str,
     alias: str,
     app_name: str,
+    alias_auth_required: bool = True,
     timestamp: int | None = None,
 ) -> str:
     """Render the alias template by substituting the placeholders.
@@ -169,6 +170,9 @@ def render_alias_block(
     # Replace ALIAS last so an APPNAME containing "ALIAS" is not affected first;
     # the comment header's ALIAS token is intentionally substituted too.
     block = block.replace("ALIAS", alias)
+    if not alias_auth_required:
+        block = re.sub(r"^\s*auth_request /api/auth/proxy-check;\n", "", block, flags=re.M)
+        block = re.sub(r"^\s*error_page 401 = @appmanager_login;\n", "", block, flags=re.M)
     return block
 
 
@@ -292,6 +296,7 @@ def push_alias(
     app_name: str,
     app_id: int,
     is_active: bool = True,
+    alias_auth_required: bool = True,
 ) -> PushResult:
     """Push one application alias to the remote nginx server.
 
@@ -337,6 +342,7 @@ def push_alias(
             apps_port=apps_port,
             alias=alias,
             app_name=app_name,
+            alias_auth_required=alias_auth_required,
         )
     except ReverseProxyError as exc:
         result.status = "failed"
