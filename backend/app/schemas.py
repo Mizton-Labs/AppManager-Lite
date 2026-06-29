@@ -409,10 +409,13 @@ class ApplicationOut(BaseModel):
     # Per-app apps server/port (alias apps); management/own-app responses only.
     apps_server: str = ""
     apps_port: str = ""
+    # Whether the alias block requires an AppManager session before proxying.
+    alias_auth_required: bool = True
     # A staged alias change awaiting approval (management/own-app responses
     # only). Empty unless the owner edited the alias and it is pending review.
     pending_alias: str = ""
     pending_is_active: bool | None = None
+    pending_alias_auth_required: bool | None = None
     needs_push: bool = False
 
 
@@ -429,6 +432,7 @@ class CreateApplicationRequest(BaseModel):
     # Used to render the reverse-proxy alias when the owner has none.
     apps_server: str = Field(default="", max_length=253)
     apps_port: str = Field(default="", max_length=5)
+    alias_auth_required: bool = True
 
     @field_validator("name")
     @classmethod
@@ -483,6 +487,7 @@ class UpdateApplicationRequest(BaseModel):
     sort_order: int | None = Field(default=None, ge=0, le=100000)
     apps_server: str | None = Field(default=None, max_length=253)
     apps_port: str | None = Field(default=None, max_length=5)
+    alias_auth_required: bool | None = None
     created_by: int | None = None
 
     @field_validator("name")

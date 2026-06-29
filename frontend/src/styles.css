@@ -493,6 +493,17 @@ textarea:focus,
   color: #86efac;
 }
 
+.alert.warn {
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid var(--warn);
+  color: #fbbf24;
+}
+
+.checkbox-field input[type="checkbox"] {
+  width: auto;
+  margin-right: 0.35rem;
+}
+
 .hint {
   margin: 0;
   font-size: 0.85rem;

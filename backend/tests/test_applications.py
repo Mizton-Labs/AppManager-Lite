@@ -793,6 +793,77 @@ def test_alias_accepts_underscore(admin) -> None:
     assert body["url_type"] == "alias"
 
 
+def test_alias_auth_can_be_disabled_on_create(admin) -> None:
+    client, csrf, _ = admin
+    resp = _create_app(
+        client,
+        csrf,
+        url="publicstatus",
+        url_type="alias",
+        apps_port="8080",
+        alias_auth_required=False,
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["alias_auth_required"] is False
+    assert body["pending_alias_auth_required"] is None
+
+
+def test_non_self_service_alias_auth_change_is_staged(admin) -> None:
+    client, csrf, _ = admin
+    password = _create_member(client, csrf, "authstager", ["Red Team"])
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login", json={"username": "authstager", "password": password}
+        )
+        mcsrf = login.json()["csrf_token"]
+        created = member.post(
+            "/api/applications",
+            json={
+                "name": "Member Alias",
+                "url": "memberalias",
+                "url_type": "alias",
+                "teams": ["Red Team"],
+                "apps_port": "8080",
+            },
+            headers={"X-CSRF-Token": mcsrf},
+        )
+        assert created.status_code == 201, created.text
+        app_id = created.json()["id"]
+
+    approved = client.patch(
+        f"/api/applications/{app_id}",
+        json={"approval_status": "approved"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert approved.status_code == 200, approved.text
+
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login", json={"username": "authstager", "password": password}
+        )
+        mcsrf = login.json()["csrf_token"]
+        staged = member.patch(
+            f"/api/applications/{app_id}",
+            json={"alias_auth_required": False},
+            headers={"X-CSRF-Token": mcsrf},
+        )
+    assert staged.status_code == 200, staged.text
+    body = staged.json()
+    assert body["alias_auth_required"] is True
+    assert body["pending_alias_auth_required"] is False
+
+    applied = client.patch(
+        f"/api/applications/{app_id}",
+        json={"approval_status": "approved"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert applied.status_code == 200, applied.text
+    body = applied.json()
+    assert body["alias_auth_required"] is False
+    assert body["pending_alias_auth_required"] is None
+
+
 def test_alias_rejects_path_separators(admin) -> None:
     client, csrf, _ = admin
     # Aliases are a single URL-safe segment: separators are rejected.

@@ -420,6 +420,30 @@ function UrlFields(props: {
   );
 }
 
+function AliasAuthField(props: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="field checkbox-field">
+      <span>
+        <input
+          type="checkbox"
+          checked={props.checked}
+          onChange={(e) => props.onChange(e.target.checked)}
+        />{" "}
+        Require AppManager authentication
+      </span>
+      {!props.checked && (
+        <span className="alert warn" role="alert">
+          This alias will be reachable without an AppManager session. Only disable
+          this if the upstream app has its own authentication or is safe to expose.
+        </span>
+      )}
+    </label>
+  );
+}
+
 /**
  * Logo chooser. A user may upload an image (downscaled in the browser to a small
  * square data URI) or paste an absolute image URL. When neither is provided, a
@@ -515,6 +539,7 @@ function CreateApplicationCard(props: {
   const [teams, setTeams] = useState<string[]>([]);
   const [appsPort, setAppsPort] = useState("");
   const [appsServer, setAppsServer] = useState("");
+  const [aliasAuthRequired, setAliasAuthRequired] = useState(true);
   const [busy, setBusy] = useState(false);
 
   // Each alias application has its own port, settable by any user. The upstream
@@ -547,6 +572,7 @@ function CreateApplicationCard(props: {
         description: description.trim(),
         icon_url: icon,
         teams,
+        alias_auth_required: urlType === "alias" ? aliasAuthRequired : true,
         ...(showPort ? { apps_port: appsPort.trim() } : {}),
         ...(showServer ? { apps_server: appsServer.trim() } : {}),
       });
@@ -621,6 +647,13 @@ function CreateApplicationCard(props: {
           </label>
         )}
 
+        {showPort && (
+          <AliasAuthField
+            checked={aliasAuthRequired}
+            onChange={setAliasAuthRequired}
+          />
+        )}
+
         <label className="field">
           <span>Description</span>
           <input
@@ -693,6 +726,9 @@ function ApplicationRow(props: {
   const [teams, setTeams] = useState<string[]>(app.teams);
   const [appsPort, setAppsPort] = useState(app.apps_port ?? "");
   const [appsServer, setAppsServer] = useState(app.apps_server ?? "");
+  const [aliasAuthRequired, setAliasAuthRequired] = useState(
+    app.alias_auth_required,
+  );
   const [ownerId, setOwnerId] = useState(String(app.created_by_id ?? ""));
   const [logoError, setLogoError] = useState<string | null>(null);
 
@@ -705,6 +741,7 @@ function ApplicationRow(props: {
     setTeams(app.teams);
     setAppsPort(app.apps_port ?? "");
     setAppsServer(app.apps_server ?? "");
+    setAliasAuthRequired(app.alias_auth_required);
     setOwnerId(String(app.created_by_id ?? ""));
   }, [
     app.name,
@@ -715,6 +752,7 @@ function ApplicationRow(props: {
     app.teams,
     app.apps_port,
     app.apps_server,
+    app.alias_auth_required,
     app.created_by_id,
   ]);
 
@@ -727,10 +765,23 @@ function ApplicationRow(props: {
       iconUrl !== app.icon_url ||
       appsPort !== (app.apps_port ?? "") ||
       appsServer !== (app.apps_server ?? "") ||
+      aliasAuthRequired !== app.alias_auth_required ||
       ownerId !== String(app.created_by_id ?? "") ||
       teams.length !== app.teams.length ||
       teams.some((t) => !app.teams.includes(t)),
-    [name, urlType, url, description, iconUrl, appsPort, appsServer, ownerId, teams, app],
+    [
+      name,
+      urlType,
+      url,
+      description,
+      iconUrl,
+      appsPort,
+      appsServer,
+      aliasAuthRequired,
+      ownerId,
+      teams,
+      app,
+    ],
   );
 
   // Each alias application has its own port, editable by any user. The upstream
@@ -773,6 +824,22 @@ function ApplicationRow(props: {
           {app.pending_is_active !== null && app.pending_is_active !== undefined && (
             <span className="status-badge warn push-needed">
               {app.pending_is_active ? "enable requested" : "disable requested"}
+            </span>
+          )}
+          {app.pending_alias_auth_required !== null &&
+            app.pending_alias_auth_required !== undefined && (
+              <span className="status-badge warn push-needed">
+                {app.pending_alias_auth_required
+                  ? "auth enable requested"
+                  : "auth exclusion requested"}
+              </span>
+            )}
+          {app.url_type === "alias" && !app.alias_auth_required && (
+            <span
+              className="status-badge warn"
+              title="This alias does not require an AppManager session."
+            >
+              unprotected alias
             </span>
           )}
           {isAdmin && app.needs_push && (
@@ -834,7 +901,9 @@ function ApplicationRow(props: {
         <div className="row-actions approval-actions">
           {(app.approval_status !== "approved" ||
             app.pending_alias ||
-            app.pending_is_active !== null && app.pending_is_active !== undefined) && (
+            (app.pending_is_active !== null && app.pending_is_active !== undefined) ||
+            (app.pending_alias_auth_required !== null &&
+              app.pending_alias_auth_required !== undefined)) && (
             <button
               type="button"
               className="btn approve"
@@ -961,6 +1030,13 @@ function ApplicationRow(props: {
             </label>
           )}
 
+          {showPort && (
+            <AliasAuthField
+              checked={aliasAuthRequired}
+              onChange={setAliasAuthRequired}
+            />
+          )}
+
           {isAdmin && props.ownerOptions.length > 0 && (
             <label className="field">
               <span>Owner</span>
@@ -1019,6 +1095,7 @@ function ApplicationRow(props: {
                   description,
                   icon_url: iconUrl,
                   teams,
+                  alias_auth_required: urlType === "alias" ? aliasAuthRequired : true,
                   ...(showPort ? { apps_port: appsPort.trim() } : {}),
                   ...(showServer ? { apps_server: appsServer.trim() } : {}),
                   ...(isAdmin && ownerId ? { created_by: Number(ownerId) } : {}),
