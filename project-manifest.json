@@ -276,8 +276,8 @@
       },
       {
         "name": "applications",
-        "description": "Application entries with URL/alias, approval state, owner, port, and last reverse-proxy push result.",
-        "columns": ["id", "name", "description", "url", "url_type", "icon_url", "is_active", "approval_status", "created_by", "sort_order", "apps_server", "apps_port", "pending_alias", "last_push_status", "last_push_log", "last_push_at", "created_at", "updated_at"],
+        "description": "Application entries with URL/alias, approval state, owner, port, per-alias auth, staged changes, and last reverse-proxy push result.",
+        "columns": ["id", "name", "description", "url", "url_type", "icon_url", "is_active", "approval_status", "created_by", "sort_order", "apps_server", "apps_port", "alias_auth_required", "pending_alias", "pending_is_active", "pending_alias_auth_required", "needs_push", "last_push_status", "last_push_log", "last_push_at", "created_at", "updated_at"],
         "primaryKey": ["id"],
         "foreignKeys": ["created_by -> users.id (set null)"]
       },

@@ -86,6 +86,7 @@ function stubBackend(initial: Application[]) {
         description: body.description ?? "",
         icon_url: body.icon_url ?? "",
         teams: body.teams ?? [],
+        alias_auth_required: body.alias_auth_required ?? true,
         approval_status: "pending",
         sort_order: store.length,
       });
@@ -391,6 +392,44 @@ describe("ApplicationManager", () => {
         name: "Internal Wiki",
         url: "wiki_home",
         url_type: "alias",
+      },
+    );
+  });
+
+  it("warns and submits when alias authentication is disabled", async () => {
+    const fetchMock = stubBackend([]);
+    render(<ApplicationManager isAdmin={false} teamOptions={["Threat Hunting"]} />);
+
+    await screen.findByText(/have not submitted any applications/i);
+    await userEvent.click(
+      screen.getByRole("button", { name: /new application/i }),
+    );
+
+    await userEvent.type(screen.getByLabelText("Name"), "Public Status");
+    await userEvent.type(
+      screen.getByLabelText(/local alias relative path/i),
+      "status",
+    );
+    await userEvent.click(
+      screen.getByRole("checkbox", { name: /require appmanager authentication/i }),
+    );
+
+    expect(
+      screen.getByText(/reachable without an AppManager session/i),
+    ).toBeInTheDocument();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /create application/i }),
+    );
+
+    const postCall = fetchMock.mock.calls.find(
+      ([, init]) => (init?.method ?? "GET") === "POST",
+    );
+    expect(JSON.parse((postCall![1] as RequestInit).body as string)).toMatchObject(
+      {
+        url: "status",
+        url_type: "alias",
+        alias_auth_required: false,
       },
     );
   });
