@@ -191,7 +191,9 @@ export interface Application {
   last_push_at?: string | null;
   /** Per-app apps server/port (alias apps); management/own-app responses only. */
   apps_server?: string;
+  apps_protocol?: "http" | "https";
   apps_port?: string;
+  apps_path?: string;
   /** Whether AppManager auth protects the alias before proxying. */
   alias_auth_required: boolean;
   /** A staged alias change awaiting approval; management/own-app responses only. */
@@ -214,7 +216,9 @@ export interface CreateApplicationInput {
   is_active?: boolean;
   sort_order?: number;
   apps_server?: string;
+  apps_protocol?: "http" | "https";
   apps_port?: string;
+  apps_path?: string;
   alias_auth_required?: boolean;
   created_by?: number;
 }
@@ -230,7 +234,9 @@ export interface UpdateApplicationInput {
   approval_status?: ApprovalStatus;
   sort_order?: number;
   apps_server?: string;
+  apps_protocol?: "http" | "https";
   apps_port?: string;
+  apps_path?: string;
   alias_auth_required?: boolean;
 }
 

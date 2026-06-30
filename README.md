@@ -329,14 +329,13 @@ itself.
   `error_page 401 = @appmanager_login;` directives and shows a warning. Admins
   and self-service owners apply this immediately; non-self-service owners stage
   the change for admin approval.
-- **Application port.** Each alias application has its **own port**, which **any**
-  user can set on the create/edit form (shown only for alias apps). The upstream
-  server host is the **owning user's apps server** (configured per user by an
-  administrator); an administrator can instead set the apps host **on the
-  application** (since admins have no per-user apps server). The reverse-proxy
-  settings host is only the SSH target used to push config — never the alias
-  upstream. If neither the application nor its owner has an apps host, the push
-  is skipped.
+- **Alias upstream.** Each alias application has its own upstream target, shown
+  only for alias apps: protocol (`http` by default), server host/IP (prefilled
+  from the user's configured apps host/IP when available), mandatory port, and
+  optional suffix/path. A read-only preview shows the upstream URL that nginx
+  will proxy to. The reverse-proxy settings host is only the SSH target used to
+  push config — never the alias upstream. If an approved alias is missing its
+  upstream host or port, the push is skipped.
 - **Team selection.** The team picker offers a **Select all / Clear all** toggle
   in addition to the individual checkboxes.
 

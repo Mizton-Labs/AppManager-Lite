@@ -55,7 +55,9 @@ def _app_out(
         last_push_log=app.get("last_push_log", "") if include_creator else "",
         last_push_at=app.get("last_push_at") if include_creator else None,
         apps_server=app.get("apps_server", "") if include_creator else "",
+        apps_protocol=app.get("apps_protocol", "http") if include_creator else "http",
         apps_port=app.get("apps_port", "") if include_creator else "",
+        apps_path=app.get("apps_path", "") if include_creator else "",
         alias_auth_required=bool(app.get("alias_auth_required", True)),
         pending_alias=app.get("pending_alias", "") if include_creator else "",
         pending_is_active=app.get("pending_is_active") if include_creator else None,
@@ -77,17 +79,16 @@ def _nginx_config_changed(
         ("name", payload.name),
         ("url", payload.url),
         ("url_type", payload.url_type),
+        ("apps_protocol", payload.apps_protocol),
         ("apps_port", payload.apps_port),
+        ("apps_path", payload.apps_path),
         ("is_active", payload.is_active),
         ("alias_auth_required", payload.alias_auth_required),
+        ("apps_server", payload.apps_server),
     )
     if any(value is not None and value != existing[key] for key, value in checks):
         return True
-    return bool(
-        is_admin
-        and payload.apps_server is not None
-        and payload.apps_server != existing["apps_server"]
-    )
+    return False
 
 
 def _push_alias_on_approval(
@@ -117,7 +118,7 @@ def _push_alias_on_approval(
                 # proxies to.
                 #   - server: the application's own server (admin-set) first,
                 #     then the owning user's configured apps host/IP.
-                #   - port: the application's own port (set by any user).
+                #   - protocol/path/port: the application's own upstream settings.
                 owner_id = app.get("created_by")
                 owner = (
                     repository.get_user_by_id(conn, owner_id)
@@ -125,6 +126,8 @@ def _push_alias_on_approval(
                     else None
                 )
                 apps_port = app.get("apps_port") or ""
+                apps_protocol = app.get("apps_protocol") or "http"
+                apps_path = app.get("apps_path") or ""
                 apps_server = app.get("apps_server") or (
                     (owner["apps_server"] or owner["apps_server_ip"]) if owner else ""
                 )
@@ -139,7 +142,9 @@ def _push_alias_on_approval(
                     result = reverse_proxy.push_alias(
                         settings,
                         apps_server=apps_server,
+                        apps_protocol=apps_protocol,
                         apps_port=apps_port,
+                        apps_path=apps_path,
                         alias=app["url"],
                         app_name=app["name"],
                         app_id=application_id,
@@ -344,12 +349,12 @@ def create_application(
     # the owner unset rather than violate the created_by foreign key.
     created_by = actor["id"] if actor.get("id") else None
 
-    # The application's own port may be set by any user (each alias app has its
-    # own port). The application's own server host is administrator-only; other
-    # users rely on the owning user's configured apps host (resolved at push
-    # time). Admins -- who have no per-user apps host -- can set the app's host.
-    apps_server = payload.apps_server if is_admin else ""
+    # Alias apps carry their own upstream settings. The host is prefilled from
+    # the user's configured apps host in the UI, but users may override it.
+    apps_server = payload.apps_server
+    apps_protocol = payload.apps_protocol
     apps_port = payload.apps_port
+    apps_path = payload.apps_path
 
     app = repository.create_application(
         conn,
@@ -364,7 +369,9 @@ def create_application(
         approval_status=approval_status,
         created_by=created_by,
         apps_server=apps_server,
+        apps_protocol=apps_protocol,
         apps_port=apps_port,
+        apps_path=apps_path,
         alias_auth_required=payload.alias_auth_required,
     )
     logger.info(
@@ -475,7 +482,9 @@ def update_application(
                 payload.icon_url,
                 payload.teams,
                 payload.is_active,
+                payload.apps_protocol,
                 payload.apps_port,
+                payload.apps_path,
                 payload.alias_auth_required,
             )
         )
@@ -560,10 +569,11 @@ def update_application(
         sort_order=payload.sort_order,
         created_by=payload.created_by,
         teams=payload.teams,
-        # The application's own server host is administrator-only; its port may
-        # be changed by any user (owner or admin).
-        apps_server=payload.apps_server if is_admin else None,
+        # Alias upstream settings may be changed by the owner or an admin.
+        apps_server=payload.apps_server,
+        apps_protocol=payload.apps_protocol,
         apps_port=payload.apps_port,
+        apps_path=payload.apps_path,
         alias_auth_required=alias_auth_required_for_update,
         pending_alias=pending_alias_for_update,
         pending_is_active=pending_is_active_for_update,

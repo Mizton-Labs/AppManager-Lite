@@ -459,7 +459,7 @@ def test_admin_created_alias_app_pushes_with_app_apps_server(admin, monkeypatch)
     assert body["last_push_status"] == "ok"
 
 
-def test_non_admin_apps_server_on_create_is_ignored(admin, monkeypatch) -> None:
+def test_non_admin_apps_server_on_create_is_stored(admin, monkeypatch) -> None:
     client, csrf, _ = admin
     _configure_proxy(client, csrf)
     _mock_ssh_ok(monkeypatch)
@@ -482,9 +482,9 @@ def test_non_admin_apps_server_on_create_is_ignored(admin, monkeypatch) -> None:
             headers={"X-CSRF-Token": mcsrf},
         )
         app_id = resp.json()["id"]
-        # The member sees their own app via /mine; apps_server was not stored.
+        # Alias upstream host is now an app-level setting any owner can provide.
         mine = {a["id"]: a for a in member.get("/api/applications/mine").json()}
-    assert mine[app_id]["apps_server"] == ""
+    assert mine[app_id]["apps_server"] == "evil.example.com"
 
 
 def _mock_ssh_capture(monkeypatch):

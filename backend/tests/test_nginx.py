@@ -55,8 +55,23 @@ def test_render_substitutes_placeholders() -> None:
     assert "error_page 401 = @appmanager_login;" in block
     assert "Grafana" in block
     assert "1700000000" in block
-    for placeholder in ("APPS_SERVER", "APPS_PORT", "ALIAS"):
+    for placeholder in ("APPS_PROTOCOL", "APPS_SERVER", "APPS_PORT", "APPS_PATH", "ALIAS"):
         assert placeholder not in block
+
+
+def test_render_substitutes_alias_upstream_path() -> None:
+    block = render_alias_block(
+        DEFAULT_ALIAS_TEMPLATE,
+        apps_server="apps.example.com",
+        apps_protocol="https",
+        apps_port="8443",
+        apps_path="dashboard",
+        alias="grafana",
+        app_name="Grafana",
+        timestamp=1700000000,
+    )
+
+    assert "proxy_pass https://apps.example.com:8443/dashboard;" in block
 
 
 def test_render_omits_auth_lines_when_alias_auth_disabled() -> None:

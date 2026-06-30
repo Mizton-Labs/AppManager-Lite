@@ -21,6 +21,7 @@ import { CheckIcon, PlusIcon, XIcon } from "./icons";
 export function ApplicationManager(props: {
   isAdmin: boolean;
   teamOptions: readonly string[];
+  currentUser?: ApiUser | null;
 }) {
   const { isAdmin, teamOptions } = props;
   const [apps, setApps] = useState<Application[]>([]);
@@ -159,6 +160,7 @@ export function ApplicationManager(props: {
         <CreateApplicationCard
           isAdmin={isAdmin}
           teamOptions={teamOptions}
+          defaultAppsServer={defaultAliasAppsServer(props.currentUser)}
           onCreated={(created) => {
             setCreating(false);
             if (created && created.last_push_status) {
@@ -203,6 +205,7 @@ export function ApplicationManager(props: {
                 key={app.id}
                 app={app}
                 isAdmin={isAdmin}
+                defaultAppsServer={defaultAliasAppsServer(props.currentUser)}
                 canMoveUp={index > 0}
                 canMoveDown={index < apps.length - 1}
                 onMoveUp={() => void moveApp(app.id, -1)}
@@ -328,6 +331,96 @@ function deploymentBase(): string {
   } catch {
     return "/";
   }
+}
+
+function defaultAliasAppsServer(user?: ApiUser | null): string {
+  return user?.apps_server || user?.apps_server_ip || "";
+}
+
+function normalizeAppsPath(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+}
+
+function aliasUpstreamPreview(
+  protocol: "http" | "https",
+  host: string,
+  port: string,
+  path: string,
+): string {
+  const cleanHost = host.trim();
+  const cleanPort = port.trim();
+  if (!cleanHost || !cleanPort) return "Complete host and port to preview the upstream URL.";
+  return `${protocol}://${cleanHost}:${cleanPort}${normalizeAppsPath(path) || "/"}`;
+}
+
+function AliasUpstreamFields(props: {
+  protocol: "http" | "https";
+  host: string;
+  port: string;
+  path: string;
+  onProtocolChange: (value: "http" | "https") => void;
+  onHostChange: (value: string) => void;
+  onPortChange: (value: string) => void;
+  onPathChange: (value: string) => void;
+}) {
+  return (
+    <div className="field">
+      <span>Alias upstream</span>
+      <div className="alias-upstream-grid">
+        <label className="field compact-field">
+          <span>Protocol</span>
+          <select
+            value={props.protocol}
+            onChange={(e) =>
+              props.onProtocolChange(e.target.value === "https" ? "https" : "http")
+            }
+            aria-label="Alias upstream protocol"
+          >
+            <option value="http">http</option>
+            <option value="https">https</option>
+          </select>
+        </label>
+        <label className="field compact-field alias-upstream-host">
+          <span>Server host/IP</span>
+          <input
+            type="text"
+            value={props.host}
+            onChange={(e) => props.onHostChange(e.target.value)}
+            placeholder="apps.example.com"
+            aria-label="Alias upstream server host or IP"
+            required
+          />
+        </label>
+        <label className="field compact-field alias-upstream-port">
+          <span>Port</span>
+          <input
+            type="text"
+            value={props.port}
+            onChange={(e) => props.onPortChange(e.target.value.replace(/[^0-9]/g, ""))}
+            placeholder="8080"
+            inputMode="numeric"
+            aria-label="Alias upstream port"
+            required
+          />
+        </label>
+        <label className="field compact-field alias-upstream-path">
+          <span>Suffix/path (optional)</span>
+          <input
+            type="text"
+            value={props.path}
+            onChange={(e) => props.onPathChange(e.target.value)}
+            placeholder="/app"
+            aria-label="Alias upstream suffix path"
+          />
+        </label>
+      </div>
+      <span className="muted logo-hint">
+        Preview: <code>{aliasUpstreamPreview(props.protocol, props.host, props.port, props.path)}</code>
+      </span>
+    </div>
+  );
 }
 
 /**
@@ -527,6 +620,7 @@ function LogoField(props: {
 function CreateApplicationCard(props: {
   isAdmin: boolean;
   teamOptions: readonly string[];
+  defaultAppsServer: string;
   onCreated: (created: Application) => void;
   onCancel: () => void;
   onError: (message: string) => void;
@@ -537,16 +631,17 @@ function CreateApplicationCard(props: {
   const [description, setDescription] = useState("");
   const [iconUrl, setIconUrl] = useState("");
   const [teams, setTeams] = useState<string[]>([]);
+  const [appsProtocol, setAppsProtocol] = useState<"http" | "https">("http");
   const [appsPort, setAppsPort] = useState("");
-  const [appsServer, setAppsServer] = useState("");
+  const [appsServer, setAppsServer] = useState(props.defaultAppsServer);
+  const [appsPath, setAppsPath] = useState("");
   const [aliasAuthRequired, setAliasAuthRequired] = useState(true);
   const [busy, setBusy] = useState(false);
 
-  // Each alias application has its own port, settable by any user. The upstream
-  // server host comes from the owning user's configured apps host; an admin
-  // (who has no per-user apps host) can set the host on the application itself.
+  // Each alias application has its own upstream target. The host is prefilled
+  // from the signed-in user's configured apps server when available.
   const showPort = urlType === "alias";
-  const showServer = props.isAdmin && urlType === "alias";
+  const showServer = urlType === "alias";
 
   function toggleTeam(team: string) {
     setTeams((current) =>
@@ -573,8 +668,10 @@ function CreateApplicationCard(props: {
         icon_url: icon,
         teams,
         alias_auth_required: urlType === "alias" ? aliasAuthRequired : true,
+        ...(showPort ? { apps_protocol: appsProtocol } : {}),
         ...(showPort ? { apps_port: appsPort.trim() } : {}),
         ...(showServer ? { apps_server: appsServer.trim() } : {}),
+        ...(showPort ? { apps_path: normalizeAppsPath(appsPath) } : {}),
       });
       props.onCreated(created);
     } catch (err) {
@@ -610,41 +707,16 @@ function CreateApplicationCard(props: {
         />
 
         {showPort && (
-          <label className="field">
-            <span>Application port</span>
-            <input
-              type="text"
-              value={appsPort}
-              onChange={(e) => setAppsPort(e.target.value)}
-              placeholder="8080"
-              inputMode="numeric"
-              aria-label="Application port"
-            />
-            <span className="muted logo-hint">
-              The port your application listens on.{" "}
-              {props.isAdmin
-                ? "Set the server host below."
-                : "The server host comes from your account's apps server (set by an administrator)."}
-            </span>
-          </label>
-        )}
-
-        {showServer && (
-          <label className="field">
-            <span>Apps server (host/IP)</span>
-            <input
-              type="text"
-              value={appsServer}
-              onChange={(e) => setAppsServer(e.target.value)}
-              placeholder="apps.example.com"
-              aria-label="Apps server host or IP"
-            />
-            <span className="muted logo-hint">
-              The host where this application runs (used as the alias upstream).
-              Admins set this per application since they have no per-user apps
-              server.
-            </span>
-          </label>
+          <AliasUpstreamFields
+            protocol={appsProtocol}
+            host={appsServer}
+            port={appsPort}
+            path={appsPath}
+            onProtocolChange={setAppsProtocol}
+            onHostChange={setAppsServer}
+            onPortChange={setAppsPort}
+            onPathChange={setAppsPath}
+          />
         )}
 
         {showPort && (
@@ -698,6 +770,7 @@ function CreateApplicationCard(props: {
 function ApplicationRow(props: {
   app: Application;
   isAdmin: boolean;
+  defaultAppsServer: string;
   canMoveUp: boolean;
   canMoveDown: boolean;
   onMoveUp: () => void;
@@ -724,8 +797,14 @@ function ApplicationRow(props: {
   const [description, setDescription] = useState(app.description);
   const [iconUrl, setIconUrl] = useState(app.icon_url);
   const [teams, setTeams] = useState<string[]>(app.teams);
+  const [appsProtocol, setAppsProtocol] = useState<"http" | "https">(
+    app.apps_protocol ?? "http",
+  );
   const [appsPort, setAppsPort] = useState(app.apps_port ?? "");
-  const [appsServer, setAppsServer] = useState(app.apps_server ?? "");
+  const [appsServer, setAppsServer] = useState(
+    app.apps_server || props.defaultAppsServer,
+  );
+  const [appsPath, setAppsPath] = useState(app.apps_path ?? "");
   const [aliasAuthRequired, setAliasAuthRequired] = useState(
     app.alias_auth_required,
   );
@@ -739,8 +818,10 @@ function ApplicationRow(props: {
     setDescription(app.description);
     setIconUrl(app.icon_url);
     setTeams(app.teams);
+    setAppsProtocol(app.apps_protocol ?? "http");
     setAppsPort(app.apps_port ?? "");
-    setAppsServer(app.apps_server ?? "");
+    setAppsServer(app.apps_server || props.defaultAppsServer);
+    setAppsPath(app.apps_path ?? "");
     setAliasAuthRequired(app.alias_auth_required);
     setOwnerId(String(app.created_by_id ?? ""));
   }, [
@@ -750,10 +831,13 @@ function ApplicationRow(props: {
     app.description,
     app.icon_url,
     app.teams,
+    app.apps_protocol,
     app.apps_port,
     app.apps_server,
+    app.apps_path,
     app.alias_auth_required,
     app.created_by_id,
+    props.defaultAppsServer,
   ]);
 
   const dirty = useMemo(
@@ -763,8 +847,10 @@ function ApplicationRow(props: {
       url !== app.url ||
       description !== app.description ||
       iconUrl !== app.icon_url ||
+      appsProtocol !== (app.apps_protocol ?? "http") ||
       appsPort !== (app.apps_port ?? "") ||
-      appsServer !== (app.apps_server ?? "") ||
+      appsServer !== (app.apps_server || props.defaultAppsServer) ||
+      appsPath !== (app.apps_path ?? "") ||
       aliasAuthRequired !== app.alias_auth_required ||
       ownerId !== String(app.created_by_id ?? "") ||
       teams.length !== app.teams.length ||
@@ -775,8 +861,10 @@ function ApplicationRow(props: {
       url,
       description,
       iconUrl,
+      appsProtocol,
       appsPort,
       appsServer,
+      appsPath,
       aliasAuthRequired,
       ownerId,
       teams,
@@ -784,11 +872,10 @@ function ApplicationRow(props: {
     ],
   );
 
-  // Each alias application has its own port, editable by any user. The upstream
-  // server host comes from the owning user's configured apps host; an admin can
-  // set the host on the application itself.
+  // Each alias application has its own upstream target, editable by its owner
+  // or an admin.
   const showPort = urlType === "alias";
-  const showServer = isAdmin && urlType === "alias";
+  const showServer = urlType === "alias";
 
   function toggleTeam(team: string) {
     setTeams((current) =>
@@ -1004,30 +1091,16 @@ function ApplicationRow(props: {
           />
 
           {showPort && (
-            <label className="field">
-              <span>Application port</span>
-              <input
-                type="text"
-                value={appsPort}
-                onChange={(e) => setAppsPort(e.target.value)}
-                placeholder="8080"
-                inputMode="numeric"
-                aria-label="Application port"
-              />
-            </label>
-          )}
-
-          {showServer && (
-            <label className="field">
-              <span>Apps server (host/IP)</span>
-              <input
-                type="text"
-                value={appsServer}
-                onChange={(e) => setAppsServer(e.target.value)}
-                placeholder="apps.example.com"
-                aria-label="Apps server host or IP"
-              />
-            </label>
+            <AliasUpstreamFields
+              protocol={appsProtocol}
+              host={appsServer}
+              port={appsPort}
+              path={appsPath}
+              onProtocolChange={setAppsProtocol}
+              onHostChange={setAppsServer}
+              onPortChange={setAppsPort}
+              onPathChange={setAppsPath}
+            />
           )}
 
           {showPort && (
@@ -1096,8 +1169,10 @@ function ApplicationRow(props: {
                   icon_url: iconUrl,
                   teams,
                   alias_auth_required: urlType === "alias" ? aliasAuthRequired : true,
+                  ...(showPort ? { apps_protocol: appsProtocol } : {}),
                   ...(showPort ? { apps_port: appsPort.trim() } : {}),
                   ...(showServer ? { apps_server: appsServer.trim() } : {}),
+                  ...(showPort ? { apps_path: normalizeAppsPath(appsPath) } : {}),
                   ...(isAdmin && ownerId ? { created_by: Number(ownerId) } : {}),
                 });
                 setEditing(false);
