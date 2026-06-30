@@ -75,7 +75,9 @@ CREATE TABLE IF NOT EXISTS applications (
     created_by      INTEGER REFERENCES users(id) ON DELETE SET NULL,
     sort_order      INTEGER NOT NULL DEFAULT 0,
     apps_server      TEXT    NOT NULL DEFAULT '',
+    apps_protocol    TEXT    NOT NULL DEFAULT 'http',
     apps_port        TEXT    NOT NULL DEFAULT '',
+    apps_path        TEXT    NOT NULL DEFAULT '',
     alias_auth_required INTEGER NOT NULL DEFAULT 1,
     pending_alias    TEXT    NOT NULL DEFAULT '',
     pending_is_active INTEGER,
@@ -259,7 +261,20 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     # create time for alias apps); used to render the reverse-proxy alias and
     # available at delete time to remove it.
     _add_column(conn, "applications", "apps_server", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "applications", "apps_protocol", "TEXT NOT NULL DEFAULT 'http'")
     _add_column(conn, "applications", "apps_port", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "applications", "apps_path", "TEXT NOT NULL DEFAULT ''")
+    conn.execute(
+        """
+        UPDATE settings
+        SET alias_template = replace(
+            alias_template,
+            'proxy_pass http://APPS_SERVER:APPS_PORT/;',
+            'proxy_pass APPS_PROTOCOL://APPS_SERVER:APPS_PORTAPPS_PATH;'
+        )
+        WHERE alias_template LIKE '%proxy_pass http://APPS_SERVER:APPS_PORT/%'
+        """
+    )
     _add_column(
         conn, "applications", "alias_auth_required", "INTEGER NOT NULL DEFAULT 1"
     )
