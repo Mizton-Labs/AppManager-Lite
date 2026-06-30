@@ -86,6 +86,10 @@ function stubBackend(initial: Application[]) {
         description: body.description ?? "",
         icon_url: body.icon_url ?? "",
         teams: body.teams ?? [],
+        apps_server: body.apps_server ?? "",
+        apps_protocol: body.apps_protocol ?? "http",
+        apps_port: body.apps_port ?? "",
+        apps_path: body.apps_path ?? "",
         alias_auth_required: body.alias_auth_required ?? true,
         approval_status: "pending",
         sort_order: store.length,
@@ -201,7 +205,7 @@ describe("ApplicationManager", () => {
     expect(screen.getByRole("radio", { name: /full url/i })).not.toBeChecked();
   });
 
-  it("lets an admin set the apps server and port on a new alias application", async () => {
+  it("lets an admin set alias upstream settings on a new alias application", async () => {
     const fetchMock = stubBackend([]);
     render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
 
@@ -215,10 +219,13 @@ describe("ApplicationManager", () => {
       screen.getByLabelText("Local alias relative path"),
       "adminalias",
     );
-    await userEvent.type(screen.getByLabelText("Application port"), "8080");
-    // The admin-only apps server field is shown for alias apps.
-    const serverField = screen.getByLabelText("Apps server host or IP");
+    await userEvent.click(screen.getByLabelText("Alias upstream protocol"));
+    await userEvent.selectOptions(screen.getByLabelText("Alias upstream protocol"), "https");
+    await userEvent.type(screen.getByLabelText("Alias upstream port"), "8080");
+    const serverField = screen.getByLabelText("Alias upstream server host or IP");
     await userEvent.type(serverField, "apps.example.com");
+    await userEvent.type(screen.getByLabelText("Alias upstream suffix path"), "dash");
+    expect(screen.getByText(/https:\/\/apps\.example\.com:8080\/dash/)).toBeInTheDocument();
     await userEvent.click(
       screen.getByRole("button", { name: /create application/i }),
     );
@@ -231,16 +238,32 @@ describe("ApplicationManager", () => {
       {
         name: "Admin Alias",
         url_type: "alias",
+        apps_protocol: "https",
         apps_port: "8080",
         apps_server: "apps.example.com",
+        apps_path: "/dash",
       },
     );
   });
 
-  it("hides the apps server field from non-admins and sends only the port", async () => {
+  it("prefills and sends alias upstream host for non-admins", async () => {
     const fetchMock = stubBackend([]);
     render(
-      <ApplicationManager isAdmin={false} teamOptions={["Threat Hunting"]} />,
+      <ApplicationManager
+        isAdmin={false}
+        teamOptions={["Threat Hunting"]}
+        currentUser={{
+          id: 2,
+          username: "member@example.com",
+          role: "user",
+          is_active: true,
+          must_change_password: false,
+          self_service: false,
+          apps_server: "member-apps.example.com",
+          apps_server_ip: "10.0.0.8",
+          teams: ["Threat Hunting"],
+        }}
+      />,
     );
 
     await screen.findByText(/have not submitted any applications/i);
@@ -253,9 +276,10 @@ describe("ApplicationManager", () => {
       screen.getByLabelText("Local alias relative path"),
       "memberalias",
     );
-    await userEvent.type(screen.getByLabelText("Application port"), "8080");
-    // No apps-server field for non-admins.
-    expect(screen.queryByLabelText("Apps server host or IP")).toBeNull();
+    await userEvent.type(screen.getByLabelText("Alias upstream port"), "8080");
+    expect(screen.getByLabelText("Alias upstream server host or IP")).toHaveValue(
+      "member-apps.example.com",
+    );
     await userEvent.click(
       screen.getByRole("button", { name: /create application/i }),
     );
@@ -265,8 +289,13 @@ describe("ApplicationManager", () => {
       ([, init]) => (init?.method ?? "GET") === "POST",
     );
     const sent = JSON.parse((postCall![1] as RequestInit).body as string);
-    expect(sent).toMatchObject({ name: "Member Alias", apps_port: "8080" });
-    expect(sent).not.toHaveProperty("apps_server");
+    expect(sent).toMatchObject({
+      name: "Member Alias",
+      apps_protocol: "http",
+      apps_server: "member-apps.example.com",
+      apps_port: "8080",
+      apps_path: "",
+    });
   });
 
   it("selects and clears all teams with the Select all toggle", async () => {
@@ -310,12 +339,16 @@ describe("ApplicationManager", () => {
     );
 
     await userEvent.type(screen.getByLabelText("Name"), "Alias App");
-    // Alias is the default mode; the port input is shown (no server input).
+    // Alias is the default mode; upstream settings are shown.
     await userEvent.type(
       screen.getByLabelText(/local alias relative path/i),
       "grafana",
     );
-    await userEvent.type(screen.getByLabelText(/application port/i), "8080");
+    await userEvent.type(
+      screen.getByLabelText(/alias upstream server host or ip/i),
+      "apps.example.com",
+    );
+    await userEvent.type(screen.getByLabelText(/alias upstream port/i), "8080");
     await userEvent.click(
       screen.getByRole("button", { name: /create application/i }),
     );
@@ -326,15 +359,17 @@ describe("ApplicationManager", () => {
     );
     expect(JSON.parse((postCall![1] as RequestInit).body as string)).toMatchObject({
       url_type: "alias",
+      apps_protocol: "http",
       apps_port: "8080",
+      apps_path: "",
     });
-    // Admins have an apps-server field; left blank it sends an empty server.
+    // The alias upstream server is sent from the structured alias fields.
     expect(
       JSON.parse((postCall![1] as RequestInit).body as string).apps_server,
-    ).toBe("");
+    ).toBe("apps.example.com");
   });
 
-  it("shows a port field (and no server field) for non-admins on an alias", async () => {
+  it("shows alias upstream fields for non-admins on an alias", async () => {
     stubBackend([]);
     render(<ApplicationManager isAdmin={false} teamOptions={["Threat Hunting"]} />);
 
@@ -342,14 +377,13 @@ describe("ApplicationManager", () => {
     await userEvent.click(
       screen.getByRole("button", { name: /new application/i }),
     );
-    // Alias mode is default: any user sets the port; no server input exists.
-    expect(screen.getByLabelText(/application port/i)).toBeInTheDocument();
-    expect(
-      screen.queryByLabelText("Apps server host or IP"),
-    ).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/alias upstream protocol/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/alias upstream server host or ip/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/alias upstream port/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/alias upstream suffix path/i)).toBeInTheDocument();
   });
 
-  it("hides the port field for a full URL", async () => {
+  it("hides alias upstream fields for a full URL", async () => {
     stubBackend([]);
     render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
 
@@ -357,10 +391,11 @@ describe("ApplicationManager", () => {
     await userEvent.click(
       screen.getByRole("button", { name: /new application/i }),
     );
-    expect(screen.getByLabelText(/application port/i)).toBeInTheDocument();
-    // Switching to Full URL hides the port field.
+    expect(screen.getByLabelText(/alias upstream port/i)).toBeInTheDocument();
+    // Switching to Full URL hides alias upstream settings.
     await userEvent.click(screen.getByRole("radio", { name: /full url/i }));
-    expect(screen.queryByLabelText(/application port/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/alias upstream port/i)).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/full url address/i)).toBeInTheDocument();
   });
 
   it("submits a local alias with its url_type and without http validation", async () => {
@@ -379,6 +414,11 @@ describe("ApplicationManager", () => {
       screen.getByLabelText(/local alias relative path/i),
       "wiki_home",
     );
+    await userEvent.type(
+      screen.getByLabelText(/alias upstream server host or ip/i),
+      "apps.example.com",
+    );
+    await userEvent.type(screen.getByLabelText(/alias upstream port/i), "8080");
     await userEvent.click(
       screen.getByRole("button", { name: /create application/i }),
     );
@@ -410,6 +450,11 @@ describe("ApplicationManager", () => {
       screen.getByLabelText(/local alias relative path/i),
       "status",
     );
+    await userEvent.type(
+      screen.getByLabelText(/alias upstream server host or ip/i),
+      "apps.example.com",
+    );
+    await userEvent.type(screen.getByLabelText(/alias upstream port/i), "8080");
     await userEvent.click(
       screen.getByRole("checkbox", { name: /require appmanager authentication/i }),
     );
@@ -449,6 +494,11 @@ describe("ApplicationManager", () => {
       screen.getByLabelText(/local alias relative path/i),
       "/tools/x",
     );
+    await userEvent.type(
+      screen.getByLabelText(/alias upstream server host or ip/i),
+      "apps.example.com",
+    );
+    await userEvent.type(screen.getByLabelText(/alias upstream port/i), "8080");
     await userEvent.click(
       screen.getByRole("button", { name: /create application/i }),
     );

@@ -567,7 +567,9 @@ def _row_to_application(
         "created_by": row["created_by"],
         "sort_order": row["sort_order"],
         "apps_server": row["apps_server"],
+        "apps_protocol": row["apps_protocol"],
         "apps_port": row["apps_port"],
+        "apps_path": row["apps_path"],
         "alias_auth_required": bool(row["alias_auth_required"]),
         "pending_alias": row["pending_alias"],
         "pending_is_active": (
@@ -792,16 +794,19 @@ def create_application(
     approval_status: str = "approved",
     created_by: int | None = None,
     apps_server: str = "",
+    apps_protocol: str = "http",
     apps_port: str = "",
+    apps_path: str = "",
     alias_auth_required: bool = True,
 ) -> dict[str, Any]:
     cur = conn.execute(
         """
         INSERT INTO applications
             (name, description, url, url_type, icon_url, is_active,
-             approval_status, created_by, sort_order, apps_server, apps_port,
+             approval_status, created_by, sort_order, apps_server, apps_protocol,
+             apps_port, apps_path,
              alias_auth_required)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             name,
@@ -814,7 +819,9 @@ def create_application(
             created_by,
             sort_order,
             apps_server,
+            apps_protocol,
             apps_port,
+            apps_path,
             int(alias_auth_required),
         ),
     )
@@ -867,7 +874,9 @@ def update_application(
     sort_order: int | None = None,
     teams: list[str] | None = None,
     apps_server: str | None = None,
+    apps_protocol: str | None = None,
     apps_port: str | None = None,
+    apps_path: str | None = None,
     alias_auth_required: bool | None = None,
     pending_alias: str | None = None,
     pending_is_active: bool | None = None,
@@ -901,8 +910,12 @@ def update_application(
         columns["sort_order"] = sort_order
     if apps_server is not None:
         columns["apps_server"] = apps_server
+    if apps_protocol is not None:
+        columns["apps_protocol"] = apps_protocol
     if apps_port is not None:
         columns["apps_port"] = apps_port
+    if apps_path is not None:
+        columns["apps_path"] = apps_path
     if alias_auth_required is not None:
         columns["alias_auth_required"] = int(alias_auth_required)
     if pending_alias is not None:

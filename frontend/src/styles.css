@@ -71,6 +71,18 @@ code {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+  text-align: center;
+}
+
+.auth-card .field > span,
+.auth-card .alert,
+.auth-card .stack,
+.auth-card button {
+  text-align: center;
+}
+
+.auth-card input {
+  text-align: left;
 }
 
 .brand {
@@ -471,6 +483,18 @@ textarea:focus,
   min-width: 0;
   border: 0 !important;
   border-radius: 0 !important;
+}
+
+.alias-upstream-grid {
+  display: grid;
+  grid-template-columns: minmax(6rem, 0.7fr) minmax(10rem, 1.6fr) minmax(6rem, 0.7fr) minmax(10rem, 1.2fr);
+  gap: 0.75rem;
+}
+
+@media (max-width: 720px) {
+  .alias-upstream-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* Alerts and hints */

@@ -32,6 +32,8 @@ _ALIAS_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 # DNS/IP characters so it can be safely substituted into an nginx proxy_pass and
 # never used for command/config injection.
 _HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
+_APPS_PROTOCOLS = ("http", "https")
+_APPS_PATH_RE = re.compile(r"^$|^/[A-Za-z0-9._~/-]*$")
 
 # An optional SSH login user (ssh user@host). Restricted so it cannot inject a
 # host or shell content when composed into "user@host" / used as an argv element.
@@ -69,6 +71,25 @@ def _validate_apps_port(value: str) -> str:
         return ""
     if not value.isdigit() or not (1 <= int(value) <= 65535):
         raise ValueError("Apps port must be a number between 1 and 65535.")
+    return value
+
+
+def _validate_apps_protocol(value: str) -> str:
+    value = value.strip().lower()
+    if value not in _APPS_PROTOCOLS:
+        raise ValueError("Apps protocol must be either 'http' or 'https'.")
+    return value
+
+
+def _validate_apps_path(value: str) -> str:
+    value = value.strip()
+    if value and not value.startswith("/"):
+        value = f"/{value}"
+    if not _APPS_PATH_RE.match(value):
+        raise ValueError(
+            "Apps path may contain only URL path characters and must not include "
+            "spaces, query strings, or fragments."
+        )
     return value
 
 
@@ -406,9 +427,11 @@ class ApplicationOut(BaseModel):
     last_push_status: str | None = None
     last_push_log: str = ""
     last_push_at: str | None = None
-    # Per-app apps server/port (alias apps); management/own-app responses only.
+    # Per-app upstream settings (alias apps); management/own-app responses only.
     apps_server: str = ""
+    apps_protocol: str = "http"
     apps_port: str = ""
+    apps_path: str = ""
     # Whether the alias block requires an AppManager session before proxying.
     alias_auth_required: bool = True
     # A staged alias change awaiting approval (management/own-app responses
@@ -431,7 +454,9 @@ class CreateApplicationRequest(BaseModel):
     # Optional per-app apps server/port (admins only -- enforced in the router).
     # Used to render the reverse-proxy alias when the owner has none.
     apps_server: str = Field(default="", max_length=253)
+    apps_protocol: str = "http"
     apps_port: str = Field(default="", max_length=5)
+    apps_path: str = Field(default="", max_length=256)
     alias_auth_required: bool = True
 
     @field_validator("name")
@@ -454,10 +479,20 @@ class CreateApplicationRequest(BaseModel):
     def _check_apps_server(cls, value: str) -> str:
         return _validate_apps_server(value)
 
+    @field_validator("apps_protocol")
+    @classmethod
+    def _check_apps_protocol(cls, value: str) -> str:
+        return _validate_apps_protocol(value)
+
     @field_validator("apps_port")
     @classmethod
     def _check_apps_port(cls, value: str) -> str:
         return _validate_apps_port(value)
+
+    @field_validator("apps_path")
+    @classmethod
+    def _check_apps_path(cls, value: str) -> str:
+        return _validate_apps_path(value)
 
     @field_validator("icon_url")
     @classmethod
@@ -486,7 +521,9 @@ class UpdateApplicationRequest(BaseModel):
     approval_status: str | None = None
     sort_order: int | None = Field(default=None, ge=0, le=100000)
     apps_server: str | None = Field(default=None, max_length=253)
+    apps_protocol: str | None = None
     apps_port: str | None = Field(default=None, max_length=5)
+    apps_path: str | None = Field(default=None, max_length=256)
     alias_auth_required: bool | None = None
     created_by: int | None = None
 
@@ -512,10 +549,20 @@ class UpdateApplicationRequest(BaseModel):
     def _check_apps_server(cls, value: str | None) -> str | None:
         return None if value is None else _validate_apps_server(value)
 
+    @field_validator("apps_protocol")
+    @classmethod
+    def _check_apps_protocol(cls, value: str | None) -> str | None:
+        return None if value is None else _validate_apps_protocol(value)
+
     @field_validator("apps_port")
     @classmethod
     def _check_apps_port(cls, value: str | None) -> str | None:
         return None if value is None else _validate_apps_port(value)
+
+    @field_validator("apps_path")
+    @classmethod
+    def _check_apps_path(cls, value: str | None) -> str | None:
+        return None if value is None else _validate_apps_path(value)
 
     @field_validator("approval_status")
     @classmethod

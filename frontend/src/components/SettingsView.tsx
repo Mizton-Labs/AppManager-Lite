@@ -100,7 +100,11 @@ export function SettingsView(props: {
       ) : showGeneral ? (
         <GeneralSettings firstRun={firstRun} onConfigured={props.onConfigured} />
       ) : (
-        <ApplicationManager isAdmin={isAdmin} teamOptions={appTeamOptions} />
+        <ApplicationManager
+          isAdmin={isAdmin}
+          teamOptions={appTeamOptions}
+          currentUser={currentUser}
+        />
       )}
     </div>
   );
