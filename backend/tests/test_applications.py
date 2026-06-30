@@ -800,12 +800,19 @@ def test_alias_auth_can_be_disabled_on_create(admin) -> None:
         csrf,
         url="publicstatus",
         url_type="alias",
+        apps_server="apps.example.com",
+        apps_protocol="https",
         apps_port="8080",
+        apps_path="dashboard",
         alias_auth_required=False,
     )
     assert resp.status_code == 201, resp.text
     body = resp.json()
     assert body["alias_auth_required"] is False
+    assert body["apps_server"] == "apps.example.com"
+    assert body["apps_protocol"] == "https"
+    assert body["apps_port"] == "8080"
+    assert body["apps_path"] == "/dashboard"
     assert body["pending_alias_auth_required"] is None
 
 

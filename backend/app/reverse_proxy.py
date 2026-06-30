@@ -67,7 +67,7 @@ DEFAULT_ALIAS_TEMPLATE = """\
 \tlocation /ALIAS/ {
 \t\tauth_request /api/auth/proxy-check;
 \t\terror_page 401 = @appmanager_login;
-\t\tproxy_pass http://APPS_SERVER:APPS_PORT/;
+\t\tproxy_pass APPS_PROTOCOL://APPS_SERVER:APPS_PORTAPPS_PATH;
 \t\tproxy_read_timeout 7200s;
 \t\tproxy_next_upstream error timeout invalid_header http_500 http_502 http_503 http_504;
 \t\tproxy_buffering off;
@@ -140,31 +140,43 @@ def render_alias_block(
     apps_port: str,
     alias: str,
     app_name: str,
+    apps_protocol: str = "http",
+    apps_path: str = "",
     alias_auth_required: bool = True,
     timestamp: int | None = None,
 ) -> str:
     """Render the alias template by substituting the placeholders.
 
-    Validates ``alias``/``apps_server``/``apps_port`` against strict whitelists so
-    the result can never inject nginx directives or shell content. Returns the
-    rendered block. Raises :class:`ReverseProxyError` on invalid input.
+    Validates alias upstream values against strict whitelists so the result can
+    never inject nginx directives or shell content. Returns the rendered block.
+    Raises :class:`ReverseProxyError` on invalid input.
     """
     alias = (alias or "").strip().strip("/")
     apps_server = (apps_server or "").strip()
+    apps_protocol = (apps_protocol or "http").strip().lower()
     apps_port = (apps_port or "").strip()
+    apps_path = (apps_path or "").strip()
+    if apps_path and not apps_path.startswith("/"):
+        apps_path = f"/{apps_path}"
     if not _ALIAS_RE.match(alias):
         raise ReverseProxyError(f"Invalid alias for nginx push: {alias!r}")
+    if apps_protocol not in ("http", "https"):
+        raise ReverseProxyError(f"Invalid apps protocol: {apps_protocol!r}")
     if not _HOST_RE.match(apps_server):
         raise ReverseProxyError(f"Invalid apps server: {apps_server!r}")
     if not _PORT_RE.match(apps_port) or not (1 <= int(apps_port) <= 65535):
         raise ReverseProxyError(f"Invalid apps port: {apps_port!r}")
+    if not re.match(r"^$|^/[A-Za-z0-9._~/-]*$", apps_path):
+        raise ReverseProxyError(f"Invalid apps path: {apps_path!r}")
 
     ts = int(time.time()) if timestamp is None else int(timestamp)
     # APPNAME/TIMESTAMP only appear in the comment header; keep them tidy.
     safe_name = re.sub(r"[^A-Za-z0-9 ._-]", "", app_name or "")[:80]
     block = template
+    block = block.replace("APPS_PROTOCOL", apps_protocol)
     block = block.replace("APPS_SERVER", apps_server)
     block = block.replace("APPS_PORT", apps_port)
+    block = block.replace("APPS_PATH", apps_path or "/")
     block = block.replace("APPNAME", safe_name or "app")
     block = block.replace("TIMESTAMP", str(ts))
     # Replace ALIAS last so an APPNAME containing "ALIAS" is not affected first;
@@ -295,6 +307,8 @@ def push_alias(
     alias: str,
     app_name: str,
     app_id: int,
+    apps_protocol: str = "http",
+    apps_path: str = "",
     is_active: bool = True,
     alias_auth_required: bool = True,
 ) -> PushResult:
@@ -339,7 +353,9 @@ def push_alias(
         block = render_alias_block(
             template,
             apps_server=apps_server,
+            apps_protocol=apps_protocol,
             apps_port=apps_port,
+            apps_path=apps_path,
             alias=alias,
             app_name=app_name,
             alias_auth_required=alias_auth_required,
