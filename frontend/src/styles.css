@@ -1153,13 +1153,36 @@ textarea:focus,
   border: 1px solid var(--border);
   border-radius: var(--radius);
   color: var(--text);
-  text-decoration: none;
   transition: border-color 0.15s, transform 0.15s;
+}
+
+.app-card-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  color: inherit;
+  text-decoration: none;
 }
 
 .app-card:hover {
   border-color: var(--brand-primary);
   transform: translateY(-2px);
+}
+
+.app-card-edit {
+  align-self: flex-start;
+  margin-top: 0.25rem;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--brand-primary);
+  font-size: 0.8rem;
+  text-decoration: none;
+}
+
+.app-card-edit:hover {
+  border-color: var(--brand-primary);
+  background: rgba(250, 204, 21, 0.08);
 }
 
 .app-card-icon {

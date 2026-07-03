@@ -206,6 +206,17 @@ export interface Application {
   needs_push?: boolean;
 }
 
+export interface AliasConfig {
+  status: string;
+  log: string;
+  alias: string;
+  apps_protocol: "http" | "https";
+  apps_server: string;
+  apps_port: string;
+  apps_path: string;
+  alias_auth_required: boolean;
+}
+
 export interface CreateApplicationInput {
   name: string;
   url: string;

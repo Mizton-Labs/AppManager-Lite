@@ -1,6 +1,7 @@
 import type {
   ApiUser,
   Application,
+  AliasConfig,
   AuditEntry,
   BrandingSettings,
   BundleDownload,
@@ -171,6 +172,10 @@ export const api = {
   /** Re-run the reverse-proxy alias push for an approved application (admin). */
   retryApplicationPush: (id: number) =>
     request<Application>(`applications/${id}/push-retry`, { method: "POST" }),
+
+  /** Read the current deployed nginx alias config for one app. */
+  getApplicationAliasConfig: (id: number) =>
+    request<AliasConfig>(`applications/${id}/alias-config`),
 
   listUsers: () => request<ApiUser[]>("users"),
 

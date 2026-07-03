@@ -442,6 +442,17 @@ class ApplicationOut(BaseModel):
     needs_push: bool = False
 
 
+class AliasConfigOut(BaseModel):
+    status: str
+    log: str = ""
+    alias: str = ""
+    apps_protocol: str = "http"
+    apps_server: str = ""
+    apps_port: str = ""
+    apps_path: str = ""
+    alias_auth_required: bool = True
+
+
 class CreateApplicationRequest(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     url: str = Field(min_length=1, max_length=2048)

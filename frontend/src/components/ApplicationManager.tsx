@@ -24,6 +24,7 @@ export function ApplicationManager(props: {
   currentUser?: ApiUser | null;
 }) {
   const { isAdmin, teamOptions } = props;
+  const editAppId = Number(new URLSearchParams(window.location.search).get("editApp") ?? "") || null;
   const [apps, setApps] = useState<Application[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -239,6 +240,7 @@ export function ApplicationManager(props: {
                 pushBusy={Boolean(pushBusy[app.id])}
                 pushMessage={pushMessages[app.id]}
                 ownerOptions={ownerOptions}
+                initiallyEditing={editAppId === app.id}
                 onDelete={() =>
                   runAction(async () => {
                     await api.deleteApplication(app.id);
@@ -786,11 +788,13 @@ function ApplicationRow(props: {
   pushBusy: boolean;
   pushMessage?: string;
   ownerOptions: readonly ApiUser[];
+  initiallyEditing?: boolean;
 }) {
   const { app, isAdmin } = props;
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState(Boolean(props.initiallyEditing));
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [showPushLog, setShowPushLog] = useState(false);
+  const [aliasConfigMessage, setAliasConfigMessage] = useState("");
   const [name, setName] = useState(app.name);
   const [urlType, setUrlType] = useState<UrlType>(app.url_type);
   const [url, setUrl] = useState(app.url);
@@ -810,6 +814,12 @@ function ApplicationRow(props: {
   );
   const [ownerId, setOwnerId] = useState(String(app.created_by_id ?? ""));
   const [logoError, setLogoError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (props.initiallyEditing) {
+      setEditing(true);
+    }
+  }, [props.initiallyEditing]);
 
   useEffect(() => {
     setName(app.name);
@@ -876,6 +886,43 @@ function ApplicationRow(props: {
   // or an admin.
   const showPort = urlType === "alias";
   const showServer = urlType === "alias";
+
+  useEffect(() => {
+    let active = true;
+    if (!editing || app.url_type !== "alias") {
+      return () => {
+        active = false;
+      };
+    }
+    setAliasConfigMessage("Reading current deployed nginx config…");
+    api
+      .getApplicationAliasConfig(app.id)
+      .then((config) => {
+        if (!active) return;
+        if (config.status === "ok") {
+          setUrl(config.alias || app.url);
+          setAppsProtocol(config.apps_protocol || "http");
+          setAppsServer(config.apps_server || app.apps_server || props.defaultAppsServer);
+          setAppsPort(config.apps_port || app.apps_port || "");
+          setAppsPath(config.apps_path || "");
+          setAliasAuthRequired(config.alias_auth_required);
+          setAliasConfigMessage("Loaded current deployed config from nginx.");
+        } else {
+          setAliasConfigMessage(config.log || "Current nginx alias config was not available.");
+        }
+      })
+      .catch((err) => {
+        if (!active) return;
+        setAliasConfigMessage(
+          err instanceof ApiError
+            ? err.message
+            : "Unable to read current nginx alias config.",
+        );
+      });
+    return () => {
+      active = false;
+    };
+  }, [editing, app.id, app.url_type]);
 
   function toggleTeam(team: string) {
     setTeams((current) =>
@@ -1089,6 +1136,12 @@ function ApplicationRow(props: {
             onUrlTypeChange={setUrlType}
             onUrlChange={setUrl}
           />
+
+          {showPort && aliasConfigMessage && (
+            <p className="muted logo-hint" role="status">
+              {aliasConfigMessage}
+            </p>
+          )}
 
           {showPort && (
             <AliasUpstreamFields

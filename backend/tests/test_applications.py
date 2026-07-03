@@ -894,6 +894,50 @@ def test_alias_rejects_protocol_relative(admin) -> None:
     assert resp.status_code == 422
 
 
+def test_alias_config_skips_non_alias_app(admin) -> None:
+    client, csrf, _ = admin
+    created = _create_app(client, csrf)
+    assert created.status_code == 201, created.text
+
+    resp = client.get(f"/api/applications/{created.json()['id']}/alias-config")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "skipped"
+
+
+def test_alias_config_rejects_non_owner(admin) -> None:
+    client, csrf, _ = admin
+    owner_pw = _create_member(client, csrf, "aliasowner", ["Red Team"])
+    other_pw = _create_member(client, csrf, "aliasother", ["Red Team"])
+    with TestClient(client.app) as owner:
+        login = owner.post(
+            "/api/auth/login", json={"username": "aliasowner", "password": owner_pw}
+        )
+        ocsrf = login.json()["csrf_token"]
+        created = owner.post(
+            "/api/applications",
+            json={
+                "name": "Owned Alias",
+                "url": "ownedalias",
+                "url_type": "alias",
+                "teams": ["Red Team"],
+                "apps_server": "apps.example.com",
+                "apps_port": "8080",
+            },
+            headers={"X-CSRF-Token": ocsrf},
+        )
+        assert created.status_code == 201, created.text
+        app_id = created.json()["id"]
+
+    with TestClient(client.app) as other:
+        other.post(
+            "/api/auth/login", json={"username": "aliasother", "password": other_pw}
+        )
+        resp = other.get(f"/api/applications/{app_id}/alias-config")
+
+    assert resp.status_code == 403
+
+
 def test_url_mode_rejects_relative_path(admin) -> None:
     client, csrf, _ = admin
     resp = _create_app(client, csrf, url="tools/grafana", url_type="url")

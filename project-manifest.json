@@ -223,6 +223,7 @@
       { "method": "GET", "path": "/api/applications", "auth": "user", "csrf": false, "summary": "List applications visible to the caller (optional team filter)." },
       { "method": "GET", "path": "/api/applications/mine", "auth": "user", "csrf": false, "summary": "List applications the caller created." },
       { "method": "GET", "path": "/api/applications/manage", "auth": "admin", "csrf": false, "summary": "List every application with creator and status." },
+      { "method": "GET", "path": "/api/applications/{application_id}/alias-config", "auth": "user", "csrf": false, "summary": "Read the deployed nginx alias config for an application the caller can manage." },
       { "method": "POST", "path": "/api/applications", "auth": "user", "csrf": true, "summary": "Create/submit an application (approval depends on role/self-service)." },
       { "method": "PATCH", "path": "/api/applications/{application_id}", "auth": "user", "csrf": true, "summary": "Update an application; admins also approve/reject here." },
       { "method": "DELETE", "path": "/api/applications/{application_id}", "auth": "user", "csrf": true, "summary": "Delete an application (removes its nginx alias when applicable)." },
