@@ -7,11 +7,11 @@ import { AppCard } from "./AppCard";
 /**
  * Landing view. Shows two groups of applications:
  *
+ * - **My Applications** -- the apps the signed-in account created that are live
+ *   on the portal.
  * - **Available shared applications** -- everything the signed-in account can
  *   see by team scope (created by administrators or other users), excluding the
  *   account's own apps.
- * - **My Applications** -- the apps the signed-in account created that are live
- *   on the portal.
  *
  * Visibility is enforced server-side. The shared list (`GET /applications`)
  * never reveals creators, so ownership is determined by intersecting it with the
@@ -69,6 +69,26 @@ export function HomeView(props: { teams: readonly string[] }) {
       ) : (
         <>
           <section>
+            <h2 className="section-title">My Applications</h2>
+            {owned.length === 0 ? (
+              <p className="muted">
+                You have not published any applications yet. Add one from
+                Settings.
+              </p>
+            ) : (
+              <div className="card-grid">
+                {owned.map((app) => (
+                  <AppCard
+                    key={app.id}
+                    app={app}
+                    editHref={`/settings?editApp=${app.id}`}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section>
             <h2 className="section-title">Available shared applications</h2>
             {shared.length === 0 ? (
               <p className="muted">
@@ -79,22 +99,6 @@ export function HomeView(props: { teams: readonly string[] }) {
             ) : (
               <div className="card-grid">
                 {shared.map((app) => (
-                  <AppCard key={app.id} app={app} />
-                ))}
-              </div>
-            )}
-          </section>
-
-          <section>
-            <h2 className="section-title">My Applications</h2>
-            {owned.length === 0 ? (
-              <p className="muted">
-                You have not published any applications yet. Add one from
-                Settings.
-              </p>
-            ) : (
-              <div className="card-grid">
-                {owned.map((app) => (
                   <AppCard key={app.id} app={app} />
                 ))}
               </div>

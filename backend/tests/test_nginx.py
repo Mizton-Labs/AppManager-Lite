@@ -20,7 +20,9 @@ from app.reverse_proxy import (
     app_marker,
     ensure_proxy_auth_config,
     inject_before_last_brace,
+    parse_alias_config_block,
     push_alias,
+    read_alias_config,
     remove_alias,
     remove_marked_block,
     render_alias_block,
@@ -88,6 +90,25 @@ def test_render_omits_auth_lines_when_alias_auth_disabled() -> None:
     assert "proxy_pass http://apps.example.com:8080/;" in block
     assert "auth_request /api/auth/proxy-check;" not in block
     assert "error_page 401 = @appmanager_login;" not in block
+
+
+def test_parse_alias_config_block() -> None:
+    block = """
+    location = /grafana { return 301 /grafana/; }
+    location /grafana/ {
+        auth_request /api/auth/proxy-check;
+        error_page 401 = @appmanager_login;
+        proxy_pass https://apps.example.com:8443/dashboard;
+    }
+    """
+    result = parse_alias_config_block(block)
+    assert result.status == "ok"
+    assert result.alias == "grafana"
+    assert result.apps_protocol == "https"
+    assert result.apps_server == "apps.example.com"
+    assert result.apps_port == "8443"
+    assert result.apps_path == "/dashboard"
+    assert result.alias_auth_required is True
 
 
 @pytest.mark.parametrize(
@@ -184,6 +205,42 @@ def test_push_skips_when_unconfigured() -> None:
         app_id=1,
     )
     assert result.status == "skipped"
+
+
+def test_read_alias_config_happy_path(monkeypatch) -> None:
+    begin, end = app_marker(7)
+    conf = f"""http {{
+  server {{
+    {begin}
+    location = /grafana {{ return 301 /grafana/; }}
+    location /grafana/ {{
+      proxy_pass https://apps.example.com:8443/dashboard;
+    }}
+    {end}
+  }}
+}}
+"""
+    runner = _FakeRunner([("cat ", _Run(0, conf, ""))])
+    _install(monkeypatch, runner)
+
+    result = read_alias_config(_SETTINGS, app_id=7)
+
+    assert result.status == "ok", result.transcript
+    assert result.alias == "grafana"
+    assert result.apps_protocol == "https"
+    assert result.apps_server == "apps.example.com"
+    assert result.apps_port == "8443"
+    assert result.apps_path == "/dashboard"
+    assert result.alias_auth_required is False
+
+
+def test_read_alias_config_reports_missing_marker(monkeypatch) -> None:
+    runner = _FakeRunner([("cat ", _Run(0, "http { server { } }", ""))])
+    _install(monkeypatch, runner)
+
+    result = read_alias_config(_SETTINGS, app_id=7)
+
+    assert result.status == "not_found"
 
 
 def test_push_happy_path(monkeypatch) -> None:

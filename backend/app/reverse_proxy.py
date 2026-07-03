@@ -133,6 +133,60 @@ class PushResult:
         return "\n".join(self.steps)
 
 
+@dataclass
+class AliasConfigResult(PushResult):
+    """Parsed deployed alias config for one application."""
+
+    alias: str = ""
+    apps_protocol: str = "http"
+    apps_server: str = ""
+    apps_port: str = ""
+    apps_path: str = ""
+    alias_auth_required: bool = True
+
+
+_ALIAS_LOCATION_RE = re.compile(r"location\s+/([^\s/{]+)/\s*\{")
+_PROXY_PASS_RE = re.compile(
+    r"proxy_pass\s+(?P<protocol>https?)://(?P<server>[A-Za-z0-9.-]+):"
+    r"(?P<port>[0-9]{1,5})(?P<path>/[^;\s]*)?;"
+)
+
+
+def _extract_marked_block(conf_text: str, app_id: int) -> str | None:
+    begin, end = app_marker(app_id)
+    start = conf_text.find(begin)
+    if start == -1:
+        return None
+    stop = conf_text.find(end, start)
+    if stop == -1:
+        return None
+    return conf_text[start + len(begin) : stop]
+
+
+def parse_alias_config_block(block: str) -> AliasConfigResult:
+    """Parse a marker-managed nginx alias block into editable app settings."""
+
+    result = AliasConfigResult()
+    alias_match = _ALIAS_LOCATION_RE.search(block)
+    proxy_match = _PROXY_PASS_RE.search(block)
+    if alias_match is None or proxy_match is None:
+        result.status = "failed"
+        result.log("[FAIL] Could not parse alias location or proxy_pass.")
+        return result
+
+    result.alias = alias_match.group(1)
+    result.apps_protocol = proxy_match.group("protocol")
+    result.apps_server = proxy_match.group("server")
+    result.apps_port = proxy_match.group("port")
+    result.apps_path = proxy_match.group("path") or ""
+    result.alias_auth_required = (
+        "auth_request /api/auth/proxy-check;" in block
+        and "error_page 401 = @appmanager_login;" in block
+    )
+    result.log("[OK] Parsed deployed alias config from nginx.")
+    return result
+
+
 def render_alias_block(
     template: str,
     *,
@@ -475,6 +529,64 @@ def push_alias(
     state = "enabled" if is_active else "disabled"
     result.log(f"[DONE] Alias /{norm_alias}/ -> {apps_server}:{apps_port} ({state})")
     return result
+
+
+def read_alias_config(settings: dict, *, app_id: int) -> AliasConfigResult:
+    """Read and parse one application's deployed alias block from nginx config."""
+
+    result = AliasConfigResult()
+    host = (settings.get("nginx_host") or "").strip()
+    user = (settings.get("nginx_user") or "").strip()
+    conf_path = (settings.get("nginx_conf_path") or "").strip()
+    key_path = (settings.get("ssh_key_path") or "").strip()
+
+    if not (host and conf_path and key_path):
+        result.status = "skipped"
+        result.log(
+            "Skipped: reverse-proxy is not fully configured "
+            "(host, conf path, and SSH key path are required)."
+        )
+        return result
+    if not _HOST_RE.match(host):
+        result.status = "failed"
+        result.log(f"[FAIL] Invalid nginx host: {host!r}")
+        return result
+    if user and not _SSH_USER_RE.match(user):
+        result.status = "failed"
+        result.log(f"[FAIL] Invalid SSH user: {user!r}")
+        return result
+    host = f"{user}@{host}" if user else host
+
+    q_conf = shlex.quote(conf_path)
+    r = _ssh(host, key_path, "echo ok")
+    if r.rc != 0:
+        result.status = "failed"
+        result.log(f"[FAIL] SSH access to {host}: {r.err or r.rc}")
+        return result
+    result.log(f"[OK] SSH access to {host}")
+
+    r = _ssh(host, key_path, f"test -f {q_conf}")
+    if r.rc != 0:
+        result.status = "failed"
+        result.log(f"[FAIL] nginx config not found: {conf_path}")
+        return result
+    result.log(f"[OK] nginx config exists: {conf_path}")
+
+    r = _ssh(host, key_path, f"cat {q_conf}")
+    if r.rc != 0:
+        result.status = "failed"
+        result.log(f"[FAIL] Could not read conf: {r.err or r.rc}")
+        return result
+
+    block = _extract_marked_block(r.out, app_id)
+    if block is None:
+        result.status = "not_found"
+        result.log("[MISS] No marker-managed alias block found for this application.")
+        return result
+
+    parsed = parse_alias_config_block(block)
+    parsed.steps = [*result.steps, *parsed.steps]
+    return parsed
 
 
 def ensure_proxy_auth_config(settings: dict) -> PushResult:

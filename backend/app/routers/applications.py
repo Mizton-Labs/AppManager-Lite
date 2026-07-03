@@ -23,6 +23,7 @@ from .. import audit, repository, reverse_proxy
 from ..db import get_connection
 from ..deps import get_current_user, get_db, require_admin, verify_csrf
 from ..schemas import (
+    AliasConfigOut,
     ApplicationOut,
     CreateApplicationRequest,
     MessageOut,
@@ -186,6 +187,12 @@ def _push_alias_on_approval(
         )
 
 
+def _can_manage_app(app: dict[str, Any], actor: dict[str, Any]) -> bool:
+    return actor["role"] == "admin" or (
+        bool(actor.get("id")) and app["created_by"] == actor["id"]
+    )
+
+
 def _remove_alias_on_delete(
     application_id: int, app_name: str, url_type: str, actor: dict[str, Any]
 ) -> None:
@@ -327,6 +334,42 @@ def list_managed_applications(
     """Every application with its creator and status, for administrators."""
     apps = repository.list_all_applications_admin(conn)
     return [_app_out(a, include_creator=True) for a in apps]
+
+
+@router.get("/applications/{application_id}/alias-config", response_model=AliasConfigOut)
+def get_application_alias_config(
+    application_id: int,
+    actor: dict[str, Any] = Depends(get_current_user),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> AliasConfigOut:
+    app = repository.get_application(conn, application_id)
+    if app is None:
+        raise HTTPException(status_code=404, detail="Application not found")
+    if not _can_manage_app(app, actor):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only inspect applications you created",
+        )
+
+    if app["url_type"] != "alias":
+        return AliasConfigOut(
+            status="skipped",
+            log="Skipped: application does not use a local alias.",
+        )
+
+    result = reverse_proxy.read_alias_config(
+        repository.get_settings_row(conn), app_id=application_id
+    )
+    return AliasConfigOut(
+        status=result.status,
+        log=result.transcript,
+        alias=result.alias,
+        apps_protocol=result.apps_protocol,
+        apps_server=result.apps_server,
+        apps_port=result.apps_port,
+        apps_path=result.apps_path,
+        alias_auth_required=result.alias_auth_required,
+    )
 
 
 @router.post("/applications", response_model=ApplicationOut, status_code=201)

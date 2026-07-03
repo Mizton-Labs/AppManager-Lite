@@ -335,7 +335,13 @@ itself.
   optional suffix/path. A read-only preview shows the upstream URL that nginx
   will proxy to. The reverse-proxy settings host is only the SSH target used to
   push config — never the alias upstream. If an approved alias is missing its
-  upstream host or port, the push is skipped.
+  upstream host or port, the push is skipped. When editing an alias, AppManager
+  attempts to read the current marker-managed nginx block and prefill the form
+  from the deployed alias/upstream/auth settings; if that read fails, stored app
+  settings remain editable as a fallback.
+- **Owned app shortcuts.** The Home page shows **My Applications** before shared
+  applications. Owned app cards include an **Edit** link that opens the app's
+  configuration in Application Manager.
 - **Team selection.** The team picker offers a **Select all / Clear all** toggle
   in addition to the individual checkboxes.
 

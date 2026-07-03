@@ -66,6 +66,20 @@ function stubBackend(initial: Application[]) {
         },
       ]);
     }
+    const aliasConfigMatch = url.match(/\/api\/applications\/(\d+)\/alias-config$/);
+    if (method === "GET" && aliasConfigMatch) {
+      const app = store.find((item) => item.id === Number(aliasConfigMatch[1]));
+      return jsonResponse({
+        status: app?.url_type === "alias" ? "ok" : "skipped",
+        log: app?.url_type === "alias" ? "Loaded current deployed config from nginx." : "Skipped.",
+        alias: app?.url ?? "",
+        apps_protocol: app?.apps_protocol ?? "http",
+        apps_server: app?.apps_server ?? "",
+        apps_port: app?.apps_port ?? "",
+        apps_path: app?.apps_path ?? "",
+        alias_auth_required: app?.alias_auth_required ?? true,
+      });
+    }
     const retryMatch = url.match(/\/api\/applications\/(\d+)\/push-retry$/);
     if (method === "POST" && retryMatch) {
       const id = Number(retryMatch[1]);
@@ -129,7 +143,10 @@ function stubBackend(initial: Application[]) {
   return fetchMock;
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  window.history.pushState({}, "", "/");
+});
 
 describe("ApplicationManager", () => {
   it("loads the management endpoint for administrators and flags disabled apps", async () => {
@@ -626,6 +643,35 @@ describe("ApplicationManager", () => {
     expect(
       screen.queryByRole("button", { name: /^push$/i }),
     ).not.toBeInTheDocument();
+  });
+
+  it("opens and preloads an alias app from the editApp query", async () => {
+    window.history.pushState({}, "", "/settings?editApp=42");
+    stubBackend([
+      makeApp({
+        id: 42,
+        name: "Alias Edit",
+        url_type: "alias",
+        url: "alias-edit",
+        apps_protocol: "https",
+        apps_server: "deployed.example.com",
+        apps_port: "9443",
+        apps_path: "/deployed",
+      }),
+    ]);
+
+    render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
+
+    expect(await screen.findByDisplayValue("alias-edit")).toBeInTheDocument();
+    expect(
+      await screen.findByText(/Loaded current deployed config from nginx/i),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText(/alias upstream protocol/i)).toHaveValue("https");
+    expect(screen.getByLabelText(/alias upstream server host or ip/i)).toHaveValue(
+      "deployed.example.com",
+    );
+    expect(screen.getByLabelText(/alias upstream port/i)).toHaveValue("9443");
+    expect(screen.getByLabelText(/alias upstream suffix path/i)).toHaveValue("/deployed");
   });
 
   it("pushes an approved alias app and updates the status", async () => {

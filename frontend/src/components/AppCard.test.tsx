@@ -7,7 +7,7 @@ describe("AppCard", () => {
   it("links to the application URL and opens safely in a new tab", () => {
     render(<AppCard app={makeApp()} />);
 
-    const link = screen.getByRole("link");
+    const link = screen.getByRole("link", { name: /Hunt Workbench/ });
     expect(link).toHaveAttribute("href", "https://example.com/hunt");
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");
@@ -60,5 +60,15 @@ describe("AppCard", () => {
   it("shows the publisher local-part", () => {
     render(<AppCard app={makeApp({ created_by: "publisher@example.com" })} />);
     expect(screen.getByText(/published by: publisher/i)).toBeInTheDocument();
+  });
+
+  it("shows a separate edit link when provided", () => {
+    render(<AppCard app={makeApp()} editHref="/settings?editApp=1" />);
+    const edit = screen.getByRole("link", { name: /^edit$/i });
+    expect(edit).toHaveAttribute("href", "/settings?editApp=1");
+    expect(screen.getByRole("link", { name: /Hunt Workbench/ })).toHaveAttribute(
+      "target",
+      "_blank",
+    );
   });
 });
