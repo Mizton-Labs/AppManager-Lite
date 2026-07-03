@@ -60,6 +60,14 @@ describe("HomeView", () => {
     expect(within(sharedSection).queryByText("My Tool")).not.toBeInTheDocument();
     expect(within(ownedSection).getByText("My Tool")).toBeInTheDocument();
     expect(within(ownedSection).queryByText("Team Tool")).not.toBeInTheDocument();
+    expect(
+      ownedHeading.compareDocumentPosition(sharedHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(within(ownedSection).getByRole("link", { name: /^edit$/i })).toHaveAttribute(
+      "href",
+      "/settings?editApp=10",
+    );
+    expect(within(sharedSection).queryByRole("link", { name: /^edit$/i })).toBeNull();
   });
 
   it("shows a publisher-team badge on each card", async () => {
