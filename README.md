@@ -265,7 +265,19 @@ same area with every application (and its creator), a tab for user management, a
 (application name and logo) and reverse-proxy configuration.
 
 When an administrator creates a user, the username must be an **email address**;
-it is the user's sign-in name. Administrators can also set the user's **apps server**
+it is the user's sign-in name. Each user also gets a derived **user ID** — the
+email's local part, lowercased, with dots and underscores replaced by dashes
+(restricted to letters, digits, and dashes; e.g. `john.doe@example.com` →
+`john-doe`) — shown beneath the email in User Management and on the Account
+page. Because the user ID names per-user resources, creating a user whose
+derived ID collides with an existing user's is rejected.
+
+Every user account carries its own **Ed25519 SSH keypair**, generated at user
+creation (existing accounts are backfilled automatically on startup). From the
+**Account** page a user can view their public key, download the private or
+public key, and regenerate the keypair after an explicit confirmation
+(regeneration and private-key downloads are audited — metadata only, never key
+material; key material is served only to the owning, signed-in user). Administrators can also set the user's **apps server**
 (host/IP) — the host where that user runs their applications, used as the
 upstream for that user's reverse-proxy aliases. Each application carries its
 **own port** (see below), so there is no per-user port. A normal user only sets
@@ -520,7 +532,8 @@ that records actions performed in the portal, grouped into three tabs:
 - **Application Management** — application create/request, approve, reject,
   update, delete, alias-change request/approval, and reverse-proxy push/remove.
 - **User activity** — sign-in (success and failure), sign-out, password changes,
-  and user create/update/delete/password-reset.
+  user create/update/delete/password-reset, and SSH-key regeneration and
+  private-key downloads (metadata only; never key material).
 - **System** — backend lifecycle (startup, shutdown, first-run administrator
   creation, authentication disabled), settings updates (branding and
   reverse-proxy), and team management (create, update, delete, reorder).

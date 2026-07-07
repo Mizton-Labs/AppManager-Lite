@@ -8,13 +8,70 @@ function jsonResponse(payload: unknown): Response {
   return { ok: true, status: 200, json: async () => payload } as Response;
 }
 
-function textResponse(payload: string): Response {
+function textResponse(payload: string, filename: string): Response {
   return {
     ok: true,
     status: 200,
     text: async () => payload,
-    headers: new Headers({ "content-disposition": 'attachment; filename="profile.txt"' }),
+    headers: new Headers({
+      "content-disposition": `attachment; filename="${filename}"`,
+    }),
   } as Response;
+}
+
+const sshKey = {
+  user_id: "analyst",
+  public_key: "ssh-ed25519 AAAATESTKEY analyst@example.com",
+  generated_at: "2026-07-07 00:00:00",
+};
+
+function stubAccount(overrides: {
+  onRegenerate?: () => unknown;
+} = {}) {
+  const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/api/account/bundles")) {
+      return jsonResponse([{ id: 7, name: "Shell profile" }]);
+    }
+    if (url.endsWith("/api/account/bundles/7/download")) {
+      return textResponse("personal bundle", "profile.txt");
+    }
+    if (url.endsWith("/api/account/ssh-key/regenerate")) {
+      return jsonResponse(
+        overrides.onRegenerate ? overrides.onRegenerate() : sshKey,
+      );
+    }
+    if (url.includes("/api/account/ssh-key/download?part=private")) {
+      return textResponse(
+        "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n",
+        "id_ed25519",
+      );
+    }
+    if (url.includes("/api/account/ssh-key/download?part=public")) {
+      return textResponse(`${sshKey.public_key}\n`, "id_ed25519.pub");
+    }
+    if (url.endsWith("/api/account/ssh-key")) {
+      return jsonResponse(sshKey);
+    }
+    return jsonResponse({ detail: `unexpected ${init?.method ?? "GET"} ${url}` });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+function stubDownloads() {
+  const click = vi
+    .spyOn(HTMLAnchorElement.prototype, "click")
+    .mockImplementation(() => undefined);
+  Object.defineProperty(URL, "createObjectURL", {
+    configurable: true,
+    value: vi.fn(() => "blob:file"),
+  });
+  Object.defineProperty(URL, "revokeObjectURL", {
+    configurable: true,
+    value: vi.fn(),
+  });
+  return click;
 }
 
 afterEach(() => {
@@ -24,26 +81,8 @@ afterEach(() => {
 
 describe("AccountPanel", () => {
   it("lists and downloads account bundles", async () => {
-    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
-    Object.defineProperty(URL, "createObjectURL", {
-      configurable: true,
-      value: vi.fn(() => "blob:bundle"),
-    });
-    Object.defineProperty(URL, "revokeObjectURL", {
-      configurable: true,
-      value: vi.fn(),
-    });
-    const fetchMock = vi.fn(async (input: string) => {
-      const url = String(input);
-      if (url.endsWith("/api/account/bundles")) {
-        return jsonResponse([{ id: 7, name: "Shell profile" }]);
-      }
-      if (url.endsWith("/api/account/bundles/7/download")) {
-        return textResponse("personal bundle");
-      }
-      return jsonResponse({ detail: "unexpected" });
-    });
-    vi.stubGlobal("fetch", fetchMock);
+    const click = stubDownloads();
+    const fetchMock = stubAccount();
 
     render(
       <AccountPanel
@@ -61,5 +100,77 @@ describe("AccountPanel", () => {
       ),
     ).toBe(true);
     expect(click).toHaveBeenCalled();
+  });
+
+  it("shows the derived user id in the profile", async () => {
+    stubAccount();
+    render(
+      <AccountPanel
+        user={makeUser({ username: "john.doe@example.com", user_id: "john-doe" })}
+        onPasswordChanged={() => undefined}
+      />,
+    );
+    expect(screen.getByText("User ID")).toBeInTheDocument();
+    expect(screen.getByText("john-doe")).toBeInTheDocument();
+  });
+
+  it("shows the account SSH public key and downloads the private key", async () => {
+    const click = stubDownloads();
+    const fetchMock = stubAccount();
+
+    render(
+      <AccountPanel
+        user={makeUser({ username: "analyst@example.com" })}
+        onPasswordChanged={() => undefined}
+      />,
+    );
+
+    expect(await screen.findByText(sshKey.public_key)).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: /download private key/i }),
+    );
+
+    expect(
+      fetchMock.mock.calls.some(([url]) =>
+        String(url).includes("/api/account/ssh-key/download?part=private"),
+      ),
+    ).toBe(true);
+    expect(click).toHaveBeenCalled();
+  });
+
+  it("regenerates the SSH key only after an explicit confirmation", async () => {
+    const regenerated = { ...sshKey, public_key: "ssh-ed25519 NEWKEY analyst" };
+    const fetchMock = stubAccount({ onRegenerate: () => regenerated });
+
+    render(
+      <AccountPanel
+        user={makeUser({ username: "analyst@example.com" })}
+        onPasswordChanged={() => undefined}
+      />,
+    );
+
+    await screen.findByText(sshKey.public_key);
+    await userEvent.click(screen.getByRole("button", { name: /regenerate key/i }));
+
+    // No request yet; a warning plus a confirm button appear instead.
+    expect(
+      fetchMock.mock.calls.some(([url]) =>
+        String(url).endsWith("/api/account/ssh-key/regenerate"),
+      ),
+    ).toBe(false);
+    expect(screen.getByText(/cannot be undone/i)).toBeInTheDocument();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /confirm regenerate/i }),
+    );
+
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) =>
+          String(url).endsWith("/api/account/ssh-key/regenerate") &&
+          (init as RequestInit | undefined)?.method === "POST",
+      ),
+    ).toBe(true);
+    expect(await screen.findByText(regenerated.public_key)).toBeInTheDocument();
   });
 });

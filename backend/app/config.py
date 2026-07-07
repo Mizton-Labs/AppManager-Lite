@@ -169,6 +169,13 @@ class Settings:
 
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        # The database now holds per-user SSH private keys in addition to
+        # session tokens; keep the runtime data directory owner-only. Best
+        # effort: skip silently where chmod is not permitted (e.g. odd mounts).
+        try:
+            os.chmod(self.data_dir, 0o700)
+        except OSError:
+            pass
 
 
 @lru_cache(maxsize=1)

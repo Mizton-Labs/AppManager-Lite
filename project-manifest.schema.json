@@ -136,7 +136,7 @@
             "properties": {
               "name": { "type": "string" },
               "default": { "type": "string" },
-              "type": { "type": "string", "enum": ["string", "boolean", "integer", "path"] },
+              "type": { "type": "string", "enum": ["string", "boolean", "integer", "path", "url", "secret"] },
               "purpose": { "type": "string" }
             }
           }

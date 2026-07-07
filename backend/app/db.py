@@ -6,6 +6,7 @@ elsewhere use parameter binding; no SQL is built from user input.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -25,6 +26,9 @@ CREATE TABLE IF NOT EXISTS users (
     apps_server          TEXT    NOT NULL DEFAULT '',
     apps_server_ip       TEXT    NOT NULL DEFAULT '',
     apps_port            TEXT    NOT NULL DEFAULT '',
+    ssh_private_key      TEXT    NOT NULL DEFAULT '',
+    ssh_public_key       TEXT    NOT NULL DEFAULT '',
+    ssh_key_generated_at TEXT,
     created_at           TEXT    NOT NULL DEFAULT (datetime('now')),
     updated_at           TEXT    NOT NULL DEFAULT (datetime('now'))
 );
@@ -162,7 +166,22 @@ def connect() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
+    _restrict_db_permissions(settings.db_path)
     return conn
+
+
+def _restrict_db_permissions(db_path: object) -> None:
+    """Keep the database (and WAL/SHM companions) owner-only.
+
+    The database stores per-user SSH private keys and session tokens. Best
+    effort: permission errors are ignored so read-only or exotic filesystems
+    do not break connections.
+    """
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            os.chmod(f"{db_path}{suffix}", 0o600)
+        except OSError:
+            pass
 
 
 @contextmanager
@@ -215,6 +234,29 @@ def _add_column(
     return True
 
 
+def _backfill_user_ssh_keys(conn: sqlite3.Connection) -> None:
+    """Generate a keypair for every user that does not have one yet.
+
+    Key material never leaves the database here; nothing is logged.
+    """
+    from . import sshkeys
+
+    rows = conn.execute(
+        "SELECT id, username FROM users WHERE ssh_public_key = ''"
+    ).fetchall()
+    for row in rows:
+        private_key, public_key = sshkeys.generate_keypair(row["username"])
+        conn.execute(
+            """
+            UPDATE users
+            SET ssh_private_key = ?, ssh_public_key = ?,
+                ssh_key_generated_at = datetime('now')
+            WHERE id = ?
+            """,
+            (private_key, public_key, row["id"]),
+        )
+
+
 def _migrate_schema(conn: sqlite3.Connection) -> None:
     """Bring an existing database up to the current column set.
 
@@ -233,6 +275,14 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     _add_column(conn, "users", "apps_server", "TEXT NOT NULL DEFAULT ''")
     _add_column(conn, "users", "apps_server_ip", "TEXT NOT NULL DEFAULT ''")
     _add_column(conn, "users", "apps_port", "TEXT NOT NULL DEFAULT ''")
+
+    # Each user carries their own Ed25519 SSH keypair (issue_015). New users
+    # get one at creation; the backfill below covers accounts that predate the
+    # feature (and is a cheap no-op once every user has a key).
+    _add_column(conn, "users", "ssh_private_key", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "users", "ssh_public_key", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "users", "ssh_key_generated_at", "TEXT")
+    _backfill_user_ssh_keys(conn)
 
     # Sessions record how the user authenticated so SSO sessions can bypass
     # local-password-only first-login requirements without clearing the flag.

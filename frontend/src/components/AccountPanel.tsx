@@ -1,7 +1,19 @@
 import { useEffect, useState } from "react";
 import { api, ApiError } from "../api";
-import type { ApiUser } from "../types";
+import type { ApiUser, SshKeyInfo } from "../types";
 import { ChangePasswordForm } from "./ChangePasswordForm";
+
+function saveTextFile(content: string, filename: string) {
+  const blob = new Blob([content], { type: "text/plain" });
+  const href = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = href;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(href);
+}
 
 export function AccountPanel(props: {
   user: ApiUser;
@@ -16,6 +28,12 @@ export function AccountPanel(props: {
           <div>
             <dt>Username</dt>
             <dd>{user.username}</dd>
+          </div>
+          <div>
+            <dt>User ID</dt>
+            <dd>
+              <code className="user-id">{user.user_id}</code>
+            </dd>
           </div>
           <div>
             <dt>Role</dt>
@@ -59,8 +77,147 @@ export function AccountPanel(props: {
         <ChangePasswordForm onChanged={props.onPasswordChanged} />
       </section>
 
+      <SshKeyCard />
+
       <BundleDownloadCard />
     </div>
+  );
+}
+
+function SshKeyCard() {
+  const [info, setInfo] = useState<SshKeyInfo | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+
+  useEffect(() => {
+    api
+      .getAccountSshKey()
+      .then(setInfo)
+      .catch((err) => {
+        if (err instanceof ApiError && err.status === 404) return;
+        setError(
+          err instanceof ApiError ? err.message : "Failed to load SSH key.",
+        );
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  async function download(part: "private" | "public") {
+    setError(null);
+    setNotice(null);
+    setBusy(true);
+    try {
+      const result = await api.downloadAccountSshKey(part);
+      saveTextFile(result.content, result.filename);
+    } catch (err) {
+      setError(
+        err instanceof ApiError ? err.message : "Unable to download the key.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function regenerate() {
+    setError(null);
+    setNotice(null);
+    setBusy(true);
+    try {
+      const next = await api.regenerateAccountSshKey();
+      setInfo(next);
+      setConfirming(false);
+      setNotice(
+        "A new SSH keypair was generated. Download the new private key; the old key is no longer available.",
+      );
+    } catch (err) {
+      setError(
+        err instanceof ApiError ? err.message : "Unable to regenerate the key.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="card">
+      <h2>SSH key</h2>
+      <p className="muted">
+        A personal SSH keypair generated for your account. Use it to access
+        your provisioned servers.
+      </p>
+      {error && (
+        <p className="alert error" role="alert">
+          {error}
+        </p>
+      )}
+      {notice && (
+        <p className="alert success" role="status">
+          {notice}
+        </p>
+      )}
+      {loading ? (
+        <p role="status">Loading SSH key...</p>
+      ) : info === null ? (
+        <p className="muted">No SSH key is available for this account.</p>
+      ) : (
+        <>
+          <label className="field">
+            <span>Public key</span>
+            <pre className="settings-snippet ssh-public-key">{info.public_key}</pre>
+          </label>
+          {info.generated_at && (
+            <p className="muted">Generated {info.generated_at} (UTC)</p>
+          )}
+          <div className="row-actions">
+            <button
+              type="button"
+              className="btn primary"
+              onClick={() => download("private")}
+              disabled={busy}
+            >
+              Download private key
+            </button>
+            <button
+              type="button"
+              className="btn ghost"
+              onClick={() => download("public")}
+              disabled={busy}
+            >
+              Download public key
+            </button>
+            {!confirming ? (
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => setConfirming(true)}
+                disabled={busy}
+              >
+                Regenerate key
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn danger"
+                onClick={regenerate}
+                disabled={busy}
+              >
+                {busy ? "Regenerating..." : "Confirm regenerate"}
+              </button>
+            )}
+          </div>
+          {confirming && (
+            <p className="alert error" role="alert">
+              Regenerating replaces your keypair immediately. The current
+              private key stops working and servers that trust the old public
+              key must be updated. This cannot be undone.
+            </p>
+          )}
+        </>
+      )}
+    </section>
   );
 }
 

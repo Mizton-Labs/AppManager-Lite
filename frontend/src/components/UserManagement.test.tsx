@@ -17,8 +17,14 @@ function stubUsers() {
 
     if (method === "GET" && url.endsWith("/api/users")) {
       return json([
-        makeUser({ id: 1, username: "admin", role: "admin" }),
-        makeUser({ id: 2, username: "analyst", role: "user" }),
+        makeUser({ id: 1, username: "admin", role: "admin", user_id: "admin" }),
+        makeUser({ id: 2, username: "analyst", role: "user", user_id: "analyst" }),
+        makeUser({
+          id: 3,
+          username: "analyst.one@example.com",
+          role: "user",
+          user_id: "analyst-one",
+        }),
       ]);
     }
     if (method === "GET" && url.endsWith("/api/teams")) {
@@ -96,7 +102,9 @@ describe("UserManagement credential copy", () => {
     const fetchMock = stubUsers();
     render(<UserManagement currentUser={makeUser({ id: 1, role: "admin" })} />);
 
-    const analystCard = (await screen.findByText("analyst")).closest("article");
+    const analystCard = (
+      await screen.findByText("analyst", { selector: ".user-name" })
+    ).closest("article");
     expect(analystCard).not.toBeNull();
     await userEvent.click(
       within(analystCard!).getByRole("button", { name: /^edit$/i }),
@@ -162,5 +170,17 @@ describe("UserManagement credential copy", () => {
     await screen.findByRole("heading", { name: /bundle templates/i });
     expect(screen.getByRole("option", { name: /apps server host$/i })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: /apps server ip/i })).toBeInTheDocument();
+  });
+
+  it("shows the derived user id below each username", async () => {
+    stubUsers();
+    render(<UserManagement currentUser={makeUser({ id: 1, role: "admin" })} />);
+
+    const userCards = await screen.findAllByRole("article");
+    const analystCard = userCards.find((card) =>
+      within(card).queryByText("analyst.one@example.com"),
+    );
+    expect(analystCard).toBeDefined();
+    expect(within(analystCard!).getByText("analyst-one")).toBeInTheDocument();
   });
 });

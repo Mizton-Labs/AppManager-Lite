@@ -32,6 +32,7 @@ def _user_out(user: dict[str, Any]) -> UserOut:
     return UserOut(
         id=user["id"],
         username=user["username"],
+        user_id=user["user_id"],
         role=user["role"],
         is_active=user["is_active"],
         must_change_password=user["must_change_password"],
