@@ -214,6 +214,9 @@
       { "method": "GET", "path": "/api/auth/saml/metadata", "auth": "anonymous", "csrf": false, "summary": "Expose SAML service-provider metadata." },
       { "method": "POST", "path": "/api/auth/logout", "auth": "user", "csrf": true, "summary": "End the current session." },
       { "method": "POST", "path": "/api/account/password", "auth": "user", "csrf": true, "summary": "Change the signed-in user's own password." },
+      { "method": "GET", "path": "/api/account/ssh-key", "auth": "user", "csrf": false, "summary": "The signed-in user's SSH public key, derived user-id, and generation time (never the private key)." },
+      { "method": "GET", "path": "/api/account/ssh-key/download", "auth": "user", "csrf": false, "summary": "Download the signed-in user's own SSH key; requires part=private|public. Private downloads are audited (metadata only)." },
+      { "method": "POST", "path": "/api/account/ssh-key/regenerate", "auth": "user", "csrf": true, "summary": "Replace the signed-in user's SSH keypair with a freshly generated one (audited)." },
       { "method": "GET", "path": "/api/teams", "auth": "user", "csrf": false, "summary": "List teams (name, order, icon) for any signed-in user." },
       { "method": "GET", "path": "/api/users", "auth": "admin", "csrf": false, "summary": "List users." },
       { "method": "POST", "path": "/api/users", "auth": "admin", "csrf": true, "summary": "Create a user (returns a generated password)." },
@@ -245,8 +248,8 @@
     "tables": [
       {
         "name": "users",
-        "description": "Accounts with role, status, self-service flag, and per-user apps server/port.",
-        "columns": ["id", "username", "password_hash", "role", "is_active", "must_change_password", "self_service", "apps_server", "apps_port", "created_at", "updated_at"],
+        "description": "Accounts with role, status, self-service flag, per-user apps server/port, and a per-user Ed25519 SSH keypair (generated at creation, backfilled by migration; key material is served only to the owning user).",
+        "columns": ["id", "username", "password_hash", "role", "is_active", "must_change_password", "self_service", "apps_server", "apps_server_ip", "apps_port", "ssh_private_key", "ssh_public_key", "ssh_key_generated_at", "created_at", "updated_at"],
         "primaryKey": ["id"]
       },
       {

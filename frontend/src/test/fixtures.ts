@@ -25,6 +25,7 @@ export function makeUser(overrides: Partial<ApiUser> = {}): ApiUser {
   return {
     id: 1,
     username: "user",
+    user_id: "user",
     role: "user",
     is_active: true,
     must_change_password: false,

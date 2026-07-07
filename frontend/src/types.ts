@@ -9,6 +9,8 @@ export type ApprovalStatus = "pending" | "approved" | "rejected";
 export interface ApiUser {
   id: number;
   username: string;
+  /** Derived identifier: email local part with dots/underscores as dashes. */
+  user_id: string;
   role: Role;
   is_active: boolean;
   must_change_password: boolean;
@@ -79,6 +81,13 @@ export interface BundleOption {
 export interface BundleDownload {
   content: string;
   filename: string;
+}
+
+/** Public half of the account's SSH keypair (never the private key). */
+export interface SshKeyInfo {
+  user_id: string;
+  public_key: string;
+  generated_at: string | null;
 }
 
 export interface CreateBundleTemplateInput {

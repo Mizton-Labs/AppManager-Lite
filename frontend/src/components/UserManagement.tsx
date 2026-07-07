@@ -376,7 +376,10 @@ function UserRow(props: {
     <article className={user.is_active ? "user-card" : "user-card inactive"}>
       <div className="user-card-head">
         <div className="user-identity">
-          <span className="user-name">{user.username}</span>
+          <div className="user-name-block">
+            <span className="user-name">{user.username}</span>
+            <code className="user-id">{user.user_id}</code>
+          </div>
           <span className="role-badge">{user.role}</span>
           {user.self_service && (
             <span className="status-badge ok">self-service</span>

@@ -11,7 +11,7 @@ import secrets
 import sqlite3
 from typing import Any
 
-from . import security
+from . import security, sshkeys
 from .teams import slugify
 
 
@@ -37,11 +37,43 @@ def _row_to_team(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+_USER_ID_ALLOWED = set("abcdefghijklmnopqrstuvwxyz0123456789-")
+
+
+def derive_user_id(username: str) -> str:
+    """Human-facing user identifier derived from the sign-in name.
+
+    The local part of the email (or the whole username when it is not an
+    email), lowercased, with dots and underscores replaced by dashes and any
+    other character outside ``[a-z0-9-]`` dropped. The result later names
+    per-user resources (server hostnames, config entries), so it is
+    restricted to a safe character set here rather than at each use site.
+    """
+    local_part = username.split("@", 1)[0].lower()
+    mapped = local_part.replace(".", "-").replace("_", "-")
+    return "".join(ch for ch in mapped if ch in _USER_ID_ALLOWED).strip("-")
+
+
+def user_id_conflict(
+    conn: sqlite3.Connection, user_id: str, *, exclude_id: int | None = None
+) -> bool:
+    """True when another user's derived identifier equals ``user_id``.
+
+    Derived identifiers are not stored, so this scans usernames; user counts
+    are small (an admin-managed portal), which keeps this trivial.
+    """
+    rows = conn.execute(
+        "SELECT username FROM users WHERE id IS NOT ?", (exclude_id,)
+    ).fetchall()
+    return any(derive_user_id(r["username"]) == user_id for r in rows)
+
+
 def _row_to_user(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
     teams = list_user_teams(conn, row["id"])
     return {
         "id": row["id"],
         "username": row["username"],
+        "user_id": derive_user_id(row["username"]),
         "role": row["role"],
         "is_active": bool(row["is_active"]),
         "must_change_password": bool(row["must_change_password"]),
@@ -272,12 +304,25 @@ def create_user(
     existing = get_user_by_username(conn, username)
     if existing is not None:
         raise ValueError("A user with that username already exists.")
+    user_id = derive_user_id(username)
+    if not user_id:
+        raise ValueError(
+            "The email address must yield a usable identifier "
+            "(letters, digits, or dashes before the @)."
+        )
+    if user_id_conflict(conn, user_id):
+        raise ValueError(
+            f"A user with the derived identifier '{user_id}' already exists; "
+            "choose an email address with a different local part."
+        )
+    private_key, public_key = sshkeys.generate_keypair(username)
     cur = conn.execute(
         """
         INSERT INTO users
             (username, password_hash, role, must_change_password, self_service,
-             apps_server, apps_server_ip, apps_port)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             apps_server, apps_server_ip, apps_port,
+             ssh_private_key, ssh_public_key, ssh_key_generated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         """,
         (
             username,
@@ -288,6 +333,8 @@ def create_user(
             apps_server,
             apps_server_ip,
             apps_port,
+            private_key,
+            public_key,
         ),
     )
     user_id = int(cur.lastrowid)
@@ -381,6 +428,48 @@ def set_password(
         WHERE id = ?
         """,
         (security.hash_password(password), int(must_change_password), user_id),
+    )
+
+
+def get_user_ssh_key(
+    conn: sqlite3.Connection, user_id: int
+) -> dict[str, Any] | None:
+    """The user's SSH keypair, or ``None`` when the user (or key) is missing.
+
+    Key material is intentionally excluded from ``_row_to_user`` so it never
+    flows through generic user listings, logs, or audit entries; callers must
+    use this accessor and expose the private key only to the owning user.
+    """
+    row = conn.execute(
+        "SELECT ssh_private_key, ssh_public_key, ssh_key_generated_at "
+        "FROM users WHERE id = ?",
+        (user_id,),
+    ).fetchone()
+    if row is None or not row["ssh_public_key"]:
+        return None
+    return {
+        "private_key": row["ssh_private_key"],
+        "public_key": row["ssh_public_key"],
+        "generated_at": row["ssh_key_generated_at"],
+    }
+
+
+def set_user_ssh_key(
+    conn: sqlite3.Connection,
+    user_id: int,
+    *,
+    private_key: str,
+    public_key: str,
+) -> None:
+    conn.execute(
+        """
+        UPDATE users
+        SET ssh_private_key = ?, ssh_public_key = ?,
+            ssh_key_generated_at = datetime('now'),
+            updated_at = datetime('now')
+        WHERE id = ?
+        """,
+        (private_key, public_key, user_id),
     )
 
 

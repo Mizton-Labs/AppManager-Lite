@@ -14,6 +14,7 @@ import type {
   GeneratedPassword,
   ReverseProxySettings,
   SessionState,
+  SshKeyInfo,
   SsoConfig,
   Team,
   UpdateBundleTemplateInput,
@@ -126,6 +127,14 @@ export const api = {
 
   downloadAccountBundle: (id: number) =>
     requestText(`account/bundles/${id}/download`),
+
+  getAccountSshKey: () => request<SshKeyInfo>("account/ssh-key"),
+
+  downloadAccountSshKey: (part: "private" | "public") =>
+    requestText(`account/ssh-key/download?part=${part}`),
+
+  regenerateAccountSshKey: () =>
+    request<SshKeyInfo>("account/ssh-key/regenerate", { method: "POST" }),
 
   listTeams: () => request<Team[]>("teams"),
 

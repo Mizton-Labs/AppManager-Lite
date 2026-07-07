@@ -762,6 +762,31 @@ textarea:focus,
   font-weight: 600;
 }
 
+.user-name-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.user-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+/* Account SSH key card */
+.ssh-public-key {
+  margin: 0;
+  padding: 0.6rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 .row-actions {
   display: flex;
   gap: 0.4rem;

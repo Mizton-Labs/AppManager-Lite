@@ -301,6 +301,9 @@ class UpdateUserRequest(BaseModel):
 class UserOut(BaseModel):
     id: int
     username: str
+    # Derived human-facing identifier: email local part with dots/underscores
+    # replaced by dashes (e.g. ``john.doe@example.com`` -> ``john-doe``).
+    user_id: str = ""
     role: str
     is_active: bool
     must_change_password: bool
@@ -308,6 +311,14 @@ class UserOut(BaseModel):
     apps_server: str = ""
     apps_server_ip: str = ""
     teams: list[str]
+
+
+class SshKeyInfoOut(BaseModel):
+    """Public half of the account's SSH keypair. Never carries the private key."""
+
+    user_id: str
+    public_key: str
+    generated_at: str | None = None
 
 
 class SessionOut(BaseModel):
