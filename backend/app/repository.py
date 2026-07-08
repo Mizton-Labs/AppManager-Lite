@@ -12,8 +12,13 @@ import secrets
 import sqlite3
 from typing import Any
 
-from . import security, sshkeys
+from . import keystore, security, sshkeys
 from .teams import slugify
+
+
+def _encrypt_private_key(value: str) -> str:
+    """Encrypt SSH private-key material for at-rest storage."""
+    return keystore.encrypt(value)
 
 
 class TeamConflictError(ValueError):
@@ -335,7 +340,7 @@ def create_user(
             apps_server,
             apps_server_ip,
             apps_port,
-            private_key,
+            _encrypt_private_key(private_key),
             public_key,
         ),
     )
@@ -449,8 +454,10 @@ def get_user_ssh_key(
     ).fetchone()
     if row is None or not row["ssh_public_key"]:
         return None
+    # Private keys are stored encrypted at rest; decrypt for the owner-gated
+    # caller. Legacy plaintext rows pass through unchanged.
     return {
-        "private_key": row["ssh_private_key"],
+        "private_key": keystore.decrypt(row["ssh_private_key"]),
         "public_key": row["ssh_public_key"],
         "generated_at": row["ssh_key_generated_at"],
     }
@@ -471,7 +478,7 @@ def set_user_ssh_key(
             updated_at = datetime('now')
         WHERE id = ?
         """,
-        (private_key, public_key, user_id),
+        (keystore.encrypt(private_key), public_key, user_id),
     )
 
 
@@ -1293,6 +1300,107 @@ def update_provisioning_settings(
 
 
 # ---------------------------------------------------------------------------
+# SSH key registry (issue_015-r1)
+# ---------------------------------------------------------------------------
+
+
+def _row_to_ssh_key(row: sqlite3.Row) -> dict[str, Any]:
+    """Registry entry WITHOUT secret material (safe for API responses)."""
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "kind": row["kind"],
+        "path": row["path"],
+        "public_key": row["public_key"],
+        "fingerprint": row["fingerprint"],
+        "has_private_key": bool(row["encrypted_private_key"]),
+    }
+
+
+def list_ssh_keys(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = conn.execute("SELECT * FROM ssh_keys ORDER BY name, id").fetchall()
+    return [_row_to_ssh_key(r) for r in rows]
+
+
+def get_ssh_key(conn: sqlite3.Connection, key_id: int) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT * FROM ssh_keys WHERE id = ?", (key_id,)
+    ).fetchone()
+    return _row_to_ssh_key(row) if row else None
+
+
+def create_ssh_key(
+    conn: sqlite3.Connection,
+    *,
+    name: str,
+    kind: str,
+    path: str = "",
+    encrypted_private_key: str = "",
+    public_key: str = "",
+    fingerprint: str = "",
+) -> dict[str, Any]:
+    try:
+        cur = conn.execute(
+            """
+            INSERT INTO ssh_keys
+                (name, kind, path, encrypted_private_key, public_key, fingerprint)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (name.strip(), kind, path.strip(), encrypted_private_key,
+             public_key, fingerprint),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise ValueError(
+            f"An SSH key named '{name.strip()}' already exists."
+        ) from exc
+    key = get_ssh_key(conn, int(cur.lastrowid))
+    assert key is not None
+    return key
+
+
+def get_ssh_key_secret(conn: sqlite3.Connection, key_id: int) -> str:
+    """Return the stored encrypted private key token (or '') for a key."""
+    row = conn.execute(
+        "SELECT encrypted_private_key FROM ssh_keys WHERE id = ?", (key_id,)
+    ).fetchone()
+    return row["encrypted_private_key"] if row else ""
+
+
+def ssh_key_references(conn: sqlite3.Connection, key_id: int) -> list[str]:
+    """Human-readable list of places that reference a registry key."""
+    refs: list[str] = []
+    s = conn.execute(
+        "SELECT 1 FROM settings WHERE id = 1 AND reverse_proxy_ssh_key_id = ?",
+        (key_id,),
+    ).fetchone()
+    if s:
+        refs.append("reverse-proxy configuration")
+    j = conn.execute(
+        "SELECT 1 FROM settings WHERE id = 1 AND jump_ssh_key_id = ?",
+        (key_id,),
+    ).fetchone()
+    if j:
+        refs.append("jump server")
+    for r in conn.execute(
+        "SELECT name FROM server_templates WHERE admin_ssh_key_id = ?",
+        (key_id,),
+    ).fetchall():
+        refs.append(f"server template '{r['name']}'")
+    n = conn.execute(
+        "SELECT COUNT(*) AS c FROM user_servers WHERE admin_ssh_key_id = ?",
+        (key_id,),
+    ).fetchone()["c"]
+    if n:
+        refs.append(f"{n} user server(s)")
+    return refs
+
+
+def delete_ssh_key(conn: sqlite3.Connection, key_id: int) -> bool:
+    cur = conn.execute("DELETE FROM ssh_keys WHERE id = ?", (key_id,))
+    return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
 # Server templates (Proxmox templates registered for user-server creation)
 # ---------------------------------------------------------------------------
 
@@ -1304,6 +1412,7 @@ def _row_to_server_template(row: sqlite3.Row) -> dict[str, Any]:
         "name": row["name"],
         "kind": row["kind"],
         "admin_ssh_key_path": row["admin_ssh_key_path"],
+        "admin_ssh_key_id": row["admin_ssh_key_id"],
     }
 
 

@@ -154,6 +154,24 @@ export interface ProviderTemplates {
   templates: ProviderTemplate[];
 }
 
+/** A registered SSH key (registry entry; never carries private material). */
+export interface SshKey {
+  id: number;
+  name: string;
+  kind: "path" | "stored";
+  path: string;
+  public_key: string;
+  fingerprint: string;
+  has_private_key: boolean;
+}
+
+export interface CreateSshKeyInput {
+  name: string;
+  kind: "path" | "stored";
+  path?: string;
+  private_key?: string;
+}
+
 /** An admin-registered Proxmox template used to create user servers. */
 export interface ServerTemplate {
   id: number;
@@ -161,6 +179,7 @@ export interface ServerTemplate {
   name: string;
   kind: "lxc" | "vm";
   admin_ssh_key_path: string;
+  admin_ssh_key_id: number | null;
 }
 
 /** A user's provisioned (or referenced) LXC/VM server. */

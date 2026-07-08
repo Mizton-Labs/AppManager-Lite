@@ -14,10 +14,11 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from .. import audit, proxmox, repository, servers
+from .. import audit, keystore, proxmox, repository, servers, sshkeys
 from ..deps import get_current_user, get_db, require_admin, verify_csrf
 from ..schemas import (
     CreateServerTemplateRequest,
+    CreateSshKeyRequest,
     CreateUserServerRequest,
     MessageOut,
     ProviderTemplatesOut,
@@ -25,6 +26,7 @@ from ..schemas import (
     ServerAccessOut,
     ServerTemplateOptionOut,
     ServerTemplateOut,
+    SshKeyOut,
     UpdateProvisioningSettingsRequest,
     UpdateServerTemplateRequest,
     UpdateUserServerRequest,
@@ -181,6 +183,101 @@ def list_provider_templates(
         log=result.transcript,
         templates=result.data or [],
     )
+
+
+# ---------------------------------------------------------------------------
+# SSH key registry (Remote Access Config)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/settings/ssh-keys", response_model=list[SshKeyOut])
+def list_ssh_keys(
+    _: dict[str, Any] = Depends(require_admin),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> list[SshKeyOut]:
+    return [SshKeyOut(**k) for k in repository.list_ssh_keys(conn)]
+
+
+@router.post("/settings/ssh-keys", response_model=SshKeyOut, status_code=201)
+def create_ssh_key(
+    payload: CreateSshKeyRequest,
+    admin: dict[str, Any] = Depends(require_admin),
+    __: None = Depends(verify_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> SshKeyOut:
+    public_key = ""
+    fingerprint = ""
+    enc = ""
+    if payload.kind == "path":
+        if not payload.path:
+            raise HTTPException(
+                status_code=400, detail="A key file path is required."
+            )
+    else:  # stored
+        if not payload.private_key.strip():
+            raise HTTPException(
+                status_code=400, detail="A private key value is required."
+            )
+        try:
+            public_key = sshkeys.public_key_from_private(payload.private_key)
+        except sshkeys.SshKeyError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        fingerprint = sshkeys.fingerprint(public_key)
+        enc = keystore.encrypt(payload.private_key.strip())
+    try:
+        key = repository.create_ssh_key(
+            conn,
+            name=payload.name,
+            kind=payload.kind,
+            path=payload.path,
+            encrypted_private_key=enc,
+            public_key=public_key,
+            fingerprint=fingerprint,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    audit.record(
+        conn,
+        category=audit.CATEGORY_SYSTEM,
+        action="ssh_key_create",
+        actor=admin,
+        target_type="ssh_key",
+        target_id=key["id"],
+        target_name=key["name"],
+        detail=f"kind={key['kind']}",
+    )
+    return SshKeyOut(**key)
+
+
+@router.delete("/settings/ssh-keys/{key_id}", response_model=MessageOut)
+def delete_ssh_key(
+    key_id: int,
+    admin: dict[str, Any] = Depends(require_admin),
+    __: None = Depends(verify_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> MessageOut:
+    key = repository.get_ssh_key(conn, key_id)
+    if key is None:
+        raise HTTPException(status_code=404, detail="SSH key not found")
+    refs = repository.ssh_key_references(conn, key_id)
+    if refs:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This key is still in use by: " + ", ".join(refs),
+        )
+    repository.delete_ssh_key(conn, key_id)
+    # Remove any decrypted on-disk copy so no plaintext key lingers.
+    servers.remove_materialized_key(key_id)
+    audit.record(
+        conn,
+        category=audit.CATEGORY_SYSTEM,
+        action="ssh_key_delete",
+        actor=admin,
+        target_type="ssh_key",
+        target_id=key_id,
+        target_name=key["name"],
+    )
+    return MessageOut(detail="SSH key deleted")
 
 
 # ---------------------------------------------------------------------------

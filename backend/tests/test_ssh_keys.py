@@ -266,8 +266,12 @@ def test_backfill_generates_keys_for_existing_users(admin) -> None:
             "ssh_key_generated_at FROM users"
         ).fetchall()
     assert rows
+    from app import keystore
+
     for row in rows:
-        assert row["ssh_private_key"].startswith(
+        # Private keys are stored encrypted at rest (issue_015-r1).
+        assert keystore.is_encrypted(row["ssh_private_key"]), row["username"]
+        assert keystore.decrypt(row["ssh_private_key"]).startswith(
             "-----BEGIN OPENSSH PRIVATE KEY-----"
         ), row["username"]
         assert row["ssh_public_key"].startswith("ssh-ed25519 ")

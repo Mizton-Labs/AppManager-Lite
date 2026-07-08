@@ -11,12 +11,15 @@ monkeypatch it and the ``app.proxmox`` HTTP seam.
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import subprocess  # noqa: S404 - argv arrays only, shell=False
+import sqlite3
 from typing import Any
 
-from . import proxmox
+from . import keystore, proxmox, repository
+from .config import get_settings
 from .proxmox import ProxmoxResult
 
 _SSH_TIMEOUT = 20
@@ -27,6 +30,57 @@ _IP_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
 
 class ServerError(ValueError):
     """Locally detected validation problem (maps to a 400)."""
+
+
+def resolve_ssh_key(
+    conn: sqlite3.Connection, key_id: int | None, *, fallback_path: str = ""
+) -> str:
+    """Return a filesystem path to the private key for ``ssh -i``.
+
+    - Registry ``path`` key: returns the stored path.
+    - Registry ``stored`` key: decrypts and materializes it under
+      ``data/keys/ssh-key-<id>`` at 0600, then returns that path.
+    - No/unknown key id: returns ``fallback_path`` (legacy behavior).
+    """
+    if key_id is not None:
+        key = repository.get_ssh_key(conn, key_id)
+        if key is not None:
+            if key["kind"] == "path":
+                return key["path"]
+            secret = repository.get_ssh_key_secret(conn, key_id)
+            if secret:
+                return _materialize_stored_key(key_id, keystore.decrypt(secret))
+    return fallback_path
+
+
+def _materialize_stored_key(key_id: int, private_key: str) -> str:
+    settings = get_settings()
+    settings.ensure_dirs()
+    keys_dir = settings.ssh_keys_dir
+    keys_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(keys_dir, 0o700)
+    except OSError:
+        pass
+    dest = keys_dir / f"ssh-key-{key_id}"
+    data = private_key if private_key.endswith("\n") else private_key + "\n"
+    # Create 0600 atomically (truncate if present) so there is no
+    # world-readable window before chmod.
+    fd = os.open(str(dest), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, data.encode("utf-8"))
+    finally:
+        os.close(fd)
+    return str(dest)
+
+
+def remove_materialized_key(key_id: int) -> None:
+    """Delete any on-disk materialized copy of a stored key (best effort)."""
+    dest = get_settings().ssh_keys_dir / f"ssh-key-{key_id}"
+    try:
+        dest.unlink()
+    except OSError:
+        pass
 
 
 def validate_server_name(name: str) -> str:

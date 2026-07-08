@@ -14,12 +14,14 @@ import type {
   GeneratedPassword,
   ReverseProxySettings,
   CreateServerTemplateInput,
+  CreateSshKeyInput,
   CreateUserServerInput,
   ProviderTemplates,
   ProvisioningSettings,
   ServerAccess,
   ServerTemplate,
   ServerTemplateOption,
+  SshKey,
   SessionState,
   SshKeyInfo,
   SshKeyRegenerateResult,
@@ -290,6 +292,17 @@ export const api = {
 
   getAccountServerAccess: () =>
     request<ServerAccess>("account/server-access"),
+
+  /** SSH key registry (Remote Access Config; administrators only). */
+  listSshKeys: () => request<SshKey[]>("settings/ssh-keys"),
+
+  createSshKey: (input: CreateSshKeyInput) =>
+    request<SshKey>("settings/ssh-keys", { method: "POST", body: input }),
+
+  deleteSshKey: (id: number) =>
+    request<{ detail: string }>(`settings/ssh-keys/${id}`, {
+      method: "DELETE",
+    }),
 
   /** Configurable branding (administrators only). */
   getBrandingSettings: () => request<BrandingSettings>("settings/branding"),

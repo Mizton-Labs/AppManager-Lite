@@ -853,12 +853,54 @@ class ProviderTemplatesOut(BaseModel):
     templates: list[ProviderTemplateOut] = Field(default_factory=list)
 
 
+class SshKeyOut(BaseModel):
+    """Registry entry without secret material."""
+
+    id: int
+    name: str
+    kind: str  # path | stored
+    path: str = ""
+    public_key: str = ""
+    fingerprint: str = ""
+    has_private_key: bool = False
+
+
+class CreateSshKeyRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    kind: str
+    # For kind='path'
+    path: str = Field(default="", max_length=4096)
+    # For kind='stored' (write-only; never returned)
+    private_key: str = Field(default="", max_length=32768)
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Key name must not be blank.")
+        return value
+
+    @field_validator("kind")
+    @classmethod
+    def _check_kind(cls, value: str) -> str:
+        if value not in ("path", "stored"):
+            raise ValueError("Key kind must be 'path' or 'stored'.")
+        return value
+
+    @field_validator("path")
+    @classmethod
+    def _check_path(cls, value: str) -> str:
+        return _validate_admin_key_path(value)
+
+
 class ServerTemplateOut(BaseModel):
     id: int
     vmid: int
     name: str
     kind: str
     admin_ssh_key_path: str = ""
+    admin_ssh_key_id: int | None = None
 
 
 class ServerTemplateOptionOut(BaseModel):

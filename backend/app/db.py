@@ -114,6 +114,22 @@ CREATE TABLE IF NOT EXISTS audit_log (
     detail         TEXT    NOT NULL DEFAULT ''
 );
 
+-- Registry of SSH keys usable across the app (issue_015-r1). A key is either
+-- a reference to a key file on the server (kind='path') or a private key
+-- stored encrypted at rest in the DB (kind='stored'). Secret material
+-- (encrypted_private_key) is never returned by the API.
+CREATE TABLE IF NOT EXISTS ssh_keys (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    name                  TEXT    NOT NULL UNIQUE,
+    kind                  TEXT    NOT NULL CHECK (kind IN ('path', 'stored')),
+    path                  TEXT    NOT NULL DEFAULT '',
+    encrypted_private_key TEXT    NOT NULL DEFAULT '',
+    public_key            TEXT    NOT NULL DEFAULT '',
+    fingerprint           TEXT    NOT NULL DEFAULT '',
+    created_at            TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at            TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Admin-registered Proxmox templates used to create user servers.
 CREATE TABLE IF NOT EXISTS server_templates (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -297,9 +313,10 @@ def _add_column(
 def _backfill_user_ssh_keys(conn: sqlite3.Connection) -> None:
     """Generate a keypair for every user that does not have one yet.
 
-    Key material never leaves the database here; nothing is logged.
+    Private keys are stored encrypted at rest (issue_015-r1). Key material
+    never leaves the database here; nothing is logged.
     """
-    from . import sshkeys
+    from . import keystore, sshkeys
 
     rows = conn.execute(
         "SELECT id, username FROM users WHERE ssh_public_key = ''"
@@ -313,7 +330,93 @@ def _backfill_user_ssh_keys(conn: sqlite3.Connection) -> None:
                 ssh_key_generated_at = datetime('now')
             WHERE id = ?
             """,
-            (private_key, public_key, row["id"]),
+            (keystore.encrypt(private_key), public_key, row["id"]),
+        )
+
+
+def _encrypt_existing_user_keys(conn: sqlite3.Connection) -> None:
+    """Encrypt any per-user private keys still stored in plaintext.
+
+    Idempotent: rows whose ``ssh_private_key`` is already an ``enc:v1:``
+    token (or empty) are skipped. Detects legacy plaintext by the OpenSSH
+    PEM header.
+    """
+    from . import keystore
+
+    rows = conn.execute(
+        "SELECT id, ssh_private_key FROM users WHERE ssh_private_key != ''"
+    ).fetchall()
+    for row in rows:
+        value = row["ssh_private_key"]
+        if keystore.is_encrypted(value):
+            continue
+        conn.execute(
+            "UPDATE users SET ssh_private_key = ? WHERE id = ?",
+            (keystore.encrypt(value), row["id"]),
+        )
+
+
+def _import_key_paths_to_registry(conn: sqlite3.Connection) -> None:
+    """Import already-configured SSH key file paths into the registry.
+
+    Creates one ``kind='path'`` ssh_keys row per distinct configured path
+    (reverse-proxy settings, server templates, reference user servers) and
+    links the corresponding ``*_ssh_key_id`` FK. Idempotent: rows that
+    already reference a registry key, and paths already imported, are skipped.
+    """
+    def _key_id_for_path(path: str) -> int:
+        path = (path or "").strip()
+        existing = conn.execute(
+            "SELECT id FROM ssh_keys WHERE kind = 'path' AND path = ?", (path,)
+        ).fetchone()
+        if existing:
+            return existing["id"]
+        # Derive a unique, human-readable name from the file name.
+        base = path.rsplit("/", 1)[-1] or "key"
+        name = f"{base} (imported)"
+        n = 2
+        while conn.execute(
+            "SELECT 1 FROM ssh_keys WHERE name = ?", (name,)
+        ).fetchone():
+            name = f"{base} (imported {n})"
+            n += 1
+        cur = conn.execute(
+            "INSERT INTO ssh_keys (name, kind, path) VALUES (?, 'path', ?)",
+            (name, path),
+        )
+        return int(cur.lastrowid)
+
+    # Reverse-proxy settings key.
+    row = conn.execute(
+        "SELECT ssh_key_path, reverse_proxy_ssh_key_id FROM settings WHERE id = 1"
+    ).fetchone()
+    if row and row["ssh_key_path"] and not row["reverse_proxy_ssh_key_id"]:
+        kid = _key_id_for_path(row["ssh_key_path"])
+        conn.execute(
+            "UPDATE settings SET reverse_proxy_ssh_key_id = ? WHERE id = 1",
+            (kid,),
+        )
+
+    # Server templates.
+    for r in conn.execute(
+        "SELECT id, admin_ssh_key_path FROM server_templates "
+        "WHERE admin_ssh_key_path != '' AND admin_ssh_key_id IS NULL"
+    ).fetchall():
+        kid = _key_id_for_path(r["admin_ssh_key_path"])
+        conn.execute(
+            "UPDATE server_templates SET admin_ssh_key_id = ? WHERE id = ?",
+            (kid, r["id"]),
+        )
+
+    # Reference user servers.
+    for r in conn.execute(
+        "SELECT id, admin_ssh_key_path FROM user_servers "
+        "WHERE admin_ssh_key_path != '' AND admin_ssh_key_id IS NULL"
+    ).fetchall():
+        kid = _key_id_for_path(r["admin_ssh_key_path"])
+        conn.execute(
+            "UPDATE user_servers SET admin_ssh_key_id = ? WHERE id = ?",
+            (kid, r["id"]),
         )
 
 
@@ -464,6 +567,26 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     _add_column(
         conn, "user_servers", "admin_ssh_key_path", "TEXT NOT NULL DEFAULT ''"
     )
+
+    # SSH key registry (issue_015-r1): foreign keys from the settings row,
+    # server templates, and user servers to a registered key. Legacy *_path
+    # columns are kept as a read fallback.
+    _add_column(
+        conn, "settings", "reverse_proxy_ssh_key_id", "INTEGER"
+    )
+    _add_column(conn, "server_templates", "admin_ssh_key_id", "INTEGER")
+    _add_column(conn, "user_servers", "admin_ssh_key_id", "INTEGER")
+
+    # Jump server (issue_015-r1): onboard/offboard OS accounts on a bastion.
+    _add_column(conn, "settings", "jump_enabled", "INTEGER NOT NULL DEFAULT 0")
+    _add_column(conn, "settings", "jump_host", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "settings", "jump_user", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "settings", "jump_ssh_key_id", "INTEGER")
+
+    # Encrypt any per-user private keys still stored in plaintext, and import
+    # already-configured key file paths into the registry (idempotent).
+    _encrypt_existing_user_keys(conn)
+    _import_key_paths_to_registry(conn)
 
     # Predefined bundle template reserved for the dynamically generated SSH
     # configuration file (no mappings: content is built from the user's
