@@ -6,6 +6,8 @@ import type {
   BundleTemplateMapping,
 } from "../types";
 
+const BUNDLE_MAX_SERVER_VARS = 8;
+
 const MAPPING_OPTIONS: { value: BundleMappingSource; label: string }[] = [
   { value: "username", label: "Username" },
   { value: "user_id", label: "User ID (derived identifier)" },
@@ -13,6 +15,23 @@ const MAPPING_OPTIONS: { value: BundleMappingSource; label: string }[] = [
   { value: "user_apps_server_host", label: "Apps server host" },
   { value: "user_apps_server_ip", label: "Apps server IP" },
   { value: "user_role", label: "User role" },
+  // Dynamic per-server variables (server1..serverN).
+  ...Array.from({ length: BUNDLE_MAX_SERVER_VARS }, (_, i) => i + 1).flatMap(
+    (n) => [
+      {
+        value: `server${n}_name` as BundleMappingSource,
+        label: `Server ${n} name`,
+      },
+      {
+        value: `server${n}_ip` as BundleMappingSource,
+        label: `Server ${n} IP`,
+      },
+      {
+        value: `server${n}_user` as BundleMappingSource,
+        label: `Server ${n} user`,
+      },
+    ],
+  ),
 ];
 
 function emptyMapping(): BundleTemplateMapping {
@@ -102,6 +121,32 @@ export function BundleTemplateManagement() {
       await reload();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Unable to delete template.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cloneTemplate(template: BundleTemplate) {
+    setError(null);
+    setBusy(true);
+    try {
+      await api.cloneBundleTemplate(template.id, `${template.name} (copy)`);
+      await reload();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Unable to clone template.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function toggleEnabled(template: BundleTemplate) {
+    setError(null);
+    setBusy(true);
+    try {
+      await api.setBundleTemplateEnabled(template.id, !template.enabled);
+      await reload();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Unable to update template.");
     } finally {
       setBusy(false);
     }
@@ -220,25 +265,62 @@ export function BundleTemplateManagement() {
               <div className="user-card-head">
                 <div className="user-identity">
                   <span className="user-name">{template.name}</span>
+                  {template.is_builtin && (
+                    <span className="role-badge">built-in</span>
+                  )}
                   <span className="status-badge ok">
                     {template.mappings.length} mappings
                   </span>
+                  {!template.enabled && (
+                    <span className="status-badge warn">disabled</span>
+                  )}
                 </div>
                 <div className="row-actions">
-                  <button
-                    type="button"
-                    className="btn ghost"
-                    onClick={() => editTemplate(template)}
-                  >
-                    Edit
-                  </button>
-                  <button
-                    type="button"
-                    className="btn danger"
-                    onClick={() => deleteTemplate(template)}
-                  >
-                    Delete
-                  </button>
+                  {template.is_builtin ? (
+                    <>
+                      <button
+                        type="button"
+                        className="btn ghost"
+                        onClick={() => cloneTemplate(template)}
+                        disabled={busy}
+                      >
+                        Clone
+                      </button>
+                      <button
+                        type="button"
+                        className="btn ghost"
+                        onClick={() => toggleEnabled(template)}
+                        disabled={busy}
+                      >
+                        {template.enabled ? "Disable" : "Enable"}
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        className="btn ghost"
+                        onClick={() => editTemplate(template)}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        className="btn ghost"
+                        onClick={() => cloneTemplate(template)}
+                        disabled={busy}
+                      >
+                        Clone
+                      </button>
+                      <button
+                        type="button"
+                        className="btn danger"
+                        onClick={() => deleteTemplate(template)}
+                      >
+                        Delete
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             </article>

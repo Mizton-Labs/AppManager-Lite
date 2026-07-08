@@ -475,14 +475,28 @@ def change_own_password(
     return MessageOut(detail="Password updated")
 
 
+def _user_servers_with_main_user(
+    conn: sqlite3.Connection, user_id: int
+) -> list[dict[str, Any]]:
+    """The user's servers, each annotated with its template's main OS user."""
+    servers = repository.list_user_servers(conn, user_id)
+    for s in servers:
+        if s.get("template_id") is not None:
+            tpl = repository.get_server_template(conn, s["template_id"])
+            s["main_os_user"] = (tpl or {}).get("main_os_user", "")
+    return servers
+
+
 @router.get("/account/bundles", response_model=list[BundleOptionOut])
 def list_account_bundles(
     _user: dict[str, Any] = Depends(get_current_user),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> list[BundleOptionOut]:
+    # Disabled templates are hidden from the account download list.
     return [
         BundleOptionOut(id=template["id"], name=template["name"])
         for template in repository.list_bundle_templates(conn)
+        if template.get("enabled", True)
     ]
 
 
@@ -495,14 +509,30 @@ def download_account_bundle(
     template = repository.get_bundle_template(conn, template_id)
     if template is None:
         raise HTTPException(status_code=404, detail="Bundle template not found")
-    if template["mappings"]:
-        content = repository.render_bundle_template(template, user)
+    if not template.get("enabled", True):
+        raise HTTPException(status_code=404, detail="Bundle template not found")
+    if template["is_builtin"]:
+        # Built-in SSH config: rendered dynamically from the user's servers
+        # and the jump server (with ProxyJump when the jump server is enabled).
+        jump = jumpserver.load_config(conn)
+        content = repository.render_builtin_ssh_config(
+            user,
+            _user_servers_with_main_user(conn, user["id"]),
+            jump={
+                "enabled": jump.enabled,
+                "host": jump.host,
+                "user": jump.user,
+                "port": jump.port,
+            },
+        )
+    elif template["mappings"]:
+        content = repository.render_bundle_template(
+            template, user, _user_servers_with_main_user(conn, user["id"])
+        )
     else:
-        # No mappings: generate a generic SSH configuration file from the
-        # user's servers (Host <name> / HostName <ip>). This powers the
-        # predefined "SSH Config Default" template.
+        # No mappings and not builtin: generic per-server config fallback.
         content = repository.render_generic_ssh_config(
-            user, repository.list_user_servers(conn, user["id"])
+            user, _user_servers_with_main_user(conn, user["id"])
         )
     safe_name = "".join(
         ch if ch.isalnum() or ch in ("-", "_") else "-" for ch in template["name"].lower()

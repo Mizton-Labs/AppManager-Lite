@@ -381,9 +381,10 @@ def test_default_ssh_config_generated_from_servers(admin, monkeypatch) -> None:
     assert download.status_code == 200
     text = download.text
     assert "Host coder-box" in text
-    assert "HostName 10.0.7.42" in text
+    assert "Hostname 10.0.7.42" in text
     assert "User rotuser" in text
     assert "IdentityFile ~/.ssh/id_ed25519" in text
+    assert "Host *" in text  # builtin keepalive stanza
 
 
 def test_admin_key_path_never_in_server_responses(admin, monkeypatch) -> None:
@@ -424,4 +425,7 @@ def test_default_ssh_config_without_servers(admin) -> None:
     default = next(o for o in options if o["name"] == "SSH Config Default")
     download = member.get(f"/api/account/bundles/{default['id']}/download")
     assert download.status_code == 200
-    assert "No servers" in download.text
+    # The built-in config always includes the Host * keepalive stanza, even
+    # with no servers (no per-server Host blocks).
+    assert "Host *" in download.text
+    assert "ServerAliveInterval 60" in download.text

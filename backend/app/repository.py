@@ -13,7 +13,10 @@ import sqlite3
 from typing import Any
 
 from . import keystore, security, sshkeys
+from .schemas import BUNDLE_MAPPING_SOURCES, BUNDLE_MAX_SERVER_VARS
 from .teams import slugify
+
+__all__ = ["BUNDLE_MAPPING_SOURCES", "BUNDLE_MAX_SERVER_VARS"]
 
 
 def _encrypt_private_key(value: str) -> str:
@@ -25,14 +28,9 @@ class TeamConflictError(ValueError):
     """Raised when a team name (or its derived slug) collides with another."""
 
 
-BUNDLE_MAPPING_SOURCES = (
-    "username",
-    "user_id",
-    "user_apps_server",
-    "user_apps_server_host",
-    "user_apps_server_ip",
-    "user_role",
-)
+# Single source of truth for bundle mapping sources lives in schemas (the
+# API-validation layer); re-exported here so the renderer and the validator
+# can never desync. (Imported at module top.)
 
 
 def _row_to_team(row: sqlite3.Row) -> dict[str, Any]:
@@ -526,6 +524,8 @@ def _row_to_bundle_template(
         "name": row["name"],
         "content": row["content"],
         "mappings": _bundle_mappings(conn, row["id"]),
+        "is_builtin": bool(row["is_builtin"]),
+        "enabled": bool(row["enabled"]),
     }
 
 
@@ -626,11 +626,25 @@ def delete_bundle_template(conn: sqlite3.Connection, template_id: int) -> bool:
     return cur.rowcount > 0
 
 
-def render_bundle_template(template: dict[str, Any], user: dict[str, Any]) -> str:
-    values = {
+def _server_var_user(server: dict[str, Any], user_id: str) -> str:
+    """OS user for a server variable: the template main user, else user_id.
+
+    The server dict may carry the template's ``main_os_user`` (annotated by the
+    download path); fall back to the account's derived user id.
+    """
+    return (server.get("main_os_user") or "").strip() or user_id
+
+
+def bundle_mapping_values(
+    user: dict[str, Any], user_servers: list[dict[str, Any]] | None = None
+) -> dict[str, str]:
+    """All mapping-source -> value pairs for a user (static + per-server)."""
+    user_id = user.get("user_id", "") or derive_user_id(
+        user.get("username", "") or ""
+    )
+    values: dict[str, str] = {
         "username": user.get("username", "") or "",
-        "user_id": user.get("user_id", "")
-        or derive_user_id(user.get("username", "") or ""),
+        "user_id": user_id,
         "user_apps_server": user.get("apps_server", "")
         or user.get("apps_server_ip", "")
         or "",
@@ -638,6 +652,33 @@ def render_bundle_template(template: dict[str, Any], user: dict[str, Any]) -> st
         "user_apps_server_ip": user.get("apps_server_ip", "") or "",
         "user_role": user.get("role", "") or "",
     }
+    # Per-server indexed variables (server1..serverN); usable servers only.
+    usable = [
+        s
+        for s in (user_servers or [])
+        if s.get("status") != "failed" and s.get("ip_address")
+    ]
+    for i in range(1, BUNDLE_MAX_SERVER_VARS + 1):
+        srv = usable[i - 1] if i - 1 < len(usable) else None
+        if srv is not None:
+            raw = srv.get("hostname") or srv.get("name", "server")
+            name = re.sub(r"[^a-z0-9-]+", "-", raw.lower()).strip("-") or "server"
+            values[f"server{i}_name"] = name
+            values[f"server{i}_ip"] = srv.get("ip_address", "")
+            values[f"server{i}_user"] = _server_var_user(srv, user_id)
+        else:
+            values[f"server{i}_name"] = ""
+            values[f"server{i}_ip"] = ""
+            values[f"server{i}_user"] = ""
+    return values
+
+
+def render_bundle_template(
+    template: dict[str, Any],
+    user: dict[str, Any],
+    user_servers: list[dict[str, Any]] | None = None,
+) -> str:
+    values = bundle_mapping_values(user, user_servers)
     rendered = str(template["content"])
     for mapping in template["mappings"]:
         rendered = rendered.replace(
@@ -677,6 +718,83 @@ def render_generic_ssh_config(
             "account yet.\n"
         )
     return "\n".join(blocks)
+
+
+def render_builtin_ssh_config(
+    user: dict[str, Any],
+    user_servers: list[dict[str, Any]],
+    jump: dict[str, Any] | None = None,
+) -> str:
+    """Render the built-in SSH config (issue_015-r2).
+
+    Produces a ``Host *`` keepalive stanza, an optional ``Host JUMPSERVER``
+    block when a jump server is enabled, and one ``Host`` block per usable
+    server (with ``ProxyJump`` when the jump server is enabled).
+    """
+    user_id = user.get("user_id", "") or derive_user_id(
+        user.get("username", "") or ""
+    )
+    parts = [
+        "Host *\n"
+        "    ServerAliveInterval 60\n"
+        "    ServerAliveCountMax 3\n"
+        "    TCPKeepAlive yes\n"
+    ]
+    jump_enabled = bool(jump and jump.get("enabled") and jump.get("host"))
+    if jump_enabled:
+        parts.append(
+            "Host jumpserver\n"
+            f"    Hostname {jump['host']}\n"
+            f"    User {jump.get('user', '') or user_id}\n"
+            f"    Port {int(jump.get('port', 22) or 22)}\n"
+            "    IdentityFile ~/.ssh/id_ed25519\n"
+        )
+    for server in user_servers:
+        if server.get("status") == "failed" or not server.get("ip_address"):
+            continue
+        raw = server.get("hostname") or server.get("name", "server")
+        host = re.sub(r"[^a-z0-9-]+", "-", raw.lower()).strip("-") or "server"
+        srv_user = _server_var_user(server, user_id)
+        block = (
+            f"Host {host}\n"
+            f"    Hostname {server['ip_address']}\n"
+            + (f"    User {srv_user}\n" if srv_user else "")
+            + ("    ProxyJump jumpserver\n" if jump_enabled else "")
+            + "    IdentityFile ~/.ssh/id_ed25519\n"
+        )
+        parts.append(block)
+    return "\n".join(parts)
+
+
+def set_bundle_template_enabled(
+    conn: sqlite3.Connection, template_id: int, enabled: bool
+) -> dict[str, Any] | None:
+    if get_bundle_template(conn, template_id) is None:
+        return None
+    conn.execute(
+        "UPDATE bundle_templates SET enabled = ?, updated_at = datetime('now') "
+        "WHERE id = ?",
+        (int(enabled), template_id),
+    )
+    return get_bundle_template(conn, template_id)
+
+
+def clone_bundle_template(
+    conn: sqlite3.Connection, template_id: int, *, new_name: str
+) -> dict[str, Any] | None:
+    """Clone a template into a new editable (non-builtin) template."""
+    source = get_bundle_template(conn, template_id)
+    if source is None:
+        return None
+    return create_bundle_template(
+        conn,
+        name=new_name,
+        content=source["content"],
+        mappings=[
+            {"field_name": m["field_name"], "source": m["source"]}
+            for m in source["mappings"]
+        ],
+    )
 
 
 # ---------------------------------------------------------------------------

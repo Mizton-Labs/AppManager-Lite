@@ -60,7 +60,11 @@ export type BundleMappingSource =
   | "user_apps_server"
   | "user_apps_server_host"
   | "user_apps_server_ip"
-  | "user_role";
+  | "user_role"
+  // Dynamic per-server variables: server1_name/server1_ip/server1_user ...
+  | `server${number}_name`
+  | `server${number}_ip`
+  | `server${number}_user`;
 
 export interface BundleTemplateMapping {
   field_name: string;
@@ -72,6 +76,8 @@ export interface BundleTemplate {
   name: string;
   content: string;
   mappings: BundleTemplateMapping[];
+  is_builtin: boolean;
+  enabled: boolean;
 }
 
 export interface BundleOption {

@@ -18,11 +18,13 @@ from ..repository import TeamConflictError
 from ..schemas import (
     BrandingSettingsOut,
     BundleTemplateOut,
+    CloneBundleTemplateRequest,
     CreateBundleTemplateRequest,
     CreateTeamRequest,
     MessageOut,
     ReorderTeamsRequest,
     ReverseProxySettingsOut,
+    SetBundleTemplateEnabledRequest,
     TeamOut,
     UpdateBundleTemplateRequest,
     UpdateBrandingSettingsRequest,
@@ -231,6 +233,14 @@ def update_bundle_template(
     __: None = Depends(verify_csrf),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> BundleTemplateOut:
+    existing = repository.get_bundle_template(conn, template_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Bundle template not found")
+    if existing["is_builtin"]:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Built-in templates cannot be edited; clone it first.",
+        )
     try:
         template = repository.update_bundle_template(
             conn,
@@ -274,6 +284,11 @@ def delete_bundle_template(
     existing = repository.get_bundle_template(conn, template_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="Bundle template not found")
+    if existing["is_builtin"]:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Built-in templates cannot be deleted; disable it instead.",
+        )
     repository.delete_bundle_template(conn, template_id)
     audit.record(
         conn,
@@ -285,6 +300,72 @@ def delete_bundle_template(
         target_name=existing["name"],
     )
     return MessageOut(detail="Bundle template deleted")
+
+
+@router.post(
+    "/settings/bundle-templates/{template_id}/clone",
+    response_model=BundleTemplateOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def clone_bundle_template(
+    template_id: int,
+    payload: CloneBundleTemplateRequest,
+    actor: dict[str, Any] = Depends(require_admin),
+    __: None = Depends(verify_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> BundleTemplateOut:
+    if repository.get_bundle_template(conn, template_id) is None:
+        raise HTTPException(status_code=404, detail="Bundle template not found")
+    try:
+        clone = repository.clone_bundle_template(
+            conn, template_id, new_name=payload.name
+        )
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A bundle template with that name already exists",
+        ) from exc
+    assert clone is not None
+    audit.record(
+        conn,
+        category=audit.CATEGORY_SYSTEM,
+        action="bundle_template_clone",
+        actor=actor,
+        target_type="bundle_template",
+        target_id=clone["id"],
+        target_name=clone["name"],
+        detail=f"cloned_from={template_id}",
+    )
+    return _bundle_out(clone)
+
+
+@router.patch(
+    "/settings/bundle-templates/{template_id}/enabled",
+    response_model=BundleTemplateOut,
+)
+def set_bundle_template_enabled(
+    template_id: int,
+    payload: SetBundleTemplateEnabledRequest,
+    actor: dict[str, Any] = Depends(require_admin),
+    __: None = Depends(verify_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> BundleTemplateOut:
+    template = repository.set_bundle_template_enabled(
+        conn, template_id, payload.enabled
+    )
+    if template is None:
+        raise HTTPException(status_code=404, detail="Bundle template not found")
+    audit.record(
+        conn,
+        category=audit.CATEGORY_SYSTEM,
+        action="bundle_template_enable",
+        actor=actor,
+        target_type="bundle_template",
+        target_id=template["id"],
+        target_name=template["name"],
+        detail=f"enabled={payload.enabled}",
+    )
+    return _bundle_out(template)
 
 
 # --- Team management (administrator-managed) --------------------------------

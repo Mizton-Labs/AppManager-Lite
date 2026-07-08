@@ -340,6 +340,18 @@ export const api = {
       method: "DELETE",
     }),
 
+  cloneBundleTemplate: (id: number, name: string) =>
+    request<BundleTemplate>(`settings/bundle-templates/${id}/clone`, {
+      method: "POST",
+      body: { name },
+    }),
+
+  setBundleTemplateEnabled: (id: number, enabled: boolean) =>
+    request<BundleTemplate>(`settings/bundle-templates/${id}/enabled`, {
+      method: "PATCH",
+      body: { enabled },
+    }),
+
   createTeam: (input: CreateTeamInput) =>
     request<Team>("settings/teams", { method: "POST", body: input }),
 
