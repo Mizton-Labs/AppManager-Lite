@@ -28,6 +28,23 @@ function stubSettings(
       if (method === "PATCH") brandingStore = { ...brandingStore, ...body };
       return { ok: true, status: 200, json: async () => brandingStore } as Response;
     }
+    if (/\/api\/settings\/ssh-keys\b/.test(url)) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => [
+          {
+            id: 5,
+            name: "proxy key",
+            kind: "path",
+            path: "/data/keys/proxy_ed25519",
+            public_key: "",
+            fingerprint: "",
+            has_private_key: false,
+          },
+        ],
+      } as Response;
+    }
     // Default: reverse-proxy.
     if (method === "PATCH") proxyStore = { ...proxyStore, ...body };
     return { ok: true, status: 200, json: async () => proxyStore } as Response;
@@ -41,6 +58,7 @@ const SAMPLE: ReverseProxySettings = {
   nginx_user: "deploy",
   nginx_conf_path: "/etc/nginx/conf.d/apps.conf",
   ssh_key_path: "/data/keys/proxy_ed25519",
+  reverse_proxy_ssh_key_id: 5,
   appmanager_proxy_host: "appmanager",
   appmanager_proxy_port: "8000",
   alias_template: "location /ALIAS/ { proxy_pass http://APPS_SERVER:APPS_PORT/; }",
@@ -58,9 +76,8 @@ describe("GeneralSettings", () => {
     expect(
       await screen.findByDisplayValue("proxy.example.com"),
     ).toBeInTheDocument();
-    expect(
-      screen.getByDisplayValue("/data/keys/proxy_ed25519"),
-    ).toBeInTheDocument();
+    // The SSH key is now selected from the registry dropdown by name.
+    expect(await screen.findByRole("option", { name: /proxy key/i })).toBeInTheDocument();
     // The SSH user field is shown and loaded.
     expect(screen.getByDisplayValue("deploy")).toBeInTheDocument();
     expect(screen.getByDisplayValue("appmanager")).toBeInTheDocument();

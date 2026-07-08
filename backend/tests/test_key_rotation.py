@@ -255,6 +255,63 @@ def test_regenerate_rotates_key_on_servers(admin, monkeypatch) -> None:
     assert "AAAA" not in regen["detail"]
 
 
+def test_regenerate_rotates_via_registry_key(admin, monkeypatch) -> None:
+    """Rotation resolves the admin key from the registry (admin_ssh_key_id)."""
+    client, csrf, _ = admin
+    ssh = _FakeSsh(monkeypatch)
+    _FakeProxmox(monkeypatch)
+    client.patch(
+        "/api/settings/provisioning",
+        json={"provider_type": "proxmox", "proxmox_url": "https://pve:8006",
+              "proxmox_token_name": "svc@pam!a", "proxmox_api_key": "sek"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    # Register a path-kind key and a template that references it by id.
+    key = client.post(
+        "/api/settings/ssh-keys",
+        json={"name": "reg key", "kind": "path", "path": "/reg/admin_key"},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    template = client.post(
+        "/api/settings/server-templates",
+        json={"vmid": 9001, "name": "Reg Tpl", "kind": "lxc",
+              "admin_ssh_key_id": key["id"]},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    created = _create_member(client, csrf)
+    user_id = created["user"]["id"]
+    resp = client.post(
+        f"/api/users/{user_id}/servers",
+        json={"template_id": template["id"], "name": "box",
+              "install_pubkey": False},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 201, resp.text
+
+    # The created server persisted the registry key id.
+    from app.db import get_connection
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT admin_ssh_key_id FROM user_servers WHERE user_id=?",
+            (user_id,),
+        ).fetchone()
+        assert row["admin_ssh_key_id"] == key["id"]
+
+    member, member_csrf = _login(
+        client.app, "rotuser@example.com", created["password"]
+    )
+    ssh.commands.clear()
+    r = member.post(
+        "/api/account/ssh-key/regenerate",
+        headers={"X-CSRF-Token": member_csrf},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["rotation"][0]["status"] == "updated"
+    # Rotation used the registry-resolved key path.
+    rot = [c for c in ssh.commands if "authorized_keys" in c[-1]][-1]
+    assert rot[rot.index("-i") + 1] == "/reg/admin_key"
+
+
 def test_regenerate_reports_skips_and_failures(admin, monkeypatch) -> None:
     client, csrf, _ = admin
     created = _create_member(client, csrf)

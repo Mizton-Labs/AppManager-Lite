@@ -41,6 +41,7 @@ def _settings_out(
         nginx_user=row.get("nginx_user", ""),
         nginx_conf_path=row.get("nginx_conf_path", ""),
         ssh_key_path=row.get("ssh_key_path", ""),
+        reverse_proxy_ssh_key_id=row.get("reverse_proxy_ssh_key_id"),
         appmanager_proxy_host=row.get("appmanager_proxy_host", ""),
         appmanager_proxy_port=row.get("appmanager_proxy_port", ""),
         alias_template=row.get("alias_template", ""),
@@ -83,17 +84,26 @@ def update_reverse_proxy_settings(
     __: None = Depends(verify_csrf),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> ReverseProxySettingsOut:
+    if payload.reverse_proxy_ssh_key_id is not None and (
+        repository.get_ssh_key(conn, payload.reverse_proxy_ssh_key_id) is None
+    ):
+        raise HTTPException(status_code=400, detail="Unknown SSH key")
     row = repository.update_settings_row(
         conn,
         nginx_host=payload.nginx_host,
         nginx_user=payload.nginx_user,
         nginx_conf_path=payload.nginx_conf_path,
         ssh_key_path=payload.ssh_key_path,
+        reverse_proxy_ssh_key_id=payload.reverse_proxy_ssh_key_id,
         appmanager_proxy_host=payload.appmanager_proxy_host,
         appmanager_proxy_port=payload.appmanager_proxy_port,
         alias_template=payload.alias_template,
     )
-    protected_alias_result = reverse_proxy.ensure_proxy_auth_config(row)
+    # Resolve the effective key path on a copy so the response still reflects
+    # the stored raw path / selected key id.
+    op_row = dict(row)
+    op_row["ssh_key_path"] = repository.reverse_proxy_key_path(conn, row)
+    protected_alias_result = reverse_proxy.ensure_proxy_auth_config(op_row)
     # Record which fields changed -- never the key path contents beyond a flag.
     changed = [
         name
@@ -102,6 +112,7 @@ def update_reverse_proxy_settings(
             "nginx_user",
             "nginx_conf_path",
             "ssh_key_path",
+            "reverse_proxy_ssh_key_id",
             "appmanager_proxy_host",
             "appmanager_proxy_port",
             "alias_template",

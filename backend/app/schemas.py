@@ -663,6 +663,8 @@ class ReverseProxySettingsOut(BaseModel):
     nginx_user: str = ""
     nginx_conf_path: str = ""
     ssh_key_path: str = ""
+    # Registry key selected for reverse-proxy SSH (replaces the raw path in UI).
+    reverse_proxy_ssh_key_id: int | None = None
     appmanager_proxy_host: str = ""
     appmanager_proxy_port: str = ""
     alias_template: str = ""
@@ -675,6 +677,7 @@ class UpdateReverseProxySettingsRequest(BaseModel):
     nginx_user: str | None = Field(default=None, max_length=64)
     nginx_conf_path: str | None = Field(default=None, max_length=4096)
     ssh_key_path: str | None = Field(default=None, max_length=4096)
+    reverse_proxy_ssh_key_id: int | None = Field(default=None, ge=1)
     appmanager_proxy_host: str | None = Field(default=None, max_length=253)
     appmanager_proxy_port: str | None = Field(default=None, max_length=5)
     alias_template: str | None = Field(default=None, max_length=65536)
@@ -936,6 +939,7 @@ class CreateServerTemplateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=60)
     kind: str
     admin_ssh_key_path: str = Field(default="", max_length=4096)
+    admin_ssh_key_id: int | None = Field(default=None, ge=1)
 
     @field_validator("kind")
     @classmethod
@@ -1000,6 +1004,7 @@ class UpdateServerTemplateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=60)
     kind: str | None = None
     admin_ssh_key_path: str | None = Field(default=None, max_length=4096)
+    admin_ssh_key_id: int | None = Field(default=None, ge=1)
 
     @field_validator("kind")
     @classmethod

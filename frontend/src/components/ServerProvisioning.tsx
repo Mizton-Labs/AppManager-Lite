@@ -4,6 +4,7 @@ import type {
   ProviderTemplate,
   ProvisioningSettings,
   ServerTemplate,
+  SshKey,
 } from "../types";
 
 /**
@@ -407,18 +408,24 @@ function PolicyCard(props: {
 
 function ServerTemplatesCard() {
   const [templates, setTemplates] = useState<ServerTemplate[]>([]);
+  const [sshKeys, setSshKeys] = useState<SshKey[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [vmid, setVmid] = useState("");
   const [name, setName] = useState("");
   const [kind, setKind] = useState<"lxc" | "vm">("lxc");
-  const [keyPath, setKeyPath] = useState("");
+  const [keyId, setKeyId] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function refresh() {
     setError(null);
     try {
-      setTemplates(await api.listServerTemplates());
+      const [tpls, keys] = await Promise.all([
+        api.listServerTemplates(),
+        api.listSshKeys(),
+      ]);
+      setTemplates(tpls);
+      setSshKeys(keys);
     } catch (err) {
       setError(
         err instanceof ApiError ? err.message : "Failed to load server templates.",
@@ -441,11 +448,11 @@ function ServerTemplatesCard() {
         vmid: Number(vmid),
         name: name.trim(),
         kind,
-        admin_ssh_key_path: keyPath.trim(),
+        admin_ssh_key_id: keyId ? Number(keyId) : null,
       });
       setVmid("");
       setName("");
-      setKeyPath("");
+      setKeyId("");
       await refresh();
     } catch (err) {
       setError(
@@ -523,12 +530,20 @@ function ServerTemplatesCard() {
           </label>
         </fieldset>
         <label className="field">
-          <span>Admin SSH key (path on server, optional)</span>
-          <input
-            value={keyPath}
-            onChange={(e) => setKeyPath(e.target.value)}
-            placeholder="/home/svc/.ssh/id_ed25519"
-          />
+          <span>Admin SSH key (optional)</span>
+          <select value={keyId} onChange={(e) => setKeyId(e.target.value)}>
+            <option value="">None</option>
+            {sshKeys.map((k) => (
+              <option key={k.id} value={k.id}>
+                {k.name} ({k.kind})
+              </option>
+            ))}
+          </select>
+          {sshKeys.length === 0 && (
+            <span className="hint">
+              Register keys under Settings &rarr; Remote Access first.
+            </span>
+          )}
         </label>
         <div className="row-actions">
           <button
@@ -566,9 +581,14 @@ function ServerTemplatesCard() {
                   </button>
                 </div>
               </div>
-              {template.admin_ssh_key_path && (
+              {(template.admin_ssh_key_id !== null ||
+                template.admin_ssh_key_path) && (
                 <p className="muted">
-                  Admin key: <code>{template.admin_ssh_key_path}</code>
+                  Admin key:{" "}
+                  {template.admin_ssh_key_id !== null
+                    ? sshKeys.find((k) => k.id === template.admin_ssh_key_id)
+                        ?.name ?? `#${template.admin_ssh_key_id}`
+                    : template.admin_ssh_key_path}
                 </p>
               )}
             </article>

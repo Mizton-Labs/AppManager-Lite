@@ -597,12 +597,20 @@ def _rotate_key_on_servers(
             entry.detail = "no IP address on record"
             summary.append(entry)
             continue
-        admin_key_path = server.get("admin_ssh_key_path", "")
-        if not admin_key_path and server["template_id"] is not None:
+        # Resolve the admin key from the registry: the server's own key first,
+        # then its template's key (registry FK preferred, legacy path fallback).
+        key_id = server.get("admin_ssh_key_id")
+        fallback = server.get("admin_ssh_key_path", "")
+        if key_id is None and not fallback and server["template_id"] is not None:
             template = repository.get_server_template(
                 conn, server["template_id"]
             )
-            admin_key_path = (template or {}).get("admin_ssh_key_path", "")
+            if template is not None:
+                key_id = template.get("admin_ssh_key_id")
+                fallback = template.get("admin_ssh_key_path", "")
+        admin_key_path = servers.resolve_ssh_key(
+            conn, key_id, fallback_path=fallback
+        )
         if not admin_key_path:
             entry.detail = "no admin SSH key configured for this server"
             summary.append(entry)
