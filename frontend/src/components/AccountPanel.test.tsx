@@ -87,13 +87,8 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** Click an Account sub-tab by its visible label. */
-async function openTab(label: RegExp) {
-  await userEvent.click(await screen.findByRole("button", { name: label }));
-}
-
 describe("AccountPanel", () => {
-  it("renders the three account tabs", async () => {
+  it("renders all account cards without tabs", async () => {
     stubAccount();
     render(
       <AccountPanel
@@ -101,13 +96,17 @@ describe("AccountPanel", () => {
         onPasswordChanged={() => undefined}
       />,
     );
-    expect(screen.getByRole("button", { name: "User Info" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "SSH Info" })).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Change Password" }),
-    ).toBeInTheDocument();
-    // User Info is the default tab: profile is visible.
+    // No sub-tab buttons; every card heading is visible at once.
+    expect(screen.queryByRole("button", { name: "User Info" })).toBeNull();
     expect(screen.getByText("Profile")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /my servers/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: /ssh configuration file/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /^ssh key$/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: /change password/i }),
+    ).toBeInTheDocument();
   });
 
   it("lists and downloads account bundles", async () => {
@@ -120,7 +119,6 @@ describe("AccountPanel", () => {
         onPasswordChanged={() => undefined}
       />,
     );
-    await openTab(/SSH Info/i);
 
     expect(await screen.findByText("Shell profile")).toBeInTheDocument();
     expect(
@@ -158,7 +156,6 @@ describe("AccountPanel", () => {
         onPasswordChanged={() => undefined}
       />,
     );
-    await openTab(/SSH Info/i);
 
     expect(await screen.findByText(sshKey.public_key)).toBeInTheDocument();
     await userEvent.click(
@@ -195,7 +192,6 @@ describe("AccountPanel", () => {
         onPasswordChanged={() => undefined}
       />,
     );
-    await openTab(/SSH Info/i);
 
     await screen.findByText(sshKey.public_key);
     await userEvent.click(screen.getByRole("button", { name: /regenerate key/i }));
