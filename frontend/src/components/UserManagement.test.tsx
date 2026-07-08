@@ -39,6 +39,14 @@ function stubUsers() {
     if (method === "GET" && url.endsWith("/api/account/server-templates")) {
       return json([]);
     }
+    if (method === "GET" && url.endsWith("/api/settings/server-templates")) {
+      return json([
+        { id: 7, vmid: 9001, name: "Debian Coder", kind: "lxc",
+          admin_ssh_key_path: "", admin_ssh_key_id: null,
+          main_os_user: "coder", enable_sudo: true,
+          enable_trusted_access: true },
+      ]);
+    }
     if (method === "POST" && url.endsWith("/api/settings/bundle-templates")) {
       const body = JSON.parse(init?.body as string);
       return json({ id: 1, ...body });
@@ -47,6 +55,10 @@ function stubUsers() {
       return json({
         user: makeUser({ id: 2, username: "newbie@example.com", role: "user" }),
         password: "Generated-Pass-123",
+        provisioning: [
+          { template_id: 7, template_name: "Debian Coder",
+            status: "created", detail: "vmid=101 ip=10.0.0.5" },
+        ],
       });
     }
     if (method === "DELETE" && url.includes("/api/users/")) {
@@ -173,6 +185,38 @@ describe("UserManagement credential copy", () => {
       apps_server: "",
       apps_server_ip: "10.0.0.8",
     });
+  });
+
+  it("provisions every server template by default and shows the summary", async () => {
+    const fetchMock = stubUsers();
+    render(<UserManagement currentUser={makeUser({ id: 99, role: "admin" })} />);
+
+    await screen.findByRole("heading", { name: /create user/i });
+    // The template toggle is pre-selected (default ON).
+    const toggle = await screen.findByLabelText(/Debian Coder \(LXC\)/i);
+    expect(toggle).toBeChecked();
+
+    await userEvent.type(
+      screen.getByLabelText(/username/i),
+      "newbie@example.com",
+    );
+    await userEvent.type(
+      screen.getByLabelText(/apps server hostname/i),
+      "apps.example.com",
+    );
+    await userEvent.click(screen.getByRole("button", { name: /^create user$/i }));
+
+    const createCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).endsWith("/api/users") && (init?.method ?? "GET") === "POST",
+    );
+    expect(
+      JSON.parse((createCall![1] as RequestInit).body as string),
+    ).toMatchObject({ provision_templates: [7] });
+
+    // The credential banner reports the per-template provisioning outcome.
+    expect(await screen.findByText(/server provisioning/i)).toBeInTheDocument();
+    expect(screen.getByText(/vmid=101 ip=10\.0\.0\.5/)).toBeInTheDocument();
   });
 
   it("offers explicit host and IP bundle mapping values", async () => {
