@@ -426,18 +426,48 @@ textarea:focus,
 }
 
 /*
- * Account page: all cards shown together in a uniform matrix. Cards stretch
- * to a consistent row height so the layout reads as an even grid rather than
- * a ragged stack.
+ * Account page layout (issue_015-r3): a top row of three equal, wide/short
+ * cards (Profile with embedded Change password, SSH key, Bundle downloads),
+ * then a full-width Server list row beneath them.
  */
-.account-grid {
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  align-items: stretch;
-}
-
-.account-grid > .card {
+.account-layout {
   display: flex;
   flex-direction: column;
+  gap: var(--gap);
+}
+
+.account-row-top {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--gap);
+  align-items: start;
+}
+
+/* Stack the three cards on narrow viewports. */
+@media (max-width: 900px) {
+  .account-row-top {
+    grid-template-columns: 1fr;
+  }
+}
+
+.account-row-servers > .card {
+  width: 100%;
+}
+
+/* A divider'd sub-block inside a card (e.g. Change password within Profile). */
+.card-subsection {
+  margin-top: 1.1rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--border);
+}
+
+.card-subsection h3 {
+  margin: 0 0 0.6rem;
+  font-size: 0.95rem;
+}
+
+.bundle-description {
+  margin-top: -0.25rem;
 }
 
 .form-row {
