@@ -436,6 +436,7 @@ class BundleTemplateOut(BaseModel):
     id: int
     name: str
     content: str
+    description: str = ""
     mappings: list[BundleTemplateMapping] = Field(default_factory=list)
     is_builtin: bool = False
     enabled: bool = True
@@ -460,6 +461,7 @@ class SetBundleTemplateEnabledRequest(BaseModel):
 class CreateBundleTemplateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     content: str = Field(min_length=1, max_length=20000)
+    description: str = Field(default="", max_length=500)
     mappings: list[BundleTemplateMapping] = Field(default_factory=list)
 
     @field_validator("name")
@@ -474,6 +476,7 @@ class CreateBundleTemplateRequest(BaseModel):
 class UpdateBundleTemplateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128)
     content: str | None = Field(default=None, min_length=1, max_length=20000)
+    description: str | None = Field(default=None, max_length=500)
     mappings: list[BundleTemplateMapping] | None = None
 
     @field_validator("name")
@@ -490,6 +493,7 @@ class UpdateBundleTemplateRequest(BaseModel):
 class BundleOptionOut(BaseModel):
     id: int
     name: str
+    description: str = ""
 
 
 class ApplicationOut(BaseModel):

@@ -615,6 +615,12 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         conn, "bundle_templates", "enabled", "INTEGER NOT NULL DEFAULT 1"
     )
 
+    # Bundle templates gained an optional description shown under the account
+    # download dropdown (issue_015-r3).
+    _add_column(
+        conn, "bundle_templates", "description", "TEXT NOT NULL DEFAULT ''"
+    )
+
     # Predefined built-in SSH-config template. Rendered dynamically from the
     # user's servers + jump server at download time (its content is a marker,
     # not used verbatim). Idempotent by the unique template name; ensure the
@@ -629,4 +635,14 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "UPDATE bundle_templates SET is_builtin = 1 WHERE name = 'SSH Config Default'"
+    )
+    # Give the built-in a default description if it has none yet (keeps any
+    # admin-provided override intact on re-runs).
+    conn.execute(
+        "UPDATE bundle_templates SET description = ? "
+        "WHERE name = 'SSH Config Default' AND description = ''",
+        (
+            "Ready-to-use SSH client config for all your servers, generated "
+            "from your account at download time.",
+        ),
     )

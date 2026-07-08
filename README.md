@@ -284,8 +284,10 @@ new one installed, using each server's admin SSH key; a per-server
 verification summary (updated / skipped / failed, with reasons) is shown and
 appended to each server's log.
 
-The Account page's **SSH Configuration File** card downloads a personal SSH
-config. Templates with field mappings are rendered from account details;
+Each bundle template can carry an optional **description** (set in the bundle
+add/edit card). The Account page's **SSH Configuration File** card downloads a
+personal SSH config and shows the selected bundle's description. Templates with
+field mappings are rendered from account details;
 mapping sources include the username, the derived **user ID**, apps server
 host/IP, role, and **per-template variables** (`server_<slug>_name`,
 `server_<slug>_ip`, `server_<slug>_user`, where `<slug>` is the server

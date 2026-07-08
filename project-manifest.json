@@ -349,7 +349,7 @@
       {
         "name": "bundle_templates",
         "description": "Downloadable user configuration bundles with field mappings. Built-in templates (is_builtin) render dynamically and cannot be edited/deleted (only cloned); disabled templates are hidden from account downloads.",
-        "columns": ["id", "name", "content", "is_builtin", "enabled", "created_at", "updated_at"],
+        "columns": ["id", "name", "content", "description", "is_builtin", "enabled", "created_at", "updated_at"],
         "primaryKey": ["id"]
       }
     ]
