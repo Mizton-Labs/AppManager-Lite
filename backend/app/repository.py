@@ -7,6 +7,7 @@ can compose inside a single transaction.
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import sqlite3
 from typing import Any
@@ -21,6 +22,7 @@ class TeamConflictError(ValueError):
 
 BUNDLE_MAPPING_SOURCES = (
     "username",
+    "user_id",
     "user_apps_server",
     "user_apps_server_host",
     "user_apps_server_ip",
@@ -620,6 +622,8 @@ def delete_bundle_template(conn: sqlite3.Connection, template_id: int) -> bool:
 def render_bundle_template(template: dict[str, Any], user: dict[str, Any]) -> str:
     values = {
         "username": user.get("username", "") or "",
+        "user_id": user.get("user_id", "")
+        or derive_user_id(user.get("username", "") or ""),
         "user_apps_server": user.get("apps_server", "")
         or user.get("apps_server_ip", "")
         or "",
@@ -633,6 +637,39 @@ def render_bundle_template(template: dict[str, Any], user: dict[str, Any]) -> st
             mapping["field_name"], values.get(mapping["source"], "")
         )
     return rendered
+
+
+def render_generic_ssh_config(
+    user: dict[str, Any], user_servers: list[dict[str, Any]]
+) -> str:
+    """A generic SSH config built from the user's servers.
+
+    Used when a bundle template has no field mappings: one ``Host`` block per
+    server that has an IP address, keyed by the server's hostname (falling
+    back to a slug of its name).
+    """
+    user_id = user.get("user_id", "") or derive_user_id(
+        user.get("username", "") or ""
+    )
+    blocks = []
+    for server in user_servers:
+        if server.get("status") == "failed" or not server.get("ip_address"):
+            continue
+        # Server display names may contain spaces; SSH Host patterns must not.
+        raw = server.get("hostname") or server.get("name", "server")
+        host = re.sub(r"[^a-z0-9-]+", "-", raw.lower()).strip("-") or "server"
+        blocks.append(
+            f"Host {host}\n"
+            f"    HostName {server['ip_address']}\n"
+            + (f"    User {user_id}\n" if user_id else "")
+            + "    IdentityFile ~/.ssh/id_ed25519\n"
+        )
+    if not blocks:
+        return (
+            "# No servers with an IP address are registered for this "
+            "account yet.\n"
+        )
+    return "\n".join(blocks)
 
 
 # ---------------------------------------------------------------------------
@@ -1374,6 +1411,9 @@ def _row_to_user_server(row: sqlite3.Row) -> dict[str, Any]:
         "memory_gb": row["memory_gb"],
         "disk_gb": row["disk_gb"],
         "admin_modified": bool(row["admin_modified"]),
+        # Internal only: UserServerOut has no such field, so this never
+        # reaches API responses.
+        "admin_ssh_key_path": row["admin_ssh_key_path"],
         "status": row["status"],
         "last_log": row["last_log"],
         "created_at": row["created_at"],
@@ -1456,6 +1496,7 @@ def create_user_server(
     memory_gb: int = 0,
     disk_gb: int = 0,
     admin_modified: bool = False,
+    admin_ssh_key_path: str = "",
     status: str = "created",
     last_log: str = "",
 ) -> dict[str, Any]:
@@ -1465,13 +1506,13 @@ def create_user_server(
             INSERT INTO user_servers
                 (user_id, name, hostname, template_id, template_name, vmid,
                  node, kind, ip_address, cpus, memory_gb, disk_gb,
-                 admin_modified, status, last_log)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 admin_modified, admin_ssh_key_path, status, last_log)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id, name, hostname, template_id, template_name, vmid,
                 node, kind, ip_address, cpus, memory_gb, disk_gb,
-                int(admin_modified), status, last_log,
+                int(admin_modified), admin_ssh_key_path, status, last_log,
             ),
         )
     except sqlite3.IntegrityError as exc:

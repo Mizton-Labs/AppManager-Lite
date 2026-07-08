@@ -155,6 +155,69 @@ def install_public_key(
     return ok
 
 
+_KEY_BLOB_RE = re.compile(r"^[A-Za-z0-9+/=]+$")
+
+
+def rotate_public_key(
+    *,
+    ip: str,
+    admin_key_path: str,
+    old_public_key: str,
+    new_public_key: str,
+    result: ProxmoxResult,
+) -> str:
+    """Replace the old public key with the new one on a server.
+
+    Scans root's and every /home user's ``authorized_keys``, removes lines
+    carrying the old key blob, and appends the new key to each file that had
+    the old one. Matching is by the base64 key blob so comment changes do
+    not matter. Verification (old gone, new present) happens inline, per
+    file, in the same remote script.
+
+    Returns ``"updated"``, ``"noop"`` (old key not present anywhere), or
+    ``"failed"``.
+    """
+    try:
+        old_blob = old_public_key.split()[1]
+    except IndexError:
+        result.fail("stored public key has an unexpected format")
+        return "failed"
+    if not _KEY_BLOB_RE.match(old_blob):
+        result.fail("stored public key blob has an unexpected format")
+        return "failed"
+    quoted_old = shlex.quote(old_blob)
+    quoted_new = shlex.quote(new_public_key.strip())
+    # NOTE: ``grep -v`` exits 1 when it selects no lines - the normal case
+    # for a single-key authorized_keys file - so that status is tolerated.
+    remote = "sh -c " + shlex.quote(
+        "changed=''; fail=''; "
+        "for f in /root/.ssh/authorized_keys /home/*/.ssh/authorized_keys; do "
+        '[ -f "$f" ] || continue; '
+        f"if grep -qF {quoted_old} \"$f\"; then "
+        f"{{ grep -vF {quoted_old} \"$f\" > \"$f.tmp\" || [ $? -eq 1 ]; }} "
+        '&& cat "$f.tmp" > "$f"; rm -f "$f.tmp"; '
+        f"grep -qxF {quoted_new} \"$f\" || printf '%s\\n' {quoted_new} >> \"$f\"; "
+        f"if grep -qF {quoted_old} \"$f\"; then fail=\"$fail $f(old-present)\"; fi; "
+        f"grep -qF {quoted_new} \"$f\" || fail=\"$fail $f(new-missing)\"; "
+        'changed="$changed $f"; '
+        "fi; "
+        "done; "
+        '[ -z "$fail" ] || { echo "verify-failed:$fail"; exit 2; }; '
+        'echo "updated:$changed"'
+    )
+    proc = _run(_ssh_argv(admin_key_path, ip, remote))
+    if proc.returncode == 0:
+        files = (proc.stdout or "").strip().removeprefix("updated:").strip()
+        if files:
+            result.log(f"{ip}: key rotated in: {files}")
+            return "updated"
+        result.log(f"{ip}: old key not present; nothing to rotate")
+        return "noop"
+    detail = (proc.stderr or proc.stdout or "").strip()[:200]
+    result.fail(f"{ip}: key rotation failed (rc={proc.returncode}): {detail}")
+    return "failed"
+
+
 def create_server(
     *,
     provider_config: dict[str, Any],

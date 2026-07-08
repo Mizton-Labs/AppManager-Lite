@@ -56,6 +56,7 @@ export interface GeneratedPassword {
 
 export type BundleMappingSource =
   | "username"
+  | "user_id"
   | "user_apps_server"
   | "user_apps_server_host"
   | "user_apps_server_ip"
@@ -88,6 +89,18 @@ export interface SshKeyInfo {
   user_id: string;
   public_key: string;
   generated_at: string | null;
+}
+
+/** Per-server outcome of propagating a regenerated key. */
+export interface ServerKeyRotation {
+  server: string;
+  ip_address: string;
+  status: "updated" | "skipped" | "failed";
+  detail: string;
+}
+
+export interface SshKeyRegenerateResult extends SshKeyInfo {
+  rotation: ServerKeyRotation[];
 }
 
 /** Provider + policy settings; the API key itself is never returned. */

@@ -218,7 +218,7 @@
       { "method": "POST", "path": "/api/account/password", "auth": "user", "csrf": true, "summary": "Change the signed-in user's own password." },
       { "method": "GET", "path": "/api/account/ssh-key", "auth": "user", "csrf": false, "summary": "The signed-in user's SSH public key, derived user-id, and generation time (never the private key)." },
       { "method": "GET", "path": "/api/account/ssh-key/download", "auth": "user", "csrf": false, "summary": "Download the signed-in user's own SSH key; requires part=private|public. Private downloads are audited (metadata only)." },
-      { "method": "POST", "path": "/api/account/ssh-key/regenerate", "auth": "user", "csrf": true, "summary": "Replace the signed-in user's SSH keypair with a freshly generated one (audited)." },
+      { "method": "POST", "path": "/api/account/ssh-key/regenerate", "auth": "user", "csrf": true, "summary": "Replace the signed-in user's SSH keypair and rotate it on their servers (remove old public key, install new); returns a per-server summary (audited, no key material)." },
       { "method": "GET", "path": "/api/teams", "auth": "user", "csrf": false, "summary": "List teams (name, order, icon) for any signed-in user." },
       { "method": "GET", "path": "/api/users", "auth": "admin", "csrf": false, "summary": "List users." },
       { "method": "POST", "path": "/api/users", "auth": "admin", "csrf": true, "summary": "Create a user (returns a generated password)." },
@@ -328,7 +328,7 @@
       {
         "name": "user_servers",
         "description": "Per-user provisioned or referenced LXC/VM servers with resource accounting (admin_modified rows are exempt from user quotas) and a secret-free creation transcript.",
-        "columns": ["id", "user_id", "name", "hostname", "template_id", "template_name", "vmid", "node", "kind", "ip_address", "cpus", "memory_gb", "disk_gb", "admin_modified", "status", "last_log", "created_at", "updated_at"],
+        "columns": ["id", "user_id", "name", "hostname", "template_id", "template_name", "vmid", "node", "kind", "ip_address", "cpus", "memory_gb", "disk_gb", "admin_modified", "admin_ssh_key_path", "status", "last_log", "created_at", "updated_at"],
         "primaryKey": ["id"],
         "foreignKeys": ["user_id -> users.id (cascade)", "template_id -> server_templates.id (set null)"]
       }

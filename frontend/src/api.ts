@@ -22,6 +22,7 @@ import type {
   ServerTemplateOption,
   SessionState,
   SshKeyInfo,
+  SshKeyRegenerateResult,
   SsoConfig,
   UpdateProvisioningSettingsInput,
   UpdateServerTemplateInput,
@@ -145,7 +146,9 @@ export const api = {
     requestText(`account/ssh-key/download?part=${part}`),
 
   regenerateAccountSshKey: () =>
-    request<SshKeyInfo>("account/ssh-key/regenerate", { method: "POST" }),
+    request<SshKeyRegenerateResult>("account/ssh-key/regenerate", {
+      method: "POST",
+    }),
 
   listTeams: () => request<Team[]>("teams"),
 

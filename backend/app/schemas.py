@@ -15,6 +15,7 @@ URL_TYPES = ("url", "alias")
 APPROVAL_STATES = ("pending", "approved", "rejected")
 BUNDLE_MAPPING_SOURCES = (
     "username",
+    "user_id",
     "user_apps_server",
     "user_apps_server_host",
     "user_apps_server_ip",
@@ -319,6 +320,21 @@ class SshKeyInfoOut(BaseModel):
     user_id: str
     public_key: str
     generated_at: str | None = None
+
+
+class ServerKeyRotationOut(BaseModel):
+    """Per-server outcome of propagating a regenerated key."""
+
+    server: str
+    ip_address: str = ""
+    status: str  # updated | skipped | failed
+    detail: str = ""
+
+
+class SshKeyRegenerateOut(SshKeyInfoOut):
+    """Regeneration result plus the per-server key-rotation summary."""
+
+    rotation: list[ServerKeyRotationOut] = Field(default_factory=list)
 
 
 class SessionOut(BaseModel):
