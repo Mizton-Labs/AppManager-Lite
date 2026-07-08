@@ -90,6 +90,80 @@ export interface SshKeyInfo {
   generated_at: string | null;
 }
 
+/** Provider + policy settings; the API key itself is never returned. */
+export interface ProvisioningSettings {
+  provider_type: string;
+  proxmox_url: string;
+  proxmox_token_name: string;
+  proxmox_api_key_set: boolean;
+  proxmox_template_filter: string;
+  proxmox_templates_only: boolean;
+  proxmox_verify_tls: boolean;
+  proxmox_conn_status: string;
+  proxmox_conn_log: string;
+  provisioning_self_service: boolean;
+  provisioning_max_servers: number;
+  provisioning_allow_resource_edit: boolean;
+  provisioning_max_cpus: number;
+  provisioning_max_memory_gb: number;
+  provisioning_max_disk_gb: number;
+}
+
+export interface UpdateProvisioningSettingsInput {
+  provider_type?: string;
+  proxmox_url?: string;
+  proxmox_token_name?: string;
+  /** Write-only: sent only when the administrator enters a new key. */
+  proxmox_api_key?: string;
+  proxmox_template_filter?: string;
+  proxmox_templates_only?: boolean;
+  proxmox_verify_tls?: boolean;
+  provisioning_self_service?: boolean;
+  provisioning_max_servers?: number;
+  provisioning_allow_resource_edit?: boolean;
+  provisioning_max_cpus?: number;
+  provisioning_max_memory_gb?: number;
+  provisioning_max_disk_gb?: number;
+}
+
+/** A VM/LXC entry read live from the provider. */
+export interface ProviderTemplate {
+  vmid: number;
+  name: string;
+  kind: "lxc" | "vm";
+  node: string;
+  is_template: boolean;
+}
+
+export interface ProviderTemplates {
+  status: string;
+  log: string;
+  templates: ProviderTemplate[];
+}
+
+/** An admin-registered Proxmox template used to create user servers. */
+export interface ServerTemplate {
+  id: number;
+  vmid: number;
+  name: string;
+  kind: "lxc" | "vm";
+  admin_ssh_key_path: string;
+}
+
+export interface CreateServerTemplateInput {
+  vmid: number;
+  name: string;
+  kind: "lxc" | "vm";
+  admin_ssh_key_path?: string;
+}
+
+export interface UpdateServerTemplateInput {
+  vmid?: number;
+  name?: string;
+  kind?: "lxc" | "vm";
+  admin_ssh_key_path?: string;
+}
+
 export interface CreateBundleTemplateInput {
   name: string;
   content: string;

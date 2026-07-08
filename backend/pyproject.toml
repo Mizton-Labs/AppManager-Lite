@@ -17,6 +17,8 @@ dependencies = [
     # Used directly for per-user Ed25519 SSH keypair generation (app.sshkeys);
     # previously only a transitive dependency of authlib/python3-saml.
     "cryptography>=42",
+    # Proxmox VE API client (app.proxmox); promoted from dev-only.
+    "httpx>=0.27,<0.29",
 ]
 
 [dependency-groups]

@@ -26,6 +26,7 @@ from .routers import (
     applications,
     audit as audit_router,
     auth,
+    provisioning as provisioning_router,
     settings as settings_router,
     users,
 )
@@ -175,6 +176,7 @@ def create_app() -> FastAPI:
     app.include_router(applications.router, prefix="/api")
     app.include_router(audit_router.router, prefix="/api")
     app.include_router(settings_router.router, prefix="/api")
+    app.include_router(provisioning_router.router, prefix="/api")
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next) -> Response:

@@ -1206,3 +1206,148 @@ def update_settings_row(
             params,
         )
     return get_settings_row(conn)
+
+
+# Columns updatable through the provisioning settings endpoint. The API key is
+# write-only: it can be set here but is never included in any response model.
+_PROVISIONING_COLUMNS = (
+    "provider_type",
+    "proxmox_url",
+    "proxmox_token_name",
+    "proxmox_api_key",
+    "proxmox_template_filter",
+    "proxmox_templates_only",
+    "proxmox_verify_tls",
+    "proxmox_conn_status",
+    "proxmox_conn_log",
+    "provisioning_self_service",
+    "provisioning_max_servers",
+    "provisioning_allow_resource_edit",
+    "provisioning_max_cpus",
+    "provisioning_max_memory_gb",
+    "provisioning_max_disk_gb",
+)
+
+
+def update_provisioning_settings(
+    conn: sqlite3.Connection, **values: Any
+) -> dict[str, Any]:
+    """Update provisioning/provider settings columns (None values skipped).
+
+    Only the fixed, code-defined column set above is accepted; anything else
+    raises so a typo cannot silently write arbitrary columns.
+    """
+    conn.execute("INSERT OR IGNORE INTO settings (id) VALUES (1)")
+    columns: dict[str, Any] = {}
+    for key, value in values.items():
+        if key not in _PROVISIONING_COLUMNS:
+            raise ValueError(f"Unknown provisioning settings column: {key}")
+        if value is None:
+            continue
+        columns[key] = int(value) if isinstance(value, bool) else value
+    if columns:
+        assignments = ", ".join(f"{col} = ?" for col in columns)
+        conn.execute(
+            f"UPDATE settings SET {assignments}, updated_at = datetime('now') "
+            "WHERE id = ?",
+            [*columns.values(), 1],
+        )
+    return get_settings_row(conn)
+
+
+# ---------------------------------------------------------------------------
+# Server templates (Proxmox templates registered for user-server creation)
+# ---------------------------------------------------------------------------
+
+
+def _row_to_server_template(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "vmid": row["vmid"],
+        "name": row["name"],
+        "kind": row["kind"],
+        "admin_ssh_key_path": row["admin_ssh_key_path"],
+    }
+
+
+def list_server_templates(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT * FROM server_templates ORDER BY name, id"
+    ).fetchall()
+    return [_row_to_server_template(r) for r in rows]
+
+
+def get_server_template(
+    conn: sqlite3.Connection, template_id: int
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT * FROM server_templates WHERE id = ?", (template_id,)
+    ).fetchone()
+    return _row_to_server_template(row) if row else None
+
+
+def create_server_template(
+    conn: sqlite3.Connection,
+    *,
+    vmid: int,
+    name: str,
+    kind: str,
+    admin_ssh_key_path: str = "",
+) -> dict[str, Any]:
+    try:
+        cur = conn.execute(
+            """
+            INSERT INTO server_templates (vmid, name, kind, admin_ssh_key_path)
+            VALUES (?, ?, ?, ?)
+            """,
+            (vmid, name.strip(), kind, admin_ssh_key_path.strip()),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise ValueError(
+            f"A server template named '{name.strip()}' already exists."
+        ) from exc
+    template = get_server_template(conn, int(cur.lastrowid))
+    assert template is not None
+    return template
+
+
+def update_server_template(
+    conn: sqlite3.Connection,
+    template_id: int,
+    *,
+    vmid: int | None = None,
+    name: str | None = None,
+    kind: str | None = None,
+    admin_ssh_key_path: str | None = None,
+) -> dict[str, Any] | None:
+    if get_server_template(conn, template_id) is None:
+        return None
+    columns: dict[str, Any] = {}
+    if vmid is not None:
+        columns["vmid"] = vmid
+    if name is not None:
+        columns["name"] = name.strip()
+    if kind is not None:
+        columns["kind"] = kind
+    if admin_ssh_key_path is not None:
+        columns["admin_ssh_key_path"] = admin_ssh_key_path.strip()
+    if columns:
+        assignments = ", ".join(f"{col} = ?" for col in columns)
+        try:
+            conn.execute(
+                f"UPDATE server_templates SET {assignments}, "
+                "updated_at = datetime('now') WHERE id = ?",
+                [*columns.values(), template_id],
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(
+                "A server template with that name already exists."
+            ) from exc
+    return get_server_template(conn, template_id)
+
+
+def delete_server_template(conn: sqlite3.Connection, template_id: int) -> bool:
+    cur = conn.execute(
+        "DELETE FROM server_templates WHERE id = ?", (template_id,)
+    )
+    return cur.rowcount > 0

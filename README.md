@@ -496,6 +496,32 @@ remove → reload → verify, reverting on failure), and audits the result as
 `nginx_remove`. Aliases pushed before markers existed have no marker and are
 reported as skipped on removal.
 
+## Server provisioning (LXC/VM)
+
+Administrators configure server provisioning under **Settings → Server
+Provisioning** (admin only):
+
+- **LXC/VM provider** — currently Proxmox (API-token authentication). Configure
+  the Proxmox URL (`PROTO://IP:PORT`), token name, and API key; the key is
+  stored **write-only** (never returned by the API, shown in the UI, logged, or
+  audited — the UI shows only whether a key is set). A **template name filter**
+  and a **templates-only** toggle control which VMs/containers the provider
+  offers, and a **Verify TLS certificate** toggle (on by default, with a
+  warning when disabled) supports self-signed lab instances. Saving runs a
+  connection test; the result is shown with a **View connection log** toggle,
+  and after a successful test a verification dropdown lists the matching
+  templates read live from Proxmox.
+- **Provisioning policy** — enable/disable self-service server provisioning
+  (self-service users and administrators; normal users cannot request their own
+  servers), the maximum number of servers per user, whether self-service users
+  may modify server resources, and the per-user resource caps (defaults: 12
+  CPUs, 24 GB memory, 200 GB disk). Administrator-made resource changes do not
+  count against these limits.
+- **Server templates** — register the Proxmox templates (LXC or VM, by VM ID)
+  offered to users when creating a server, each with an app-facing name and an
+  optional path to an admin SSH key on this server for later customization.
+  Templates are assumed to be preconfigured (SSH keys, resources, user).
+
 ## Home
 
 The Home page shows two groups of applications:
