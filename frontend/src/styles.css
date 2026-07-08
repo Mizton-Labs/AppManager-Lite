@@ -583,6 +583,15 @@ textarea:focus,
   font-size: 0.7rem;
   padding: 0.1rem 0.45rem;
   border-radius: 999px;
+  background: rgba(148, 163, 184, 0.15);
+  color: #cbd5e1;
+}
+
+.badge-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.35rem 0;
 }
 
 .status-badge.off {
