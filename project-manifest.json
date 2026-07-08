@@ -248,7 +248,13 @@
       { "method": "GET", "path": "/api/settings/server-templates", "auth": "admin", "csrf": false, "summary": "List registered server templates." },
       { "method": "POST", "path": "/api/settings/server-templates", "auth": "admin", "csrf": true, "summary": "Register a server template (vmid, name, lxc|vm, optional admin SSH key path)." },
       { "method": "PATCH", "path": "/api/settings/server-templates/{template_id}", "auth": "admin", "csrf": true, "summary": "Update a server template." },
-      { "method": "DELETE", "path": "/api/settings/server-templates/{template_id}", "auth": "admin", "csrf": true, "summary": "Delete a server template." }
+      { "method": "DELETE", "path": "/api/settings/server-templates/{template_id}", "auth": "admin", "csrf": true, "summary": "Delete a server template." },
+      { "method": "GET", "path": "/api/account/server-templates", "auth": "user", "csrf": false, "summary": "User-facing server-template options (id, name, kind only)." },
+      { "method": "GET", "path": "/api/account/server-access", "auth": "user", "csrf": false, "summary": "Whether the caller may create servers for their own account, with a reason when not." },
+      { "method": "GET", "path": "/api/users/{user_id}/servers", "auth": "admin-or-self", "csrf": false, "summary": "List a user's servers." },
+      { "method": "POST", "path": "/api/users/{user_id}/servers", "auth": "admin-or-self", "csrf": true, "summary": "Create a server from a template: clone (full), start + IP discovery for LXC, optional SSH public-key installation; VMs are cloned only and get a manual IP. Quotas apply to non-admin creators." },
+      { "method": "PATCH", "path": "/api/users/{user_id}/servers/{server_id}", "auth": "admin-or-self", "csrf": true, "summary": "Set a VM's IP address manually, or change LXC resources (admin always, exempting the server from quotas; self-service users when allowed by policy, within quota)." },
+      { "method": "DELETE", "path": "/api/users/{user_id}/servers/{server_id}", "auth": "admin-or-self", "csrf": true, "summary": "Remove the server record (the LXC/VM itself is not touched)." }
     ]
   },
   "dataModel": {
@@ -318,6 +324,13 @@
         "description": "Admin-registered Proxmox templates (LXC or VM) offered when creating user servers.",
         "columns": ["id", "vmid", "name", "kind", "admin_ssh_key_path", "created_at", "updated_at"],
         "primaryKey": ["id"]
+      },
+      {
+        "name": "user_servers",
+        "description": "Per-user provisioned or referenced LXC/VM servers with resource accounting (admin_modified rows are exempt from user quotas) and a secret-free creation transcript.",
+        "columns": ["id", "user_id", "name", "hostname", "template_id", "template_name", "vmid", "node", "kind", "ip_address", "cpus", "memory_gb", "disk_gb", "admin_modified", "status", "last_log", "created_at", "updated_at"],
+        "primaryKey": ["id"],
+        "foreignKeys": ["user_id -> users.id (cascade)", "template_id -> server_templates.id (set null)"]
       }
     ]
   },

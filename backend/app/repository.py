@@ -1351,3 +1351,183 @@ def delete_server_template(conn: sqlite3.Connection, template_id: int) -> bool:
         "DELETE FROM server_templates WHERE id = ?", (template_id,)
     )
     return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# User servers (provisioned or referenced LXC/VM guests)
+# ---------------------------------------------------------------------------
+
+
+def _row_to_user_server(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "user_id": row["user_id"],
+        "name": row["name"],
+        "hostname": row["hostname"],
+        "template_id": row["template_id"],
+        "template_name": row["template_name"],
+        "vmid": row["vmid"],
+        "node": row["node"],
+        "kind": row["kind"],
+        "ip_address": row["ip_address"],
+        "cpus": row["cpus"],
+        "memory_gb": row["memory_gb"],
+        "disk_gb": row["disk_gb"],
+        "admin_modified": bool(row["admin_modified"]),
+        "status": row["status"],
+        "last_log": row["last_log"],
+        "created_at": row["created_at"],
+    }
+
+
+def list_user_servers(
+    conn: sqlite3.Connection, user_id: int
+) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT * FROM user_servers WHERE user_id = ? ORDER BY name, id",
+        (user_id,),
+    ).fetchall()
+    return [_row_to_user_server(r) for r in rows]
+
+
+def get_user_server(
+    conn: sqlite3.Connection, user_id: int, server_id: int
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT * FROM user_servers WHERE id = ? AND user_id = ?",
+        (server_id, user_id),
+    ).fetchone()
+    return _row_to_user_server(row) if row else None
+
+
+def count_user_servers(conn: sqlite3.Connection, user_id: int) -> int:
+    """Servers counted against the per-user limit.
+
+    A ``failed`` record still counts when it carries a ``vmid``: the guest
+    was actually cloned, so it consumes real capacity. Only failures that
+    never produced a guest are excluded.
+    """
+    return conn.execute(
+        "SELECT COUNT(*) AS c FROM user_servers "
+        "WHERE user_id = ? AND (status != 'failed' OR vmid IS NOT NULL)",
+        (user_id,),
+    ).fetchone()["c"]
+
+
+def sum_user_server_resources(
+    conn: sqlite3.Connection, user_id: int
+) -> dict[str, int]:
+    """Total resources counted against the user's quota.
+
+    Servers whose resources were last set by an administrator
+    (``admin_modified``) are exempt, as are failed creation records.
+    """
+    row = conn.execute(
+        """
+        SELECT COALESCE(SUM(cpus), 0) AS cpus,
+               COALESCE(SUM(memory_gb), 0) AS memory_gb,
+               COALESCE(SUM(disk_gb), 0) AS disk_gb
+        FROM user_servers
+        WHERE user_id = ? AND admin_modified = 0
+          AND (status != 'failed' OR vmid IS NOT NULL)
+        """,
+        (user_id,),
+    ).fetchone()
+    return {
+        "cpus": row["cpus"],
+        "memory_gb": row["memory_gb"],
+        "disk_gb": row["disk_gb"],
+    }
+
+
+def create_user_server(
+    conn: sqlite3.Connection,
+    *,
+    user_id: int,
+    name: str,
+    hostname: str = "",
+    template_id: int | None = None,
+    template_name: str = "",
+    vmid: int | None = None,
+    node: str = "",
+    kind: str,
+    ip_address: str = "",
+    cpus: int = 0,
+    memory_gb: int = 0,
+    disk_gb: int = 0,
+    admin_modified: bool = False,
+    status: str = "created",
+    last_log: str = "",
+) -> dict[str, Any]:
+    try:
+        cur = conn.execute(
+            """
+            INSERT INTO user_servers
+                (user_id, name, hostname, template_id, template_name, vmid,
+                 node, kind, ip_address, cpus, memory_gb, disk_gb,
+                 admin_modified, status, last_log)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id, name, hostname, template_id, template_name, vmid,
+                node, kind, ip_address, cpus, memory_gb, disk_gb,
+                int(admin_modified), status, last_log,
+            ),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise ValueError(
+            f"A server named '{name}' already exists for this user."
+        ) from exc
+    server = get_user_server(conn, user_id, int(cur.lastrowid))
+    assert server is not None
+    return server
+
+
+def update_user_server(
+    conn: sqlite3.Connection,
+    user_id: int,
+    server_id: int,
+    *,
+    ip_address: str | None = None,
+    cpus: int | None = None,
+    memory_gb: int | None = None,
+    disk_gb: int | None = None,
+    admin_modified: bool | None = None,
+    status: str | None = None,
+    last_log: str | None = None,
+) -> dict[str, Any] | None:
+    if get_user_server(conn, user_id, server_id) is None:
+        return None
+    columns: dict[str, Any] = {}
+    if ip_address is not None:
+        columns["ip_address"] = ip_address
+    if cpus is not None:
+        columns["cpus"] = cpus
+    if memory_gb is not None:
+        columns["memory_gb"] = memory_gb
+    if disk_gb is not None:
+        columns["disk_gb"] = disk_gb
+    if admin_modified is not None:
+        columns["admin_modified"] = int(admin_modified)
+    if status is not None:
+        columns["status"] = status
+    if last_log is not None:
+        columns["last_log"] = last_log
+    if columns:
+        assignments = ", ".join(f"{col} = ?" for col in columns)
+        conn.execute(
+            f"UPDATE user_servers SET {assignments}, "
+            "updated_at = datetime('now') WHERE id = ? AND user_id = ?",
+            [*columns.values(), server_id, user_id],
+        )
+    return get_user_server(conn, user_id, server_id)
+
+
+def delete_user_server(
+    conn: sqlite3.Connection, user_id: int, server_id: int
+) -> bool:
+    cur = conn.execute(
+        "DELETE FROM user_servers WHERE id = ? AND user_id = ?",
+        (server_id, user_id),
+    )
+    return cur.rowcount > 0

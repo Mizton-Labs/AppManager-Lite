@@ -774,6 +774,59 @@ textarea:focus,
   color: var(--muted);
 }
 
+/* Per-user servers (User Management + Account) */
+.server-panel {
+  border-top: 1px solid var(--border);
+  padding-top: 0.6rem;
+  margin-top: 0.6rem;
+}
+
+.server-panel h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.server-panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--gap);
+  margin-bottom: 0.4rem;
+}
+
+.server-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.server-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem 0.7rem;
+  background: var(--bg);
+}
+
+.server-card.failed {
+  border-color: var(--warn);
+}
+
+.server-card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.server-name {
+  font-weight: 600;
+}
+
+.server-meta {
+  margin: 0.2rem 0 0.3rem;
+  font-size: 0.82rem;
+}
+
 /* Account SSH key card */
 .ssh-public-key {
   margin: 0;

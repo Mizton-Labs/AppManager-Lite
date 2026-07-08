@@ -845,6 +845,21 @@ class ServerTemplateOut(BaseModel):
     admin_ssh_key_path: str = ""
 
 
+class ServerTemplateOptionOut(BaseModel):
+    """User-facing template option (no vmid or admin key path)."""
+
+    id: int
+    name: str
+    kind: str
+
+
+class ServerAccessOut(BaseModel):
+    """Whether the caller may create servers for their own account."""
+
+    can_create: bool = False
+    reason: str = ""
+
+
 def _validate_admin_key_path(value: str) -> str:
     """Admin SSH key path: shell-metachar-free and absolute when present.
 
@@ -883,6 +898,43 @@ class CreateServerTemplateRequest(BaseModel):
     @classmethod
     def _check_admin_key_path(cls, value: str) -> str:
         return _validate_admin_key_path(value)
+
+
+class UserServerOut(BaseModel):
+    id: int
+    user_id: int
+    name: str
+    hostname: str = ""
+    template_id: int | None = None
+    template_name: str = ""
+    vmid: int | None = None
+    node: str = ""
+    kind: str
+    ip_address: str = ""
+    cpus: int = 0
+    memory_gb: int = 0
+    disk_gb: int = 0
+    admin_modified: bool = False
+    status: str = "created"
+    last_log: str = ""
+    created_at: str = ""
+
+
+class CreateUserServerRequest(BaseModel):
+    template_id: int = Field(ge=1)
+    name: str = Field(min_length=1, max_length=40)
+    install_pubkey: bool = True
+    # Comma-separated OS usernames that receive the owner's public key.
+    pubkey_users: str = Field(default="", max_length=512)
+
+
+class UpdateUserServerRequest(BaseModel):
+    """Manual IP entry (VMs) and resource changes (LXC)."""
+
+    ip_address: str | None = Field(default=None, max_length=15)
+    cpus: int | None = Field(default=None, ge=1, le=1024)
+    memory_gb: int | None = Field(default=None, ge=1, le=4096)
+    disk_gb: int | None = Field(default=None, ge=1, le=65536)
 
 
 class UpdateServerTemplateRequest(BaseModel):

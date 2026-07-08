@@ -13,13 +13,16 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
 _URL_RE = re.compile(r"^https?://[A-Za-z0-9.\-\[\]:]+(?::\d{1,5})?/?$")
+_IPV4_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
 _TIMEOUT_SECONDS = 10.0
 
 
@@ -219,3 +222,294 @@ def list_templates(config: dict[str, Any]) -> ProxmoxResult:
     )
     result.data = entries
     return result
+
+
+# ---------------------------------------------------------------------------
+# Guest operations (clone, start, IP discovery, resources)
+# ---------------------------------------------------------------------------
+
+# Poll interval and budgets for asynchronous Proxmox tasks. ``_sleep`` is a
+# module-level seam so tests can eliminate waiting.
+_sleep = time.sleep
+_POLL_SECONDS = 2.0
+_CLONE_BUDGET_SECONDS = 300.0
+_START_BUDGET_SECONDS = 60.0
+_IP_BUDGET_SECONDS = 60.0
+
+
+def _guest_path(kind: str) -> str:
+    return "lxc" if kind == "lxc" else "qemu"
+
+
+def find_guest(
+    config: dict[str, Any], vmid: int, *, result: ProxmoxResult
+) -> dict[str, Any] | None:
+    """Locate a guest cluster-wide; returns ``{vmid, name, kind, node}``."""
+    data = _call(config, "GET", "/cluster/resources?type=vm", result=result)
+    if result.status != "ok":
+        return None
+    for item in data or []:
+        if isinstance(item, dict) and item.get("vmid") == vmid:
+            return {
+                "vmid": vmid,
+                "name": str(item.get("name", "")),
+                "kind": "lxc" if item.get("type") == "lxc" else "vm",
+                "node": str(item.get("node", "")),
+                "is_template": bool(item.get("template")),
+            }
+    result.fail(f"guest {vmid} was not found on the cluster")
+    return None
+
+
+def next_vmid(config: dict[str, Any], *, result: ProxmoxResult) -> int | None:
+    data = _call(config, "GET", "/cluster/nextid", result=result)
+    if result.status != "ok":
+        return None
+    try:
+        vmid = int(data)
+    except (TypeError, ValueError):
+        result.fail(f"unexpected next-id response: {data!r}")
+        return None
+    result.log(f"Next free VMID: {vmid}")
+    return vmid
+
+
+def _wait_task(
+    config: dict[str, Any],
+    node: str,
+    upid: str,
+    *,
+    result: ProxmoxResult,
+    budget: float,
+    label: str,
+) -> bool:
+    """Poll a Proxmox task until it stops; True when it exited OK."""
+    if not isinstance(upid, str) or not upid.startswith("UPID:"):
+        result.fail(f"{label}: unexpected task id {str(upid)[:60]!r}")
+        return False
+    path = f"/nodes/{quote(node, safe='')}/tasks/{quote(upid, safe='')}/status"
+    waited = 0.0
+    while True:
+        # Poll with a transient result so the transcript is not flooded with
+        # one line per poll; only the final outcome is copied over.
+        probe = ProxmoxResult()
+        data = _call(config, "GET", path, result=probe)
+        if probe.status != "ok":
+            result.fail(f"{label}: {probe.steps[-1] if probe.steps else 'poll failed'}")
+            return False
+        status = (data or {}).get("status")
+        if status == "stopped":
+            exitstatus = str((data or {}).get("exitstatus", ""))
+            if exitstatus == "OK":
+                result.log(f"{label}: task finished OK")
+                return True
+            result.fail(f"{label}: task failed ({exitstatus[:200]})")
+            return False
+        if waited >= budget:
+            result.fail(f"{label}: timed out after {int(budget)}s")
+            return False
+        _sleep(_POLL_SECONDS)
+        waited += _POLL_SECONDS
+
+
+def clone_guest(
+    config: dict[str, Any],
+    *,
+    source_vmid: int,
+    new_vmid: int,
+    name: str,
+    result: ProxmoxResult,
+) -> dict[str, Any] | None:
+    """Full-clone a template into ``new_vmid``; returns ``{node, kind}``."""
+    source = find_guest(config, source_vmid, result=result)
+    if source is None:
+        return None
+    node, kind = source["node"], source["kind"]
+    body: dict[str, Any] = {"newid": new_vmid, "full": 1}
+    if kind == "lxc":
+        body["hostname"] = name
+    else:
+        body["name"] = name
+    upid = _call(
+        config,
+        "POST",
+        f"/nodes/{node}/{_guest_path(kind)}/{source_vmid}/clone",
+        result=result,
+        json_body=body,
+    )
+    if result.status != "ok":
+        return None
+    if not _wait_task(
+        config, node, upid, result=result,
+        budget=_CLONE_BUDGET_SECONDS, label="clone",
+    ):
+        return None
+    result.log(f"Cloned {kind} {source_vmid} -> {new_vmid} ({name}) on {node}")
+    return {"node": node, "kind": kind}
+
+
+def start_guest(
+    config: dict[str, Any],
+    node: str,
+    vmid: int,
+    kind: str,
+    *,
+    result: ProxmoxResult,
+) -> bool:
+    upid = _call(
+        config,
+        "POST",
+        f"/nodes/{node}/{_guest_path(kind)}/{vmid}/status/start",
+        result=result,
+        json_body={},
+    )
+    if result.status != "ok":
+        return False
+    return _wait_task(
+        config, node, upid, result=result,
+        budget=_START_BUDGET_SECONDS, label="start",
+    )
+
+
+def get_lxc_ip(
+    config: dict[str, Any],
+    node: str,
+    vmid: int,
+    *,
+    result: ProxmoxResult,
+    budget: float = _IP_BUDGET_SECONDS,
+) -> str:
+    """Poll a running container's interfaces for its first IPv4 address."""
+    waited = 0.0
+    while True:
+        probe = ProxmoxResult()  # transient failures are retried quietly
+        data = _call(config, "GET", f"/nodes/{node}/lxc/{vmid}/interfaces",
+                     result=probe)
+        if probe.status == "ok":
+            for iface in data or []:
+                if not isinstance(iface, dict):
+                    continue
+                if iface.get("name") in ("lo", "lo0"):
+                    continue
+                inet = str(iface.get("inet", "") or "")
+                ip = inet.split("/", 1)[0]
+                # Validate the shape before it is used as an SSH destination
+                # or stored: never trust provider-returned strings blindly.
+                if (
+                    ip
+                    and not ip.startswith("127.")
+                    and _IPV4_RE.match(ip)
+                    and all(int(part) <= 255 for part in ip.split("."))
+                ):
+                    result.log(f"Container IP: {ip}")
+                    return ip
+        if waited >= budget:
+            result.fail(
+                f"could not determine the container IP after {int(budget)}s"
+            )
+            return ""
+        _sleep(_POLL_SECONDS)
+        waited += _POLL_SECONDS
+
+
+_DISK_SIZE_RE = re.compile(r"size=(\d+)([MGT])")
+
+
+def _disk_gb_from_config(value: str) -> int:
+    match = _DISK_SIZE_RE.search(value or "")
+    if not match:
+        return 0
+    number, unit = int(match.group(1)), match.group(2)
+    if unit == "M":
+        return max(1, number // 1024)
+    if unit == "T":
+        return number * 1024
+    return number
+
+
+def get_guest_resources(
+    config: dict[str, Any],
+    node: str,
+    vmid: int,
+    kind: str,
+    *,
+    result: ProxmoxResult,
+) -> dict[str, int] | None:
+    """Read cores / memory (GB) / disk (GB) from the guest config."""
+    data = _call(
+        config,
+        "GET",
+        f"/nodes/{node}/{_guest_path(kind)}/{vmid}/config",
+        result=result,
+    )
+    if result.status != "ok":
+        return None
+    cfg = data or {}
+    cores = int(cfg.get("cores", 1) or 1)
+    memory_mb = int(cfg.get("memory", 512) or 512)
+    if kind == "lxc":
+        disk_gb = _disk_gb_from_config(str(cfg.get("rootfs", "")))
+    else:
+        disk_gb = 0
+        for key, value in cfg.items():
+            if re.match(r"^(scsi|virtio|sata|ide)\d+$", str(key)):
+                disk_gb += _disk_gb_from_config(str(value))
+    resources = {
+        "cpus": cores,
+        "memory_gb": max(1, round(memory_mb / 1024)),
+        "disk_gb": disk_gb,
+    }
+    result.log(
+        f"Guest {vmid} resources: {resources['cpus']} CPUs, "
+        f"{resources['memory_gb']} GB memory, {resources['disk_gb']} GB disk"
+    )
+    return resources
+
+
+def set_lxc_resources(
+    config: dict[str, Any],
+    node: str,
+    vmid: int,
+    *,
+    cpus: int | None = None,
+    memory_gb: int | None = None,
+    disk_gb_target: int | None = None,
+    current_disk_gb: int = 0,
+    result: ProxmoxResult,
+) -> bool:
+    """Apply CPU/memory config changes and grow the rootfs when requested."""
+    body: dict[str, Any] = {}
+    if cpus is not None:
+        body["cores"] = cpus
+    if memory_gb is not None:
+        body["memory"] = memory_gb * 1024
+    if body:
+        _call(
+            config, "PUT", f"/nodes/{node}/lxc/{vmid}/config",
+            result=result, json_body=body,
+        )
+        if result.status != "ok":
+            return False
+        result.log(f"Updated config: {sorted(body)}")
+    if disk_gb_target is not None:
+        if disk_gb_target < current_disk_gb:
+            result.fail("disk can only be grown, not shrunk")
+            return False
+        if disk_gb_target > current_disk_gb:
+            grow = disk_gb_target - current_disk_gb
+            upid = _call(
+                config, "PUT", f"/nodes/{node}/lxc/{vmid}/resize",
+                result=result,
+                json_body={"disk": "rootfs", "size": f"+{grow}G"},
+            )
+            if result.status != "ok":
+                return False
+            # Small resizes may complete synchronously (no task id).
+            if isinstance(upid, str) and upid.startswith("UPID:"):
+                if not _wait_task(
+                    config, node, upid, result=result,
+                    budget=_START_BUDGET_SECONDS, label="resize",
+                ):
+                    return False
+            result.log(f"Grew rootfs by {grow}G")
+    return True

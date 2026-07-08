@@ -3,6 +3,7 @@ import { api, ApiError } from "../api";
 import type { ApiUser, Role, UpdateUserInput } from "../types";
 import { copyToClipboard } from "../lib/clipboard";
 import { BundleTemplateManagement } from "./BundleTemplateManagement";
+import { UserServersPanel } from "./UserServers";
 
 const ROLES: Role[] = ["admin", "user"];
 
@@ -420,6 +421,15 @@ function UserRow(props: {
             </span>
           ))}
         </div>
+      )}
+
+      {!editing && (
+        <UserServersPanel
+          userId={user.id}
+          canCreate
+          canDelete
+          defaultPubkeyUser={user.user_id}
+        />
       )}
 
       {editing && (

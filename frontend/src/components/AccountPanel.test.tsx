@@ -53,6 +53,15 @@ function stubAccount(overrides: {
     if (url.endsWith("/api/account/ssh-key")) {
       return jsonResponse(sshKey);
     }
+    if (url.endsWith("/api/account/server-access")) {
+      return jsonResponse({ can_create: false, reason: "" });
+    }
+    if (url.endsWith("/api/account/server-templates")) {
+      return jsonResponse([]);
+    }
+    if (/\/api\/users\/\d+\/servers$/.test(url)) {
+      return jsonResponse([]);
+    }
     return jsonResponse({ detail: `unexpected ${init?.method ?? "GET"} ${url}` });
   });
   vi.stubGlobal("fetch", fetchMock);
