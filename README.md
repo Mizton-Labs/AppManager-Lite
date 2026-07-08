@@ -285,12 +285,18 @@ verification summary (updated / skipped / failed, with reasons) is shown and
 appended to each server's log.
 
 The Account page's **SSH Configuration File** card downloads a personal SSH
-config: templates with field mappings are rendered from account details
-(mapping sources include the username, the derived **user ID**, apps
-server host/IP, and role), while templates **without mappings** — such as the
-predefined **"SSH Config Default"** — are generated dynamically from the
-user's servers (`Host <hostname>` / `HostName <ip>` / `IdentityFile
-~/.ssh/id_ed25519`). Administrators can also set the user's **apps server**
+config. Templates with field mappings are rendered from account details;
+mapping sources include the username, the derived **user ID**, apps server
+host/IP, role, and **per-server variables** (`server1_name`, `server1_ip`,
+`server1_user` … up to `server8`, filled from the user's servers in order and
+empty beyond their count — the server user resolves to the template main user
+or the derived ID). The predefined, read-only **"SSH Config Default"** is a
+**built-in** template that renders a full SSH config dynamically: a `Host *`
+keepalive stanza, a `Host jumpserver` block (with the configured port) when the
+jump server is enabled, and one `Host` block per server with `ProxyJump
+jumpserver` when the jump server is enabled. Built-in templates can be
+**cloned** into editable copies and **disabled** (hidden from downloads) but
+not edited or deleted. Administrators can also set the user's **apps server**
 (host/IP) — the host where that user runs their applications, used as the
 upstream for that user's reverse-proxy aliases. Each application carries its
 **own port** (see below), so there is no per-user port. A normal user only sets
@@ -538,11 +544,25 @@ Server**, and **Server Templates**.
   customization. Templates are assumed to be preconfigured (SSH keys,
   resources, user).
 - **Jump server** — optionally onboard users onto a bastion. When enabled with
-  a host, management user, and registry SSH key, creating a user provisions an
-  OS account on the jump server with their public key installed, deleting a
-  user removes that key, and regenerating a key rotates it there too. A **Sync
-  users to jump server** action backfills existing users. All jump operations
-  are best-effort (they never block user create, delete, or login) and audited.
+  a host, **SSH port** (default 22), management user, and registry SSH key,
+  creating a user provisions an OS account on the jump server with their public
+  key installed, deleting a user removes that key, and regenerating a key
+  rotates it there too. A **Sync users to jump server** action backfills
+  existing users. All jump operations are best-effort (they never block user
+  create, delete, or login) and audited.
+
+Each server template also carries provisioning options (both sudo and trusted
+access default on):
+
+- **Main user** — when set, the user's SSH key is installed only for that OS
+  account on their server (blank falls back to the user's derived ID).
+- **Sudo access** — adds the main user to the server's sudo/wheel group.
+- **Trusted SSH access** — establishes a full SSH mesh across the user's
+  servers that share the same main user: each server generates its own keypair
+  locally (private keys never leave the servers or touch AppManager) and every
+  server's public key is installed on the others, so the user's servers can
+  reach each other. The mesh is reconciled whenever a trusted server is created
+  or a VM's IP is entered.
 
 ## Remote Access (SSH key registry)
 

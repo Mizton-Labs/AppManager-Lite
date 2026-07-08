@@ -252,9 +252,11 @@
       { "method": "POST", "path": "/api/settings/ssh-keys", "auth": "admin", "csrf": true, "summary": "Register an SSH key: a key file path (kind=path) or a pasted private key stored encrypted (kind=stored, write-only)." },
       { "method": "DELETE", "path": "/api/settings/ssh-keys/{key_id}", "auth": "admin", "csrf": true, "summary": "Delete a registered SSH key (409 if still referenced)." },
       { "method": "GET", "path": "/api/settings/server-templates", "auth": "admin", "csrf": false, "summary": "List registered server templates." },
-      { "method": "POST", "path": "/api/settings/server-templates", "auth": "admin", "csrf": true, "summary": "Register a server template (vmid, name, lxc|vm, optional admin SSH key path)." },
-      { "method": "PATCH", "path": "/api/settings/server-templates/{template_id}", "auth": "admin", "csrf": true, "summary": "Update a server template." },
+      { "method": "POST", "path": "/api/settings/server-templates", "auth": "admin", "csrf": true, "summary": "Register a server template (vmid, name, lxc|vm, registry admin key, optional main OS user, sudo and trusted-access flags)." },
+      { "method": "PATCH", "path": "/api/settings/server-templates/{template_id}", "auth": "admin", "csrf": true, "summary": "Update a server template (incl. main user, sudo, trusted access)." },
       { "method": "DELETE", "path": "/api/settings/server-templates/{template_id}", "auth": "admin", "csrf": true, "summary": "Delete a server template." },
+      { "method": "POST", "path": "/api/settings/bundle-templates/{template_id}/clone", "auth": "admin", "csrf": true, "summary": "Clone a bundle template (incl. a built-in) into a new editable, non-built-in template." },
+      { "method": "PATCH", "path": "/api/settings/bundle-templates/{template_id}/enabled", "auth": "admin", "csrf": true, "summary": "Enable or disable a bundle template; disabled templates are hidden from account downloads." },
       { "method": "GET", "path": "/api/account/server-templates", "auth": "user", "csrf": false, "summary": "User-facing server-template options (id, name, kind only)." },
       { "method": "GET", "path": "/api/account/server-access", "auth": "user", "csrf": false, "summary": "Whether the caller may create servers for their own account, with a reason when not." },
       { "method": "GET", "path": "/api/users/{user_id}/servers", "auth": "admin-or-self", "csrf": false, "summary": "List a user's servers." },
@@ -322,7 +324,7 @@
       {
         "name": "settings",
         "description": "Single pinned row (id = 1) for reverse-proxy, branding, LXC/VM provider (Proxmox; API key stored write-only), and server-provisioning policy configuration.",
-        "columns": ["id", "nginx_host", "nginx_user", "nginx_conf_path", "ssh_key_path", "reverse_proxy_ssh_key_id", "appmanager_proxy_host", "appmanager_proxy_port", "alias_template", "app_name", "app_logo", "configured", "provider_type", "proxmox_url", "proxmox_token_name", "proxmox_api_key", "proxmox_template_filter", "proxmox_templates_only", "proxmox_verify_tls", "proxmox_conn_status", "proxmox_conn_log", "provisioning_self_service", "provisioning_max_servers", "provisioning_allow_resource_edit", "provisioning_max_cpus", "provisioning_max_memory_gb", "provisioning_max_disk_gb", "jump_enabled", "jump_host", "jump_user", "jump_ssh_key_id", "updated_at"],
+        "columns": ["id", "nginx_host", "nginx_user", "nginx_conf_path", "ssh_key_path", "reverse_proxy_ssh_key_id", "appmanager_proxy_host", "appmanager_proxy_port", "alias_template", "app_name", "app_logo", "configured", "provider_type", "proxmox_url", "proxmox_token_name", "proxmox_api_key", "proxmox_template_filter", "proxmox_templates_only", "proxmox_verify_tls", "proxmox_conn_status", "proxmox_conn_log", "provisioning_self_service", "provisioning_max_servers", "provisioning_allow_resource_edit", "provisioning_max_cpus", "provisioning_max_memory_gb", "provisioning_max_disk_gb", "jump_enabled", "jump_host", "jump_user", "jump_port", "jump_ssh_key_id", "updated_at"],
         "primaryKey": ["id"]
       },
       {
@@ -334,7 +336,7 @@
       {
         "name": "server_templates",
         "description": "Admin-registered Proxmox templates (LXC or VM) offered when creating user servers; admin key referenced from the ssh_keys registry.",
-        "columns": ["id", "vmid", "name", "kind", "admin_ssh_key_path", "admin_ssh_key_id", "created_at", "updated_at"],
+        "columns": ["id", "vmid", "name", "kind", "admin_ssh_key_path", "admin_ssh_key_id", "main_os_user", "enable_sudo", "enable_trusted_access", "created_at", "updated_at"],
         "primaryKey": ["id"]
       },
       {
@@ -343,6 +345,12 @@
         "columns": ["id", "user_id", "name", "hostname", "template_id", "template_name", "vmid", "node", "kind", "ip_address", "cpus", "memory_gb", "disk_gb", "admin_modified", "admin_ssh_key_path", "admin_ssh_key_id", "status", "last_log", "created_at", "updated_at"],
         "primaryKey": ["id"],
         "foreignKeys": ["user_id -> users.id (cascade)", "template_id -> server_templates.id (set null)"]
+      },
+      {
+        "name": "bundle_templates",
+        "description": "Downloadable user configuration bundles with field mappings. Built-in templates (is_builtin) render dynamically and cannot be edited/deleted (only cloned); disabled templates are hidden from account downloads.",
+        "columns": ["id", "name", "content", "is_builtin", "enabled", "created_at", "updated_at"],
+        "primaryKey": ["id"]
       }
     ]
   },
