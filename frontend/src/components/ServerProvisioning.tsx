@@ -96,6 +96,7 @@ function JumpServerCard(props: {
   const [enabled, setEnabled] = useState(settings.jump_enabled);
   const [host, setHost] = useState(settings.jump_host);
   const [user, setUser] = useState(settings.jump_user);
+  const [port, setPort] = useState(String(settings.jump_port ?? 22));
   const [keyId, setKeyId] = useState(
     settings.jump_ssh_key_id !== null ? String(settings.jump_ssh_key_id) : "",
   );
@@ -122,6 +123,7 @@ function JumpServerCard(props: {
         jump_enabled: enabled,
         jump_host: host.trim(),
         jump_user: user.trim(),
+        jump_port: Number(port) || 22,
         jump_ssh_key_id: keyId ? Number(keyId) : null,
       });
       props.onSaved(next);
@@ -179,6 +181,16 @@ function JumpServerCard(props: {
         <label className="field">
           <span>Jump host (IP or hostname)</span>
           <input value={host} onChange={(e) => setHost(e.target.value)} />
+        </label>
+        <label className="field">
+          <span>Jump SSH port</span>
+          <input
+            type="number"
+            min={1}
+            max={65535}
+            value={port}
+            onChange={(e) => setPort(e.target.value)}
+          />
         </label>
         <label className="field">
           <span>Jump user (account used to manage the bastion)</span>

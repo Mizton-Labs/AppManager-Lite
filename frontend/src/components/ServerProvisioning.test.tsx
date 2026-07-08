@@ -23,6 +23,7 @@ const defaults: ProvisioningSettings = {
   jump_enabled: false,
   jump_host: "",
   jump_user: "",
+  jump_port: 22,
   jump_ssh_key_id: null,
 };
 
@@ -247,6 +248,7 @@ describe("ServerProvisioning", () => {
       jump_enabled: true,
       jump_host: "10.0.0.9",
       jump_user: "root",
+      jump_port: 2222,
       jump_ssh_key_id: 3,
     });
     render(<ServerProvisioning />);

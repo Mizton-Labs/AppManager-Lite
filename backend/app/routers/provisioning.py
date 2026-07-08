@@ -89,6 +89,7 @@ def _provisioning_out(row: dict[str, Any]) -> ProvisioningSettingsOut:
         jump_enabled=bool(row.get("jump_enabled", 0)),
         jump_host=row.get("jump_host", "") or "",
         jump_user=row.get("jump_user", "") or "",
+        jump_port=int(row.get("jump_port", 22) or 22),
         jump_ssh_key_id=row.get("jump_ssh_key_id"),
     )
 

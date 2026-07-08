@@ -123,6 +123,7 @@ export interface ProvisioningSettings {
   jump_enabled: boolean;
   jump_host: string;
   jump_user: string;
+  jump_port: number;
   jump_ssh_key_id: number | null;
 }
 
@@ -150,6 +151,7 @@ export interface UpdateProvisioningSettingsInput {
   jump_enabled?: boolean;
   jump_host?: string;
   jump_user?: string;
+  jump_port?: number;
   jump_ssh_key_id?: number | null;
 }
 

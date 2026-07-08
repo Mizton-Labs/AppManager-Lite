@@ -94,6 +94,43 @@ def test_jump_settings_roundtrip_and_validation(admin) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_jump_port_persisted_and_used(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    ssh = _FakeSsh(monkeypatch)
+    key = _register_key(client, csrf)
+    r = client.patch(
+        "/api/settings/provisioning",
+        json={"jump_enabled": True, "jump_host": "10.0.0.9",
+              "jump_user": "root", "jump_port": 2222,
+              "jump_ssh_key_id": key["id"]},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["jump_port"] == 2222
+
+    _create_member(client, csrf, username="port.user@example.com")
+    argv = ssh.commands[-1]
+    assert argv[argv.index("-p") + 1] == "2222"
+
+    # Out-of-range port rejected.
+    bad = client.patch(
+        "/api/settings/provisioning",
+        json={"jump_port": 70000},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert bad.status_code == 422
+
+
+def test_jump_port_defaults_to_22(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    ssh = _FakeSsh(monkeypatch)
+    key = _register_key(client, csrf)
+    _enable_jump(client, csrf, key["id"])  # no port -> default 22
+    _create_member(client, csrf)
+    argv = ssh.commands[-1]
+    assert argv[argv.index("-p") + 1] == "22"
+
+
 def test_create_user_onboards_to_jump(admin, monkeypatch) -> None:
     client, csrf, _ = admin
     ssh = _FakeSsh(monkeypatch)
