@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, ApiError } from "../api";
 import type {
   ApiUser,
+  BundleOption,
   ServerAccess,
   ServerKeyRotation,
   SshKeyInfo,
@@ -27,20 +28,23 @@ export function AccountPanel(props: {
 }) {
   const { user } = props;
   return (
-    <div className="grid account-grid">
-      <ProfileCard user={user} />
-      <MyServersCard user={user} />
-      <BundleDownloadCard />
-      <SshKeyCard />
-      <section className="card">
-        <h2>Change password</h2>
-        <ChangePasswordForm onChanged={props.onPasswordChanged} />
-      </section>
+    <div className="account-layout">
+      <div className="account-row-top">
+        <ProfileCard user={user} onPasswordChanged={props.onPasswordChanged} />
+        <SshKeyCard />
+        <BundleDownloadCard />
+      </div>
+      <div className="account-row-servers">
+        <MyServersCard user={user} />
+      </div>
     </div>
   );
 }
 
-function ProfileCard(props: { user: ApiUser }) {
+function ProfileCard(props: {
+  user: ApiUser;
+  onPasswordChanged: () => void | Promise<void>;
+}) {
   const { user } = props;
   return (
     <section className="card">
@@ -91,6 +95,10 @@ function ProfileCard(props: { user: ApiUser }) {
           </dd>
         </div>
       </dl>
+      <div className="card-subsection">
+        <h3>Change password</h3>
+        <ChangePasswordForm onChanged={props.onPasswordChanged} />
+      </div>
     </section>
   );
 }
@@ -301,11 +309,13 @@ function SshKeyCard() {
 }
 
 function BundleDownloadCard() {
-  const [bundles, setBundles] = useState<{ id: number; name: string }[]>([]);
+  const [bundles, setBundles] = useState<BundleOption[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const selected = bundles.find((b) => String(b.id) === selectedId);
 
   useEffect(() => {
     api
@@ -372,6 +382,9 @@ function BundleDownloadCard() {
               ))}
             </select>
           </label>
+          {selected?.description && (
+            <p className="muted bundle-description">{selected.description}</p>
+          )}
           <button
             type="button"
             className="btn primary"

@@ -31,7 +31,9 @@ function stubAccount(overrides: {
   const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
     const url = String(input);
     if (url.endsWith("/api/account/bundles")) {
-      return jsonResponse([{ id: 7, name: "Shell profile" }]);
+      return jsonResponse([
+        { id: 7, name: "Shell profile", description: "Handy shell config" },
+      ]);
     }
     if (url.endsWith("/api/account/bundles/7/download")) {
       return textResponse("personal bundle", "profile.txt");
@@ -124,6 +126,8 @@ describe("AccountPanel", () => {
     expect(
       screen.getByRole("heading", { name: /ssh configuration file/i }),
     ).toBeInTheDocument();
+    // The selected bundle's description is shown under the dropdown.
+    expect(await screen.findByText("Handy shell config")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /download file/i }));
 
     expect(
