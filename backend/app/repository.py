@@ -1437,6 +1437,9 @@ def _row_to_server_template(row: sqlite3.Row) -> dict[str, Any]:
         "kind": row["kind"],
         "admin_ssh_key_path": row["admin_ssh_key_path"],
         "admin_ssh_key_id": row["admin_ssh_key_id"],
+        "main_os_user": row["main_os_user"],
+        "enable_sudo": bool(row["enable_sudo"]),
+        "enable_trusted_access": bool(row["enable_trusted_access"]),
     }
 
 
@@ -1464,16 +1467,21 @@ def create_server_template(
     kind: str,
     admin_ssh_key_path: str = "",
     admin_ssh_key_id: int | None = None,
+    main_os_user: str = "",
+    enable_sudo: bool = True,
+    enable_trusted_access: bool = True,
 ) -> dict[str, Any]:
     try:
         cur = conn.execute(
             """
             INSERT INTO server_templates
-                (vmid, name, kind, admin_ssh_key_path, admin_ssh_key_id)
-            VALUES (?, ?, ?, ?, ?)
+                (vmid, name, kind, admin_ssh_key_path, admin_ssh_key_id,
+                 main_os_user, enable_sudo, enable_trusted_access)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (vmid, name.strip(), kind, admin_ssh_key_path.strip(),
-             admin_ssh_key_id),
+             admin_ssh_key_id, main_os_user.strip(), int(enable_sudo),
+             int(enable_trusted_access)),
         )
     except sqlite3.IntegrityError as exc:
         raise ValueError(
@@ -1494,6 +1502,9 @@ def update_server_template(
     admin_ssh_key_path: str | None = None,
     admin_ssh_key_id: int | None = None,
     clear_admin_ssh_key_id: bool = False,
+    main_os_user: str | None = None,
+    enable_sudo: bool | None = None,
+    enable_trusted_access: bool | None = None,
 ) -> dict[str, Any] | None:
     if get_server_template(conn, template_id) is None:
         return None
@@ -1510,6 +1521,12 @@ def update_server_template(
         columns["admin_ssh_key_id"] = admin_ssh_key_id
     elif clear_admin_ssh_key_id:
         columns["admin_ssh_key_id"] = None
+    if main_os_user is not None:
+        columns["main_os_user"] = main_os_user.strip()
+    if enable_sudo is not None:
+        columns["enable_sudo"] = int(enable_sudo)
+    if enable_trusted_access is not None:
+        columns["enable_trusted_access"] = int(enable_trusted_access)
     if columns:
         assignments = ", ".join(f"{col} = ?" for col in columns)
         try:

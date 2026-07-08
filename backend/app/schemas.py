@@ -33,6 +33,7 @@ _ALIAS_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 # DNS/IP characters so it can be safely substituted into an nginx proxy_pass and
 # never used for command/config injection.
 _HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
+_OS_USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 _APPS_PROTOCOLS = ("http", "https")
 _APPS_PATH_RE = re.compile(r"^$|^/[A-Za-z0-9._~/-]*$")
 
@@ -952,6 +953,20 @@ class ServerTemplateOut(BaseModel):
     kind: str
     admin_ssh_key_path: str = ""
     admin_ssh_key_id: int | None = None
+    main_os_user: str = ""
+    enable_sudo: bool = True
+    enable_trusted_access: bool = True
+
+
+def _validate_main_os_user(value: str) -> str:
+    """OS username for the template main user (same rules as servers)."""
+    value = value.strip()
+    if value and not _OS_USER_RE.match(value):
+        raise ValueError(
+            "Main user must be a valid Linux username (lowercase letters, "
+            "digits, dashes, underscores; starting with a letter or underscore)."
+        )
+    return value
 
 
 class ServerTemplateOptionOut(BaseModel):
@@ -988,6 +1003,14 @@ class CreateServerTemplateRequest(BaseModel):
     kind: str
     admin_ssh_key_path: str = Field(default="", max_length=4096)
     admin_ssh_key_id: int | None = Field(default=None, ge=1)
+    main_os_user: str = Field(default="", max_length=32)
+    enable_sudo: bool = True
+    enable_trusted_access: bool = True
+
+    @field_validator("main_os_user")
+    @classmethod
+    def _check_main_os_user(cls, value: str) -> str:
+        return _validate_main_os_user(value)
 
     @field_validator("kind")
     @classmethod
@@ -1053,6 +1076,9 @@ class UpdateServerTemplateRequest(BaseModel):
     kind: str | None = None
     admin_ssh_key_path: str | None = Field(default=None, max_length=4096)
     admin_ssh_key_id: int | None = Field(default=None, ge=1)
+    main_os_user: str | None = Field(default=None, max_length=32)
+    enable_sudo: bool | None = None
+    enable_trusted_access: bool | None = None
 
     @field_validator("kind")
     @classmethod
@@ -1060,6 +1086,11 @@ class UpdateServerTemplateRequest(BaseModel):
         if value is not None and value not in ("lxc", "vm"):
             raise ValueError("Template kind must be 'lxc' or 'vm'.")
         return value
+
+    @field_validator("main_os_user")
+    @classmethod
+    def _check_main_os_user(cls, value: str | None) -> str | None:
+        return None if value is None else _validate_main_os_user(value)
 
     @field_validator("name")
     @classmethod

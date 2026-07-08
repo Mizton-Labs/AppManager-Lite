@@ -196,6 +196,9 @@ export interface ServerTemplate {
   kind: "lxc" | "vm";
   admin_ssh_key_path: string;
   admin_ssh_key_id: number | null;
+  main_os_user: string;
+  enable_sudo: boolean;
+  enable_trusted_access: boolean;
 }
 
 /** A user's provisioned (or referenced) LXC/VM server. */
@@ -251,6 +254,9 @@ export interface CreateServerTemplateInput {
   kind: "lxc" | "vm";
   admin_ssh_key_path?: string;
   admin_ssh_key_id?: number | null;
+  main_os_user?: string;
+  enable_sudo?: boolean;
+  enable_trusted_access?: boolean;
 }
 
 export interface UpdateServerTemplateInput {
