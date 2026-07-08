@@ -287,10 +287,16 @@ appended to each server's log.
 The Account page's **SSH Configuration File** card downloads a personal SSH
 config. Templates with field mappings are rendered from account details;
 mapping sources include the username, the derived **user ID**, apps server
-host/IP, role, and **per-server variables** (`server1_name`, `server1_ip`,
-`server1_user` … up to `server8`, filled from the user's servers in order and
-empty beyond their count — the server user resolves to the template main user
-or the derived ID). The predefined, read-only **"SSH Config Default"** is a
+host/IP, role, and **per-template variables** (`server_<slug>_name`,
+`server_<slug>_ip`, `server_<slug>_user`, where `<slug>` is the server
+template's name slug, e.g. `server_debian-coder_ip`). Each template variable
+resolves to the user's **first** server created from that template (the server
+user resolves to the template main user or the derived ID); templates with no
+server for that user, and mappings whose template was later deleted, render as
+empty. Because the variable is keyed by the template's **name slug**, renaming
+a server template (or having two templates whose names slugify to the same
+value) can leave a previously-saved mapping resolving empty; re-select the
+template variable after a rename. The predefined, read-only **"SSH Config Default"** is a
 **built-in** template that renders a full SSH config dynamically: a `Host *`
 keepalive stanza, a `Host jumpserver` block (with the configured port) when the
 jump server is enabled, and one `Host` block per server with `ProxyJump
