@@ -182,6 +182,56 @@ def test_edit_bundle_grandfathers_stale_template_source(admin) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_bundle_description_round_trips(admin) -> None:
+    client, csrf, _ = admin
+    created = client.post(
+        "/api/settings/bundle-templates",
+        json={"name": "Described", "content": "x",
+              "description": "A helpful bundle", "mappings": []},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["description"] == "A helpful bundle"
+    tid = created.json()["id"]
+    # Update the description.
+    upd = client.patch(
+        f"/api/settings/bundle-templates/{tid}",
+        json={"description": "Updated text"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert upd.status_code == 200, upd.text
+    assert upd.json()["description"] == "Updated text"
+    # It also surfaces on the account download list.
+    member = client
+    listed = member.get("/api/account/bundles").json()
+    described = next(o for o in listed if o["name"] == "Described")
+    assert described["description"] == "Updated text"
+
+
+def test_builtin_has_default_description(admin) -> None:
+    client, _, _ = admin
+    templates = client.get("/api/settings/bundle-templates").json()
+    builtin = next(t for t in templates if t["name"] == "SSH Config Default")
+    assert builtin["description"]  # seeded with a non-empty default
+
+
+def test_clone_carries_description(admin) -> None:
+    client, csrf, _ = admin
+    src = client.post(
+        "/api/settings/bundle-templates",
+        json={"name": "SrcDesc", "content": "x",
+              "description": "carry me", "mappings": []},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    clone = client.post(
+        f"/api/settings/bundle-templates/{src['id']}/clone",
+        json={"name": "SrcDesc copy"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert clone.status_code == 201, clone.text
+    assert clone.json()["description"] == "carry me"
+
+
 def test_builtin_template_is_seeded_and_readonly(admin) -> None:
     client, csrf, _ = admin
     templates = client.get("/api/settings/bundle-templates").json()

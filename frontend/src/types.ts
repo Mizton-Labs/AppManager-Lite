@@ -84,6 +84,7 @@ export interface BundleTemplate {
   id: number;
   name: string;
   content: string;
+  description: string;
   mappings: BundleTemplateMapping[];
   is_builtin: boolean;
   enabled: boolean;
@@ -92,6 +93,7 @@ export interface BundleTemplate {
 export interface BundleOption {
   id: number;
   name: string;
+  description: string;
 }
 
 export interface BundleDownload {
@@ -285,12 +287,14 @@ export interface UpdateServerTemplateInput {
 export interface CreateBundleTemplateInput {
   name: string;
   content: string;
+  description?: string;
   mappings: BundleTemplateMapping[];
 }
 
 export interface UpdateBundleTemplateInput {
   name?: string;
   content?: string;
+  description?: string;
   mappings?: BundleTemplateMapping[];
 }
 

@@ -494,7 +494,11 @@ def list_account_bundles(
 ) -> list[BundleOptionOut]:
     # Disabled templates are hidden from the account download list.
     return [
-        BundleOptionOut(id=template["id"], name=template["name"])
+        BundleOptionOut(
+            id=template["id"],
+            name=template["name"],
+            description=template.get("description", ""),
+        )
         for template in repository.list_bundle_templates(conn)
         if template.get("enabled", True)
     ]

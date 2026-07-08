@@ -64,6 +64,7 @@ export function BundleTemplateManagement() {
   const [editing, setEditing] = useState<BundleTemplate | null>(null);
   const [name, setName] = useState("");
   const [content, setContent] = useState("");
+  const [description, setDescription] = useState("");
   const [mappings, setMappings] = useState<BundleTemplateMapping[]>([
     emptyMapping(),
   ]);
@@ -99,6 +100,7 @@ export function BundleTemplateManagement() {
     setEditing(null);
     setName("");
     setContent("");
+    setDescription("");
     setMappings([emptyMapping()]);
   }
 
@@ -106,6 +108,7 @@ export function BundleTemplateManagement() {
     setEditing(template);
     setName(template.name);
     setContent(template.content);
+    setDescription(template.description);
     setMappings(template.mappings.length > 0 ? template.mappings : [emptyMapping()]);
   }
 
@@ -125,12 +128,14 @@ export function BundleTemplateManagement() {
         await api.updateBundleTemplate(editing.id, {
           name: name.trim(),
           content,
+          description: description.trim(),
           mappings: cleanedMappings,
         });
       } else {
         await api.createBundleTemplate({
           name: name.trim(),
           content,
+          description: description.trim(),
           mappings: cleanedMappings,
         });
       }
@@ -208,6 +213,16 @@ export function BundleTemplateManagement() {
             />
           </label>
         </div>
+        <label className="field">
+          <span>Description (shown to users under the download menu)</span>
+          <input
+            type="text"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="What this bundle is for"
+            maxLength={500}
+          />
+        </label>
         <label className="field">
           <span>Template content</span>
           <textarea

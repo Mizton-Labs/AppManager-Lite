@@ -527,6 +527,7 @@ def _row_to_bundle_template(
         "id": row["id"],
         "name": row["name"],
         "content": row["content"],
+        "description": row["description"],
         "mappings": _bundle_mappings(conn, row["id"]),
         "is_builtin": bool(row["is_builtin"]),
         "enabled": bool(row["enabled"]),
@@ -611,10 +612,12 @@ def create_bundle_template(
     name: str,
     content: str,
     mappings: list[dict[str, str]],
+    description: str = "",
 ) -> dict[str, Any]:
     cur = conn.execute(
-        "INSERT INTO bundle_templates (name, content) VALUES (?, ?)",
-        (name.strip(), content),
+        "INSERT INTO bundle_templates (name, content, description) "
+        "VALUES (?, ?, ?)",
+        (name.strip(), content, description.strip()),
     )
     template_id = int(cur.lastrowid)
     _replace_bundle_mappings(conn, template_id, mappings)
@@ -629,6 +632,7 @@ def update_bundle_template(
     *,
     name: str | None = None,
     content: str | None = None,
+    description: str | None = None,
     mappings: list[dict[str, str]] | None = None,
 ) -> dict[str, Any] | None:
     existing = get_bundle_template(conn, template_id)
@@ -639,6 +643,8 @@ def update_bundle_template(
         columns["name"] = name.strip()
     if content is not None:
         columns["content"] = content
+    if description is not None:
+        columns["description"] = description.strip()
     if columns:
         assignments = ", ".join(f"{col} = ?" for col in columns)
         conn.execute(
@@ -842,6 +848,7 @@ def clone_bundle_template(
         conn,
         name=new_name,
         content=source["content"],
+        description=source.get("description", ""),
         mappings=[
             {"field_name": m["field_name"], "source": m["source"]}
             for m in source["mappings"]

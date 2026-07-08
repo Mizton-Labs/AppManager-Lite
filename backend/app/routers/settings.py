@@ -202,6 +202,7 @@ def create_bundle_template(
             conn,
             name=payload.name,
             content=payload.content,
+            description=payload.description,
             mappings=[m.model_dump() for m in payload.mappings],
         )
     except sqlite3.IntegrityError as exc:
@@ -247,6 +248,7 @@ def update_bundle_template(
             template_id,
             name=payload.name,
             content=payload.content,
+            description=payload.description,
             mappings=(None if payload.mappings is None else [m.model_dump() for m in payload.mappings]),
         )
     except sqlite3.IntegrityError as exc:
