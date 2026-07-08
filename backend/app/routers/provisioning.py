@@ -395,6 +395,9 @@ def create_server_template(
             kind=payload.kind,
             admin_ssh_key_path=payload.admin_ssh_key_path,
             admin_ssh_key_id=payload.admin_ssh_key_id,
+            main_os_user=payload.main_os_user,
+            enable_sudo=payload.enable_sudo,
+            enable_trusted_access=payload.enable_trusted_access,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -444,6 +447,9 @@ def update_server_template(
             admin_ssh_key_path=payload.admin_ssh_key_path,
             admin_ssh_key_id=payload.admin_ssh_key_id,
             clear_admin_ssh_key_id=clear_key,
+            main_os_user=payload.main_os_user,
+            enable_sudo=payload.enable_sudo,
+            enable_trusted_access=payload.enable_trusted_access,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -627,18 +633,24 @@ def create_user_server(
     if template is None:
         raise HTTPException(status_code=404, detail="Server template not found")
 
+    template_main_user = (template.get("main_os_user") or "").strip()
     try:
         name = servers.validate_server_name(payload.name)
         os_users = servers.parse_os_users(payload.pubkey_users)
     except servers.ServerError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if payload.install_pubkey and not os_users:
-        # Default to the owner's derived user-id, but only when it is a
-        # valid OS username; otherwise skip rather than fail the provision.
-        try:
-            os_users = servers.parse_os_users(target.get("user_id", ""))
-        except servers.ServerError:
-            os_users = []
+    if payload.install_pubkey:
+        if template_main_user:
+            # A template main user overrides the request/default: the user's
+            # key is installed ONLY for that OS user (issue_015-r2).
+            os_users = [template_main_user]
+        elif not os_users:
+            # Default to the owner's derived user-id, but only when it is a
+            # valid OS username; otherwise skip rather than fail the provision.
+            try:
+                os_users = servers.parse_os_users(target.get("user_id", ""))
+            except servers.ServerError:
+                os_users = []
 
     if any(
         s["name"].lower() == name.lower()
@@ -700,6 +712,7 @@ def create_user_server(
         install_pubkey=payload.install_pubkey,
         os_users=os_users,
         admin_key_path=admin_key_path,
+        enable_sudo=bool(template.get("enable_sudo", True)),
     )
     # Persist which registry key was used, so rotation can reuse it.
     resources = outcome.get("resources") or {}
@@ -733,6 +746,17 @@ def create_user_server(
         server = repository.create_user_server(
             conn, name=fallback, **row_kwargs
         )
+    # Trusted-access mesh: once the new server exists, reconcile the SSH mesh
+    # across all of this user's trusted servers created from templates that
+    # enable trusted access. Best-effort and fully guarded: a mesh failure
+    # must never roll back the already-committed (and already-cloned) server.
+    if server["status"] == "created" and server["ip_address"] and bool(
+        template.get("enable_trusted_access", False)
+    ):
+        server = _reconcile_and_record_mesh(
+            conn, user_id, server, template_main_user, admin_key_path
+        )
+
     logger.info(
         "Server creation %s user=%s name=%r vmid=%s by=%r",
         outcome["status"],
@@ -755,6 +779,65 @@ def create_user_server(
         ),
     )
     return _server_out(server)
+
+
+def _reconcile_and_record_mesh(
+    conn: sqlite3.Connection,
+    user_id: int,
+    server: dict[str, Any],
+    main_user: str,
+    admin_key_path: str,
+) -> dict[str, Any]:
+    """Reconcile the trusted mesh and append the transcript to the server log.
+
+    Best-effort: any error is captured, never raised (so the committed server
+    record and its guest are preserved). Returns the (possibly updated) server.
+    """
+    mesh_result = servers.ProxmoxResult()
+    try:
+        if not main_user:
+            mesh_result.log(
+                "Trusted access is enabled but the template has no main user; "
+                "skipping mesh (a shared OS account is required)."
+            )
+        else:
+            trusted = _trusted_servers_for(conn, user_id, main_user)
+            servers.reconcile_trusted_mesh(
+                servers=trusted,
+                admin_key_path=admin_key_path,
+                os_user=main_user,
+                result=mesh_result,
+            )
+    except Exception as exc:  # noqa: BLE001 - best-effort, never fatal
+        mesh_result.fail(f"trusted mesh error: {exc.__class__.__name__}")
+    merged = (server["last_log"] + "\n\n--- trusted access ---\n"
+              + mesh_result.transcript).strip()
+    repository.update_user_server(conn, user_id, server["id"], last_log=merged)
+    updated = repository.get_user_server(conn, user_id, server["id"])
+    return updated or server
+
+
+def _trusted_servers_for(
+    conn: sqlite3.Connection, user_id: int, main_user: str
+) -> list[dict[str, Any]]:
+    """The user's reachable servers whose template grants trusted access and
+    shares the same main OS user (so the mesh applies to one account)."""
+    trusted = []
+    for s in repository.list_user_servers(conn, user_id):
+        if s["status"] == "failed" or not s["ip_address"]:
+            continue
+        tpl = (
+            repository.get_server_template(conn, s["template_id"])
+            if s["template_id"] is not None
+            else None
+        )
+        if (
+            tpl is not None
+            and tpl.get("enable_trusted_access")
+            and (tpl.get("main_os_user") or "").strip() == main_user
+        ):
+            trusted.append(s)
+    return trusted
 
 
 @router.patch(
@@ -872,6 +955,22 @@ def update_user_server(
     updated = repository.update_user_server(conn, user_id, server_id, **updates)
     if updated is None:  # concurrently deleted
         raise HTTPException(status_code=404, detail="Server not found")
+
+    # If a manual IP was just supplied (e.g. a VM), join it to the trusted
+    # mesh now that it is reachable. Best-effort; guarded.
+    if updates.get("ip_address") and updated["template_id"] is not None:
+        tpl = repository.get_server_template(conn, updated["template_id"])
+        if tpl is not None and tpl.get("enable_trusted_access"):
+            main_user = (tpl.get("main_os_user") or "").strip()
+            admin_key_path = servers.resolve_ssh_key(
+                conn,
+                updated.get("admin_ssh_key_id"),
+                fallback_path=(updated.get("admin_ssh_key_path") or "").strip(),
+            )
+            updated = _reconcile_and_record_mesh(
+                conn, user_id, updated, main_user, admin_key_path
+            )
+
     audit.record(
         conn,
         category=audit.CATEGORY_USER,

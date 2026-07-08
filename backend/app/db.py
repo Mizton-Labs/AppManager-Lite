@@ -575,6 +575,22 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         conn, "settings", "reverse_proxy_ssh_key_id", "INTEGER"
     )
     _add_column(conn, "server_templates", "admin_ssh_key_id", "INTEGER")
+    # Per-template provisioning options (issue_015-r2). When main_os_user is
+    # set, the user's key is installed only for that OS user. enable_sudo adds
+    # that user to the sudo group; enable_trusted_access sets up a full SSH
+    # mesh across the user's trusted servers. Both flags default on.
+    _add_column(
+        conn, "server_templates", "main_os_user", "TEXT NOT NULL DEFAULT ''"
+    )
+    _add_column(
+        conn, "server_templates", "enable_sudo", "INTEGER NOT NULL DEFAULT 1"
+    )
+    _add_column(
+        conn,
+        "server_templates",
+        "enable_trusted_access",
+        "INTEGER NOT NULL DEFAULT 1",
+    )
     _add_column(conn, "user_servers", "admin_ssh_key_id", "INTEGER")
 
     # Jump server (issue_015-r1): onboard/offboard OS accounts on a bastion.

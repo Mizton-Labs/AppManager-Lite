@@ -166,11 +166,13 @@ def install_public_key(
     os_users: list[str],
     public_key: str,
     result: ProxmoxResult,
+    enable_sudo: bool = False,
 ) -> bool:
     """Append ``public_key`` to authorized_keys for each OS user on the host.
 
     Idempotent: the key line is only added when absent. Only the public key
     travels; the admin key stays on this server (path passed to ssh -i).
+    When ``enable_sudo`` is set, each OS user is added to the sudo/wheel group.
     """
     if not os_users:
         result.log("No OS users requested for key installation; skipping")
@@ -182,6 +184,15 @@ def install_public_key(
             result.fail(f"invalid OS username {os_user!r}")
             return False
         quoted_user = shlex.quote(os_user)
+        # Add-to-sudo step: try the Debian 'sudo' group then RHEL 'wheel';
+        # tolerate absence of either group so key install still succeeds.
+        sudo_step = (
+            f"usermod -aG sudo {quoted_user} 2>/dev/null || "
+            f"usermod -aG wheel {quoted_user} 2>/dev/null || "
+            'echo "warning: could not add to sudo/wheel group"; '
+            if enable_sudo
+            else ""
+        )
         remote = (
             "sh -c "
             + shlex.quote(
@@ -193,12 +204,17 @@ def install_public_key(
                 f"2>/dev/null || printf '%s\\n' {quoted_key} "
                 '>> "$h/.ssh/authorized_keys"; '
                 'chmod 600 "$h/.ssh/authorized_keys"; '
-                f'chown -R {quoted_user}: "$h/.ssh"'
+                f'chown -R {quoted_user}: "$h/.ssh"; '
+                + sudo_step
+                + "true"
             )
         )
         proc = _run(_ssh_argv(admin_key_path, ip, remote))
         if proc.returncode == 0:
-            result.log(f"Installed public key for OS user '{os_user}'")
+            msg = f"Installed public key for OS user '{os_user}'"
+            if enable_sudo:
+                msg += " (sudo access enabled)"
+            result.log(msg)
         else:
             detail = (proc.stderr or proc.stdout or "").strip()[:200]
             result.fail(
@@ -210,6 +226,107 @@ def install_public_key(
 
 
 _KEY_BLOB_RE = re.compile(r"^[A-Za-z0-9+/=]+$")
+
+
+def _ensure_local_key_and_read_pub(
+    *, ip: str, admin_key_path: str, os_user: str, result: ProxmoxResult
+) -> str | None:
+    """Generate a keypair for ``os_user`` on the server if absent; return pub.
+
+    The private key is generated *on the server* and never leaves it (nothing
+    is stored in the app). Returns the OpenSSH public key line, or None on
+    failure.
+    """
+    quoted_user = shlex.quote(os_user)
+    # The keygen runs as the target user via `su`; the inner command is
+    # single-quoted so $HOME is expanded by that inner shell (never string-
+    # spliced from the outer shell), foreclosing injection via the passwd
+    # home-dir field. Every use of $h below is double-quoted.
+    remote = "sh -c " + shlex.quote(
+        "set -e; "
+        f"h=$(getent passwd {quoted_user} | cut -d: -f6); "
+        '[ -n "$h" ] || { echo "no such user"; exit 1; }; '
+        'mkdir -p "$h/.ssh"; chmod 700 "$h/.ssh"; '
+        'if [ ! -f "$h/.ssh/id_ed25519" ]; then '
+        f"su -s /bin/sh {quoted_user} "
+        "-c 'ssh-keygen -t ed25519 -N \"\" -f \"$HOME/.ssh/id_ed25519\" -q' "
+        '|| ssh-keygen -t ed25519 -N "" -f "$h/.ssh/id_ed25519" -q; '
+        'fi; '
+        f'chown -R {quoted_user}: "$h/.ssh"; '
+        'cat "$h/.ssh/id_ed25519.pub"'
+    )
+    proc = _run(_ssh_argv(admin_key_path, ip, remote))
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()[:200]
+        result.fail(f"{ip}: keygen for '{os_user}' failed: {detail}")
+        return None
+    pub = (proc.stdout or "").strip().splitlines()
+    pub = [ln for ln in pub if ln.startswith("ssh-")]
+    if not pub:
+        result.fail(f"{ip}: could not read generated public key for '{os_user}'")
+        return None
+    return pub[-1]
+
+
+def reconcile_trusted_mesh(
+    *,
+    servers: list[dict[str, Any]],
+    admin_key_path: str,
+    os_user: str,
+    result: ProxmoxResult,
+) -> bool:
+    """Establish a full SSH mesh across the user's trusted servers.
+
+    For each server: ensure the main user has a locally-generated keypair and
+    collect its public key. Then install every collected public key into every
+    server's main-user authorized_keys. Private keys are generated on and stay
+    on the servers; the app only relays public keys. Idempotent.
+
+    ``servers`` is a list of dicts with an ``ip_address`` (reachable ones
+    only). Returns True when the mesh was fully applied.
+    """
+    reachable = [s for s in servers if s.get("ip_address")]
+    if len(reachable) < 2:
+        result.log(
+            "Trusted access: fewer than two reachable servers; nothing to mesh"
+        )
+        return True
+    if not _OS_USER_RE.match(os_user):
+        result.fail(f"trusted mesh: invalid OS username {os_user!r}")
+        return False
+
+    # 1. Collect each server's public key (generating one if needed).
+    pubkeys: dict[str, str] = {}
+    for srv in reachable:
+        ip = srv["ip_address"]
+        pub = _ensure_local_key_and_read_pub(
+            ip=ip, admin_key_path=admin_key_path, os_user=os_user, result=result
+        )
+        if pub is None:
+            return False
+        pubkeys[ip] = pub
+
+    # 2. Install every collected pubkey into every server's authorized_keys.
+    ok = True
+    for srv in reachable:
+        ip = srv["ip_address"]
+        for source_ip, pub in pubkeys.items():
+            if source_ip == ip:
+                continue  # a server does not need its own key installed
+            if not install_public_key(
+                ip=ip,
+                admin_key_path=admin_key_path,
+                os_users=[os_user],
+                public_key=pub,
+                result=result,
+            ):
+                ok = False
+    if ok:
+        result.log(
+            f"Trusted access mesh established across {len(reachable)} servers "
+            f"for OS user '{os_user}'"
+        )
+    return ok
 
 
 def rotate_public_key(
@@ -281,6 +398,7 @@ def create_server(
     install_pubkey: bool,
     os_users: list[str],
     admin_key_path: str | None = None,
+    enable_sudo: bool = False,
 ) -> dict[str, Any]:
     """Clone a template into a new user server.
 
@@ -382,6 +500,7 @@ def create_server(
             os_users=os_users,
             public_key=owner_public_key,
             result=result,
+            enable_sudo=enable_sudo,
         ):
             outcome["transcript"] = result.transcript
             return outcome

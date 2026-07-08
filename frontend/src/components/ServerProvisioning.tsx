@@ -619,6 +619,9 @@ function ServerTemplatesCard() {
   const [name, setName] = useState("");
   const [kind, setKind] = useState<"lxc" | "vm">("lxc");
   const [keyId, setKeyId] = useState("");
+  const [mainUser, setMainUser] = useState("");
+  const [enableSudo, setEnableSudo] = useState(true);
+  const [enableTrusted, setEnableTrusted] = useState(true);
   const [busy, setBusy] = useState(false);
 
   async function refresh() {
@@ -653,10 +656,16 @@ function ServerTemplatesCard() {
         name: name.trim(),
         kind,
         admin_ssh_key_id: keyId ? Number(keyId) : null,
+        main_os_user: mainUser.trim(),
+        enable_sudo: enableSudo,
+        enable_trusted_access: enableTrusted,
       });
       setVmid("");
       setName("");
       setKeyId("");
+      setMainUser("");
+      setEnableSudo(true);
+      setEnableTrusted(true);
       await refresh();
     } catch (err) {
       setError(
@@ -748,6 +757,36 @@ function ServerTemplatesCard() {
               Register keys under Settings &rarr; Remote Access first.
             </span>
           )}
+        </label>
+        <label className="field">
+          <span>Main user (OS account, optional)</span>
+          <input
+            value={mainUser}
+            onChange={(e) => setMainUser(e.target.value)}
+            placeholder="e.g. coder (blank = the user's own ID)"
+            maxLength={32}
+          />
+          <span className="hint">
+            When set, the user's SSH key is installed only for this OS account.
+          </span>
+        </label>
+        <label className="checkbox-field">
+          <input
+            type="checkbox"
+            checked={enableSudo}
+            onChange={(e) => setEnableSudo(e.target.checked)}
+          />
+          <span>Grant the main user sudo access on the server</span>
+        </label>
+        <label className="checkbox-field">
+          <input
+            type="checkbox"
+            checked={enableTrusted}
+            onChange={(e) => setEnableTrusted(e.target.checked)}
+          />
+          <span>
+            Enable trusted SSH access (the user's servers can reach each other)
+          </span>
         </label>
         <div className="row-actions">
           <button
