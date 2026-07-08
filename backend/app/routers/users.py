@@ -12,7 +12,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from .. import audit, repository, security, sessions
+from .. import audit, jumpserver, repository, security, sessions
 from ..deps import get_current_user, get_db, require_admin, verify_csrf
 from ..schemas import (
     CreateUserRequest,
@@ -121,6 +121,7 @@ def create_user(
         user["self_service"],
         actor.get("username"),
     )
+    jump_status, jump_detail = jumpserver.sync_user(conn, user)
     audit.record(
         conn,
         category=audit.CATEGORY_USER,
@@ -131,8 +132,14 @@ def create_user(
         target_name=user["username"],
         detail=f"role={user['role']} teams={payload.teams} "
         f"self_service={user['self_service']} apps_server={user['apps_server']!r} "
-        f"apps_server_ip={user['apps_server_ip']!r}",
+        f"apps_server_ip={user['apps_server_ip']!r} jump={jump_status}",
     )
+    if jump_status == "failed":
+        logger.warning(
+            "Jump-server onboarding failed for %r: %s",
+            user["username"],
+            jump_detail,
+        )
     return GeneratedPasswordOut(user=_user_out(user), password=password)
 
 
@@ -264,12 +271,26 @@ def delete_user(
             detail="You cannot delete your own account",
         )
     _guard_last_admin(conn, target, removing=True)
+    # Capture the OS username + public key before the row is deleted so the
+    # jump-server account's key can be revoked afterwards.
+    _jump_os_user = jumpserver.os_user_for(target)
+    _jump_key = repository.get_user_ssh_key(conn, user_id) or {}
+    _jump_pubkey = _jump_key.get("public_key", "")
     repository.delete_user(
         conn,
         user_id,
         delete_apps=delete_apps,
         transfer_to_user_id=None if delete_apps else admin.get("id"),
     )
+    jump_status, jump_detail = jumpserver.remove_user(
+        conn, os_user=_jump_os_user, public_key=_jump_pubkey
+    )
+    if jump_status == "failed":
+        logger.warning(
+            "Jump-server offboarding failed for %r: %s",
+            target["username"],
+            jump_detail,
+        )
     logger.warning(
         "User deleted id=%s username=%r by=%r",
         user_id,
@@ -284,6 +305,7 @@ def delete_user(
         target_type="user",
         target_id=user_id,
         target_name=target["username"],
+        detail=f"jump={jump_status}",
     )
     detail = (
         "User deleted; applications deleted"

@@ -120,6 +120,16 @@ export interface ProvisioningSettings {
   provisioning_max_cpus: number;
   provisioning_max_memory_gb: number;
   provisioning_max_disk_gb: number;
+  jump_enabled: boolean;
+  jump_host: string;
+  jump_user: string;
+  jump_ssh_key_id: number | null;
+}
+
+export interface JumpSyncEntry {
+  username: string;
+  status: string;
+  detail: string;
 }
 
 export interface UpdateProvisioningSettingsInput {
@@ -137,6 +147,10 @@ export interface UpdateProvisioningSettingsInput {
   provisioning_max_cpus?: number;
   provisioning_max_memory_gb?: number;
   provisioning_max_disk_gb?: number;
+  jump_enabled?: boolean;
+  jump_host?: string;
+  jump_user?: string;
+  jump_ssh_key_id?: number | null;
 }
 
 /** A VM/LXC entry read live from the provider. */

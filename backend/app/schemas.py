@@ -781,6 +781,10 @@ class ProvisioningSettingsOut(BaseModel):
     provisioning_max_cpus: int = 12
     provisioning_max_memory_gb: int = 24
     provisioning_max_disk_gb: int = 200
+    jump_enabled: bool = False
+    jump_host: str = ""
+    jump_user: str = ""
+    jump_ssh_key_id: int | None = None
 
 
 class UpdateProvisioningSettingsRequest(BaseModel):
@@ -798,6 +802,38 @@ class UpdateProvisioningSettingsRequest(BaseModel):
     provisioning_max_cpus: int | None = Field(default=None, ge=1, le=1024)
     provisioning_max_memory_gb: int | None = Field(default=None, ge=1, le=4096)
     provisioning_max_disk_gb: int | None = Field(default=None, ge=1, le=65536)
+    jump_enabled: bool | None = None
+    jump_host: str | None = Field(default=None, max_length=253)
+    jump_user: str | None = Field(default=None, max_length=64)
+    jump_ssh_key_id: int | None = Field(default=None, ge=1)
+
+    @field_validator("jump_host")
+    @classmethod
+    def _check_jump_host(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return ""
+        if not _HOST_RE.match(value):
+            raise ValueError(
+                "Jump host must be a bare hostname or IP (letters, digits, '.', '-')."
+            )
+        return value
+
+    @field_validator("jump_user")
+    @classmethod
+    def _check_jump_user(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return ""
+        if not _SSH_USER_RE.match(value):
+            raise ValueError(
+                "Jump user must contain only letters, digits, '.', '_', and '-'."
+            )
+        return value
 
     @field_validator("provider_type")
     @classmethod
@@ -838,6 +874,16 @@ class UpdateProvisioningSettingsRequest(BaseModel):
     def _strip_api_key(cls, value: str | None) -> str | None:
         # A whitespace-only "secret" must not sneak past the configured check.
         return None if value is None else value.strip()
+
+
+class JumpSyncEntry(BaseModel):
+    username: str
+    status: str  # onboarded | failed | skipped | disabled
+    detail: str = ""
+
+
+class JumpSyncOut(BaseModel):
+    results: list[JumpSyncEntry] = Field(default_factory=list)
 
 
 class ProviderTemplateOut(BaseModel):

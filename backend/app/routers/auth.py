@@ -19,7 +19,17 @@ from fastapi import (
 from fastapi.responses import PlainTextResponse, RedirectResponse
 from starlette.responses import Response as StarletteResponse
 
-from .. import audit, keystore, repository, security, servers, sessions, sshkeys, sso
+from .. import (
+    audit,
+    jumpserver,
+    keystore,
+    repository,
+    security,
+    servers,
+    sessions,
+    sshkeys,
+    sso,
+)
 from ..proxmox import ProxmoxResult
 from ..config import get_settings
 from ..deps import get_current_user, get_db, verify_csrf
@@ -644,6 +654,51 @@ def _rotate_key_on_servers(
                       + result.transcript).strip(),
         )
         summary.append(entry)
+
+    # Rotate the key on the jump server too, when configured. Guard the whole
+    # branch: a stored-key decrypt/materialize failure must not 500 the
+    # regenerate (which has already persisted the new key).
+    try:
+        jump_config = jumpserver.load_config(conn)
+    except Exception:  # noqa: BLE001
+        jump_config = jumpserver.JumpConfig(False, "", "", "")
+    if jump_config.enabled:
+        os_user = jumpserver.os_user_for(user)
+        jentry = ServerKeyRotationOut(
+            server="jump server", ip_address=jump_config.host, status="skipped"
+        )
+        if not jump_config.ready:
+            jentry.detail = "jump server enabled but not fully configured"
+        elif not old_public_key:
+            jentry.detail = "no previous key on record; nothing to replace"
+        else:
+            jresult = ProxmoxResult()
+            # Install the new key FIRST so the account never loses access; then
+            # remove the old one. If removal fails, the old key lingers (stale)
+            # but the user is not locked out - reported as failed for follow-up.
+            installed = jumpserver.onboard_user(
+                jump_config, os_user=os_user,
+                public_key=new_public_key, result=jresult,
+            )
+            removed = jumpserver.offboard_user(
+                jump_config, os_user=os_user,
+                public_key=old_public_key, result=jresult,
+            )
+            if installed and removed:
+                jentry.status = "updated"
+            elif installed and not removed:
+                jentry.status = "failed"
+                jentry.detail = (
+                    "new key installed but the old key could not be removed; "
+                    "remove it manually on the jump server"
+                )
+            else:
+                jentry.status = "failed"
+            if not jentry.detail:
+                jentry.detail = (
+                    jresult.transcript.splitlines()[-1] if jresult.steps else ""
+                )
+        summary.append(jentry)
     return summary
 
 
