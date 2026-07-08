@@ -165,7 +165,7 @@
               "path": { "type": "string" },
               "auth": {
                 "type": "string",
-                "enum": ["anonymous", "user", "admin"],
+                "enum": ["anonymous", "user", "admin", "admin-or-self"],
                 "description": "Minimum access level required."
               },
               "csrf": { "type": "boolean", "description": "Whether an X-CSRF-Token header is required." },

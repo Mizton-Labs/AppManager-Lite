@@ -68,10 +68,16 @@ const SAMPLE: ReverseProxySettings = {
 
 afterEach(() => vi.unstubAllGlobals());
 
+/** Click a Settings sub-tab by its visible label. */
+async function openTab(label: RegExp) {
+  await userEvent.click(await screen.findByRole("button", { name: label }));
+}
+
 describe("GeneralSettings", () => {
   it("loads and shows the reverse-proxy fields", async () => {
     stubSettings(SAMPLE);
     render(<GeneralSettings />);
+    await openTab(/Reverse Proxy/i);
 
     expect(
       await screen.findByDisplayValue("proxy.example.com"),
@@ -88,9 +94,20 @@ describe("GeneralSettings", () => {
     expect(screen.getByText(/location = \/api\/auth\/proxy-check/)).toBeInTheDocument();
   });
 
+  it("lands on the Reverse Proxy sub-tab on first run", async () => {
+    stubSettings(SAMPLE);
+    render(<GeneralSettings firstRun />);
+
+    // Reverse-proxy setup fields are visible without any extra clicks.
+    expect(
+      await screen.findByDisplayValue("proxy.example.com"),
+    ).toBeInTheDocument();
+  });
+
   it("keeps the alias template collapsed by default", async () => {
     stubSettings(SAMPLE);
     render(<GeneralSettings />);
+    await openTab(/Reverse Proxy/i);
 
     await screen.findByDisplayValue("proxy.example.com");
     // The template textarea is not rendered until expanded.
@@ -105,6 +122,7 @@ describe("GeneralSettings", () => {
   it("saves updated settings including the SSH user", async () => {
     const fetchMock = stubSettings(SAMPLE);
     render(<GeneralSettings />);
+    await openTab(/Reverse Proxy/i);
 
     const hostInput = await screen.findByDisplayValue("proxy.example.com");
     await userEvent.clear(hostInput);
@@ -136,6 +154,7 @@ describe("GeneralSettings", () => {
       configured: false,
     });
     render(<GeneralSettings />);
+    await openTab(/Collaborators/i);
 
     // The existing collaborator loads.
     const list = await screen.findByRole("list", { name: "Collaborators" });

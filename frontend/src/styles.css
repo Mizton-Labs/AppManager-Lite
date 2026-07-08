@@ -127,6 +127,17 @@ code {
   border-bottom: 1px solid var(--border);
 }
 
+/* Sub-tabs within a Settings section */
+.subtabs {
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+.subtabs .tab {
+  font-size: 0.85rem;
+  padding: 0.35rem 0.7rem;
+}
+
 /* Audit log table */
 .audit-table {
   width: 100%;

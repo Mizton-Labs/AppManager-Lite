@@ -160,12 +160,13 @@ describe("PortalShell", () => {
     renderShell(makeSession({ role: "admin" }, { configured: false }));
 
     // The first-login wizard sends the admin straight to Settings with the
-    // setup prompt visible.
+    // setup prompt visible, landing on the Reverse Proxy sub-tab (the form
+    // whose save completes first-run setup).
     expect(
       await screen.findByText(/finish setup by setting branding/i),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("heading", { name: /application basic information/i }),
+      screen.getByRole("heading", { name: /reverse proxy configuration/i }),
     ).toBeInTheDocument();
   });
 

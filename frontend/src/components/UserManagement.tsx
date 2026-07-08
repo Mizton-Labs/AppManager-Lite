@@ -4,6 +4,7 @@ import type { ApiUser, Role, UpdateUserInput } from "../types";
 import { copyToClipboard } from "../lib/clipboard";
 import { BundleTemplateManagement } from "./BundleTemplateManagement";
 import { UserServersPanel } from "./UserServers";
+import { SubTabs } from "./SubTabs";
 
 const ROLES: Role[] = ["admin", "user"];
 
@@ -70,50 +71,67 @@ export function UserManagement(props: { currentUser: ApiUser | null }) {
         </p>
       )}
 
-      <CreateUserCard
-        teams={teams}
-        onCreated={(cred) => {
-          setCredential(cred);
-          void reload();
-        }}
-        onError={setError}
+      <SubTabs
+        ariaLabel="User management sections"
+        tabs={[
+          {
+            id: "users",
+            label: "Users",
+            render: () => (
+              <>
+                <CreateUserCard
+                  teams={teams}
+                  onCreated={(cred) => {
+                    setCredential(cred);
+                    void reload();
+                  }}
+                  onError={setError}
+                />
+                <section className="card">
+                  <h2>Users</h2>
+                  <div className="user-list">
+                    {users.map((user) => (
+                      <UserRow
+                        key={user.id}
+                        user={user}
+                        teams={teams}
+                        isSelf={props.currentUser?.id === user.id}
+                        onSave={(input) =>
+                          runAction(async () => {
+                            await api.updateUser(user.id, input);
+                          })
+                        }
+                        onResetPassword={() =>
+                          runAction(async () => {
+                            const result = await api.resetPassword(user.id);
+                            setCredential({
+                              username: result.user.username,
+                              password: result.password,
+                              note: "Password reset. Share securely; the user must change it at next sign-in.",
+                            });
+                          })
+                        }
+                        onDelete={(deleteApps) =>
+                          runAction(async () => {
+                            await api.deleteUser(user.id, {
+                              delete_apps: deleteApps,
+                            });
+                          })
+                        }
+                      />
+                    ))}
+                  </div>
+                </section>
+              </>
+            ),
+          },
+          {
+            id: "bundle-templates",
+            label: "Bundle Templates",
+            render: () => <BundleTemplateManagement />,
+          },
+        ]}
       />
-
-      <BundleTemplateManagement />
-
-      <section className="card">
-        <h2>Users</h2>
-        <div className="user-list">
-          {users.map((user) => (
-            <UserRow
-              key={user.id}
-              user={user}
-              teams={teams}
-              isSelf={props.currentUser?.id === user.id}
-              onSave={(input) =>
-                runAction(async () => {
-                  await api.updateUser(user.id, input);
-                })
-              }
-              onResetPassword={() =>
-                runAction(async () => {
-                  const result = await api.resetPassword(user.id);
-                  setCredential({
-                    username: result.user.username,
-                    password: result.password,
-                    note: "Password reset. Share securely; the user must change it at next sign-in.",
-                  });
-                })
-              }
-              onDelete={(deleteApps) =>
-                runAction(async () => {
-                  await api.deleteUser(user.id, { delete_apps: deleteApps });
-                })
-              }
-            />
-          ))}
-        </div>
-      </section>
     </div>
   );
 }
