@@ -581,6 +581,7 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     _add_column(conn, "settings", "jump_enabled", "INTEGER NOT NULL DEFAULT 0")
     _add_column(conn, "settings", "jump_host", "TEXT NOT NULL DEFAULT ''")
     _add_column(conn, "settings", "jump_user", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "settings", "jump_port", "INTEGER NOT NULL DEFAULT 22")
     _add_column(conn, "settings", "jump_ssh_key_id", "INTEGER")
 
     # Encrypt any per-user private keys still stored in plaintext, and import

@@ -27,6 +27,7 @@ class JumpConfig:
     host: str
     user: str
     key_path: str
+    port: int = 22
 
     @property
     def ready(self) -> bool:
@@ -41,6 +42,7 @@ def load_config(conn: sqlite3.Connection) -> JumpConfig:
         host=(row.get("jump_host") or "").strip(),
         user=(row.get("jump_user") or "").strip(),
         key_path=key_path,
+        port=int(row.get("jump_port", 22) or 22),
     )
 
 
@@ -49,6 +51,8 @@ def _ssh_argv(config: JumpConfig, remote_command: str) -> list[str]:
         "ssh",
         "-i",
         config.key_path,
+        "-p",
+        str(config.port),
         "-o",
         "BatchMode=yes",
         "-o",

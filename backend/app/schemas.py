@@ -784,6 +784,7 @@ class ProvisioningSettingsOut(BaseModel):
     jump_enabled: bool = False
     jump_host: str = ""
     jump_user: str = ""
+    jump_port: int = 22
     jump_ssh_key_id: int | None = None
 
 
@@ -805,6 +806,7 @@ class UpdateProvisioningSettingsRequest(BaseModel):
     jump_enabled: bool | None = None
     jump_host: str | None = Field(default=None, max_length=253)
     jump_user: str | None = Field(default=None, max_length=64)
+    jump_port: int | None = Field(default=None, ge=1, le=65535)
     jump_ssh_key_id: int | None = Field(default=None, ge=1)
 
     @field_validator("jump_host")

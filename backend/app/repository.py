@@ -1276,6 +1276,7 @@ _PROVISIONING_COLUMNS = (
     "jump_enabled",
     "jump_host",
     "jump_user",
+    "jump_port",
     "jump_ssh_key_id",
 )
 
