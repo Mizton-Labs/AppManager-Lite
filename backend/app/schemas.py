@@ -261,6 +261,22 @@ class CreateUserRequest(BaseModel):
     self_service: bool = False
     apps_server: str = Field(default="", max_length=253)
     apps_server_ip: str = Field(default="", max_length=45)
+    # Server template IDs to auto-provision a server for on creation. Defaults
+    # to none; the admin UI pre-selects every template. Each provision is
+    # best-effort: a failure never blocks user creation. Capped and
+    # de-duplicated to bound the synchronous provisioning work per request.
+    provision_templates: list[int] = Field(default_factory=list, max_length=50)
+
+    @field_validator("provision_templates")
+    @classmethod
+    def _dedupe_provision_templates(cls, value: list[int]) -> list[int]:
+        seen: set[int] = set()
+        ordered: list[int] = []
+        for template_id in value:
+            if template_id not in seen:
+                seen.add(template_id)
+                ordered.append(template_id)
+        return ordered
 
     @field_validator("username")
     @classmethod
@@ -670,9 +686,20 @@ class UpdateApplicationRequest(BaseModel):
         return self
 
 
+class ProvisionResultOut(BaseModel):
+    """Per-template outcome of create-user auto-provisioning."""
+
+    template_id: int
+    template_name: str
+    status: str  # "created" | "failed" | "skipped"
+    detail: str = ""
+
+
 class GeneratedPasswordOut(BaseModel):
     user: UserOut
     password: str
+    # Present only for create-user; per-template auto-provisioning outcomes.
+    provisioning: list[ProvisionResultOut] = Field(default_factory=list)
 
 
 class AuditEntryOut(BaseModel):

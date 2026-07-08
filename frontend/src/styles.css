@@ -412,6 +412,12 @@ textarea:focus,
   gap: 1.25rem;
 }
 
+/* Extra breathing room between the Create user card and the users list.
+   Selector is more specific than `.stack.wide` so the larger gap wins. */
+.stack.wide.users-tab {
+  gap: 2.25rem;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));

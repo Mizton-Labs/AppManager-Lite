@@ -49,9 +49,17 @@ export interface SsoConfig {
   providers: SsoProvider[];
 }
 
+export interface ProvisionResult {
+  template_id: number;
+  template_name: string;
+  status: "created" | "failed" | "skipped";
+  detail: string;
+}
+
 export interface GeneratedPassword {
   user: ApiUser;
   password: string;
+  provisioning?: ProvisionResult[];
 }
 
 export type BundleMappingSource =
@@ -312,6 +320,7 @@ export interface CreateUserInput {
   self_service?: boolean;
   apps_server?: string;
   apps_server_ip?: string;
+  provision_templates?: number[];
 }
 
 export interface UpdateUserInput {

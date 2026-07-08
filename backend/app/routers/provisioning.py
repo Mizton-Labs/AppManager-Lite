@@ -698,6 +698,43 @@ def create_user_server(
         usage = repository.sum_user_server_resources(conn, user_id)
         _check_resource_quota(row, usage, template_resources)
 
+    server = _clone_and_persist_server(
+        conn,
+        actor=actor,
+        target=target,
+        template=template,
+        provider_config=provider_config,
+        name=name,
+        os_users=os_users,
+        install_pubkey=payload.install_pubkey,
+        template_main_user=template_main_user,
+        admin_modified=is_admin,
+    )
+    return _server_out(server)
+
+
+def _clone_and_persist_server(
+    conn: sqlite3.Connection,
+    *,
+    actor: dict[str, Any],
+    target: dict[str, Any],
+    template: dict[str, Any],
+    provider_config: dict[str, Any],
+    name: str,
+    os_users: list[str],
+    install_pubkey: bool,
+    template_main_user: str,
+    admin_modified: bool,
+) -> dict[str, Any]:
+    """Clone the guest, persist the server record, reconcile the trusted mesh.
+
+    Shared by the create-server endpoint and create-user auto-provisioning.
+    Callers must have already validated auth, quota, the provider, the name,
+    and the template. This raises only on genuinely unexpected errors; a
+    provider/clone failure is captured in the returned record's ``failed``
+    status and transcript.
+    """
+    user_id = int(target["id"])
     key = repository.get_user_ssh_key(conn, user_id)
     admin_key_path = servers.resolve_ssh_key(
         conn,
@@ -709,7 +746,7 @@ def create_user_server(
         template=template,
         name=name,
         owner_public_key=(key or {}).get("public_key", ""),
-        install_pubkey=payload.install_pubkey,
+        install_pubkey=install_pubkey,
         os_users=os_users,
         admin_key_path=admin_key_path,
         enable_sudo=bool(template.get("enable_sudo", True)),
@@ -732,7 +769,7 @@ def create_user_server(
         "cpus": resources.get("cpus", 0),
         "memory_gb": resources.get("memory_gb", 0),
         "disk_gb": resources.get("disk_gb", 0),
-        "admin_modified": is_admin,
+        "admin_modified": admin_modified,
         "admin_ssh_key_id": template.get("admin_ssh_key_id"),
         "status": record_status,
         "last_log": outcome["transcript"],
@@ -746,10 +783,10 @@ def create_user_server(
         server = repository.create_user_server(
             conn, name=fallback, **row_kwargs
         )
-    # Trusted-access mesh: once the new server exists, reconcile the SSH mesh
-    # across all of this user's trusted servers created from templates that
-    # enable trusted access. Best-effort and fully guarded: a mesh failure
-    # must never roll back the already-committed (and already-cloned) server.
+    # Trusted-access mesh: once the new server record exists, reconcile the SSH
+    # mesh across all of this user's trusted servers created from templates that
+    # enable trusted access. Best-effort and fully guarded: a mesh failure must
+    # never propagate and lose the server record for the already-cloned guest.
     if server["status"] == "created" and server["ip_address"] and bool(
         template.get("enable_trusted_access", False)
     ):
@@ -778,7 +815,121 @@ def create_user_server(
             f"vmid={server['vmid']} ip={server['ip_address'] or '-'}"
         ),
     )
-    return _server_out(server)
+    return server
+
+
+def provision_default_servers(
+    conn: sqlite3.Connection,
+    *,
+    actor: dict[str, Any],
+    target: dict[str, Any],
+    template_ids: list[int],
+) -> list[dict[str, Any]]:
+    """Auto-provision one server per template for a freshly-created user.
+
+    Runs synchronously as part of user creation. Every step is best-effort:
+    a missing provider, unknown template, or clone failure yields a per-template
+    result but never raises, so user creation always succeeds. Servers are named
+    ``<TEMPLATE_NAME>-<USER_ID>`` following the default naming convention.
+
+    Returns a list of ``{template_id, template_name, status, detail}`` dicts.
+    """
+    results: list[dict[str, Any]] = []
+    if not template_ids:
+        return results
+    user_id = int(target["id"])
+    derived_user_id = target.get("user_id") or repository.derive_user_id(
+        target.get("username", "") or ""
+    )
+    # Commit the already-created user (and jump onboarding) before cloning any
+    # real guests. Each guest is then committed as it is created, so an
+    # unexpected later error can never roll back the DB record of a Proxmox
+    # guest that actually exists (which would orphan it and drift quotas).
+    conn.commit()
+    row = repository.get_settings_row(conn)
+    provider_ok = _provider_configured(row)
+    provider_config = _provider_config(row) if provider_ok else {}
+    for template_id in template_ids:
+        template = repository.get_server_template(conn, template_id)
+        if template is None:
+            results.append({
+                "template_id": template_id,
+                "template_name": "",
+                "status": "skipped",
+                "detail": "Server template not found.",
+            })
+            continue
+        template_name = template["name"]
+        if not provider_ok:
+            results.append({
+                "template_id": template_id,
+                "template_name": template_name,
+                "status": "skipped",
+                "detail": "The LXC/VM provider is not configured yet.",
+            })
+            continue
+        # Default naming convention: TEMPLATE_NAME-USERID (validated + capped).
+        raw_name = f"{template_name}-{derived_user_id}"
+        try:
+            name = servers.validate_server_name(raw_name[:40])
+        except servers.ServerError as exc:
+            results.append({
+                "template_id": template_id,
+                "template_name": template_name,
+                "status": "skipped",
+                "detail": f"Invalid server name {raw_name!r}: {exc}",
+            })
+            continue
+        template_main_user = (template.get("main_os_user") or "").strip()
+        os_users: list[str] = []
+        if template_main_user:
+            os_users = [template_main_user]
+        else:
+            try:
+                os_users = servers.parse_os_users(derived_user_id)
+            except servers.ServerError:
+                os_users = []
+        try:
+            server = _clone_and_persist_server(
+                conn,
+                actor=actor,
+                target=target,
+                template=template,
+                provider_config=provider_config,
+                name=name,
+                os_users=os_users,
+                install_pubkey=True,
+                template_main_user=template_main_user,
+                admin_modified=True,
+            )
+            results.append({
+                "template_id": template_id,
+                "template_name": template_name,
+                "status": server["status"],
+                "detail": (
+                    f"vmid={server['vmid']} ip={server['ip_address'] or '-'}"
+                    if server["status"] == "created"
+                    else "Provisioning failed; see the server log."
+                ),
+            })
+            # Persist this guest's record immediately so a later failure can
+            # never roll back the DB record of an existing Proxmox guest.
+            conn.commit()
+        except Exception as exc:  # noqa: BLE001 - never block user creation
+            # Discard any partial write from this failed attempt without
+            # touching the already-committed user and prior servers.
+            conn.rollback()
+            logger.warning(
+                "Auto-provision failed user=%s template=%s: %s",
+                user_id, template_name, exc,
+            )
+            results.append({
+                "template_id": template_id,
+                "template_name": template_name,
+                "status": "failed",
+                "detail": f"Unexpected error: {exc.__class__.__name__}",
+            })
+    return results
 
 
 def _reconcile_and_record_mesh(

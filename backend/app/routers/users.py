@@ -18,10 +18,12 @@ from ..schemas import (
     CreateUserRequest,
     GeneratedPasswordOut,
     MessageOut,
+    ProvisionResultOut,
     TeamOut,
     UpdateUserRequest,
     UserOut,
 )
+from .provisioning import provision_default_servers
 
 router = APIRouter(tags=["users"])
 
@@ -140,7 +142,19 @@ def create_user(
             user["username"],
             jump_detail,
         )
-    return GeneratedPasswordOut(user=_user_out(user), password=password)
+    # Auto-provision one server per selected template (best-effort; a failure
+    # never blocks user creation). The admin UI pre-selects every template.
+    provisioning_results = provision_default_servers(
+        conn,
+        actor=actor,
+        target=user,
+        template_ids=payload.provision_templates,
+    )
+    return GeneratedPasswordOut(
+        user=_user_out(user),
+        password=password,
+        provisioning=[ProvisionResultOut(**r) for r in provisioning_results],
+    )
 
 
 @router.patch("/users/{user_id}", response_model=UserOut)

@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "../api";
-import type { ApiUser, Role, UpdateUserInput } from "../types";
+import type {
+  ApiUser,
+  ProvisionResult,
+  Role,
+  ServerTemplateOption,
+  UpdateUserInput,
+} from "../types";
 import { copyToClipboard } from "../lib/clipboard";
 import { BundleTemplateManagement } from "./BundleTemplateManagement";
 import { UserServersPanel } from "./UserServers";
@@ -12,6 +18,7 @@ interface Credential {
   username: string;
   password: string;
   note: string;
+  provisioning?: ProvisionResult[];
 }
 
 export function UserManagement(props: { currentUser: ApiUser | null }) {
@@ -78,7 +85,7 @@ export function UserManagement(props: { currentUser: ApiUser | null }) {
             id: "users",
             label: "Users",
             render: () => (
-              <>
+              <div className="stack wide users-tab">
                 <CreateUserCard
                   teams={teams}
                   onCreated={(cred) => {
@@ -122,7 +129,7 @@ export function UserManagement(props: { currentUser: ApiUser | null }) {
                     ))}
                   </div>
                 </section>
-              </>
+              </div>
             ),
           },
           {
@@ -192,6 +199,33 @@ function CredentialBanner(props: { credential: Credential; onDismiss: () => void
           copy manually.
         </p>
       )}
+      {props.credential.provisioning &&
+        props.credential.provisioning.length > 0 && (
+          <div className="rotation-summary">
+            <h3>Server provisioning</h3>
+            <ul>
+              {props.credential.provisioning.map((result) => (
+                <li key={result.template_id}>
+                  <span
+                    className={
+                      result.status === "created"
+                        ? "status-badge ok"
+                        : result.status === "failed"
+                          ? "status-badge warn"
+                          : "status-badge off"
+                    }
+                  >
+                    {result.status}
+                  </span>{" "}
+                  {result.template_name || `#${result.template_id}`}
+                  {result.detail ? (
+                    <span className="muted"> — {result.detail}</span>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
     </section>
   );
 }
@@ -207,8 +241,24 @@ function CreateUserCard(props: {
   const [selfService, setSelfService] = useState(false);
   const [appsServer, setAppsServer] = useState("");
   const [appsServerIp, setAppsServerIp] = useState("");
+  const [serverTemplates, setServerTemplates] = useState<
+    ServerTemplateOption[]
+  >([]);
+  // Server template IDs to auto-provision on creation; every template is
+  // enabled by default so a new user gets one server per template.
+  const [provisionIds, setProvisionIds] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState(false);
   const hasServerLocation = Boolean(appsServer.trim() || appsServerIp.trim());
+
+  useEffect(() => {
+    api
+      .listServerTemplates()
+      .then((templates) => {
+        setServerTemplates(templates);
+        setProvisionIds(new Set(templates.map((t) => t.id)));
+      })
+      .catch(() => undefined);
+  }, []);
 
   function toggleTeam(team: string) {
     setSelectedTeams((current) =>
@@ -216,6 +266,15 @@ function CreateUserCard(props: {
         ? current.filter((t) => t !== team)
         : [...current, team],
     );
+  }
+
+  function toggleProvision(id: number) {
+    setProvisionIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   }
 
   async function onSubmit(event: React.FormEvent) {
@@ -230,11 +289,15 @@ function CreateUserCard(props: {
         self_service: selfService,
         apps_server: appsServer.trim(),
         apps_server_ip: appsServerIp.trim(),
+        provision_templates: serverTemplates
+          .filter((t) => provisionIds.has(t.id))
+          .map((t) => t.id),
       });
       props.onCreated({
         username: result.user.username,
         password: result.password,
         note: "Account created. Share securely; the user must change this password at first sign-in.",
+        provisioning: result.provisioning,
       });
       setUsername("");
       setRole("user");
@@ -242,6 +305,7 @@ function CreateUserCard(props: {
       setSelfService(false);
       setAppsServer("");
       setAppsServerIp("");
+      setProvisionIds(new Set(serverTemplates.map((t) => t.id)));
     } catch (err) {
       props.onError(
         err instanceof ApiError ? err.message : "Unable to create the user.",
@@ -321,6 +385,31 @@ function CreateUserCard(props: {
           />
           <span>Self-service (applications go live without approval)</span>
         </label>
+
+        {serverTemplates.length > 0 && (
+          <fieldset className="team-picker">
+            <legend>Provision servers</legend>
+            <p className="muted logo-hint">
+              A server is created from each selected template
+              (named <code>TEMPLATE-USERID</code>). Failures don't block user
+              creation.
+            </p>
+            <div className="team-grid">
+              {serverTemplates.map((template) => (
+                <label key={template.id} className="checkbox">
+                  <input
+                    type="checkbox"
+                    checked={provisionIds.has(template.id)}
+                    onChange={() => toggleProvision(template.id)}
+                  />
+                  <span>
+                    {template.name} ({template.kind.toUpperCase()})
+                  </span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+        )}
 
         <button
           type="submit"

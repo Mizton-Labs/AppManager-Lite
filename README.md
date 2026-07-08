@@ -557,6 +557,13 @@ Server**, and **Server Templates**.
   existing users. All jump operations are best-effort (they never block user
   create, delete, or login) and audited.
 
+When creating a user, administrators can also **auto-provision servers**: the
+Create user card lists every server template with a toggle (all enabled by
+default), and one server is created per selected template, named
+`TEMPLATE_NAME-USERID`. Provisioning runs synchronously but is best-effort — a
+missing provider, unknown template, or clone failure yields a per-template
+result (shown with the temporary credentials) and never blocks user creation.
+
 Each server template also carries provisioning options (both sudo and trusted
 access default on):
 
