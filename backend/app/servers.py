@@ -280,6 +280,7 @@ def create_server(
     owner_public_key: str,
     install_pubkey: bool,
     os_users: list[str],
+    admin_key_path: str | None = None,
 ) -> dict[str, Any]:
     """Clone a template into a new user server.
 
@@ -360,7 +361,11 @@ def create_server(
         return outcome
 
     if install_pubkey:
-        admin_key_path = (template.get("admin_ssh_key_path") or "").strip()
+        # Prefer the registry-resolved path from the caller; fall back to the
+        # template's legacy path column.
+        if admin_key_path is None:
+            admin_key_path = (template.get("admin_ssh_key_path") or "").strip()
+        admin_key_path = (admin_key_path or "").strip()
         if not admin_key_path:
             result.log(
                 "WARNING: key installation requested but the template has "

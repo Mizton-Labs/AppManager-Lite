@@ -234,6 +234,7 @@ export interface CreateServerTemplateInput {
   name: string;
   kind: "lxc" | "vm";
   admin_ssh_key_path?: string;
+  admin_ssh_key_id?: number | null;
 }
 
 export interface UpdateServerTemplateInput {
@@ -241,6 +242,7 @@ export interface UpdateServerTemplateInput {
   name?: string;
   kind?: "lxc" | "vm";
   admin_ssh_key_path?: string;
+  admin_ssh_key_id?: number | null;
 }
 
 export interface CreateBundleTemplateInput {
@@ -298,6 +300,7 @@ export interface ReverseProxySettings {
   nginx_user: string;
   nginx_conf_path: string;
   ssh_key_path: string;
+  reverse_proxy_ssh_key_id: number | null;
   appmanager_proxy_host: string;
   appmanager_proxy_port: string;
   alias_template: string;
@@ -310,6 +313,7 @@ export interface UpdateReverseProxySettingsInput {
   nginx_user?: string;
   nginx_conf_path?: string;
   ssh_key_path?: string;
+  reverse_proxy_ssh_key_id?: number | null;
   appmanager_proxy_host?: string;
   appmanager_proxy_port?: string;
   alias_template?: string;

@@ -48,12 +48,15 @@ beforeEach(() => {
     vi.fn(async (input: string) => {
       const url = String(input);
       const isSettings = /\/api\/settings\//.test(url);
+      const isSshKeys = /\/api\/settings\/ssh-keys\b/.test(url);
       const isTeams = /\/api\/teams\b/.test(url);
       return {
         ok: true,
         status: 200,
         json: async () =>
-          isTeams
+          isSshKeys
+            ? []
+            : isTeams
             ? [
                 { id: 1, name: "Threat Hunting", sort_order: 0, icon: "" },
                 { id: 2, name: "Red Team", sort_order: 1, icon: "" },

@@ -108,6 +108,9 @@ def _push_alias_on_approval(
             if app is None:
                 return
             settings = repository.get_settings_row(conn)
+            settings["ssh_key_path"] = repository.reverse_proxy_key_path(
+                conn, settings
+            )
 
             if app["url_type"] != "alias":
                 result = reverse_proxy.PushResult(status="skipped")
@@ -208,6 +211,9 @@ def _remove_alias_on_delete(
     try:
         with get_connection() as conn:
             settings = repository.get_settings_row(conn)
+            settings["ssh_key_path"] = repository.reverse_proxy_key_path(
+                conn, settings
+            )
             result = reverse_proxy.remove_alias(settings, app_id=application_id)
             transcript = result.transcript[:_MAX_PUSH_LOG]
             action = (
@@ -357,8 +363,12 @@ def get_application_alias_config(
             log="Skipped: application does not use a local alias.",
         )
 
+    _rp_settings = repository.get_settings_row(conn)
+    _rp_settings["ssh_key_path"] = repository.reverse_proxy_key_path(
+        conn, _rp_settings
+    )
     result = reverse_proxy.read_alias_config(
-        repository.get_settings_row(conn), app_id=application_id
+        _rp_settings, app_id=application_id
     )
     return AliasConfigOut(
         status=result.status,

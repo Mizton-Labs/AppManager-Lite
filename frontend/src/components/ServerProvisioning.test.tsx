@@ -58,6 +58,12 @@ function stubProvisioning(initial: Partial<ProvisioningSettings> = {}) {
     if (url.endsWith("/api/settings/provisioning/provider-templates")) {
       return json({ status: "ok", log: "", templates });
     }
+    if (url.endsWith("/api/settings/ssh-keys")) {
+      return json([
+        { id: 3, name: "admin key", kind: "path", path: "/k",
+          public_key: "", fingerprint: "", has_private_key: false },
+      ]);
+    }
     if (url.endsWith("/api/settings/server-templates") && method === "GET") {
       return json(serverTemplates);
     }
@@ -192,9 +198,9 @@ describe("ServerProvisioning", () => {
     await userEvent.type(screen.getByLabelText(/lxc\/vm id/i), "9001");
     await userEvent.type(screen.getByLabelText(/^template name$/i), "Debian Coder");
     await userEvent.click(screen.getByLabelText(/existing vm template/i));
-    await userEvent.type(
-      screen.getByLabelText(/admin ssh key/i),
-      "/home/svc/.ssh/id_ed25519",
+    await userEvent.selectOptions(
+      await screen.findByLabelText(/admin ssh key/i),
+      "3",
     );
     await userEvent.click(screen.getByRole("button", { name: /add template/i }));
 

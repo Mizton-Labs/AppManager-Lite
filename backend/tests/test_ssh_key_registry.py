@@ -250,6 +250,136 @@ def test_delete_referenced_key_blocked(admin) -> None:
     assert "in use" in d.json()["detail"].lower()
 
 
+def test_reverse_proxy_settings_use_key_registry(admin) -> None:
+    client, csrf, _ = admin
+    key = client.post(
+        "/api/settings/ssh-keys",
+        json={"name": "rp key", "kind": "path", "path": "/data/keys/rp"},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    # Select the registry key for reverse proxy.
+    r = client.patch(
+        "/api/settings/reverse-proxy",
+        json={"reverse_proxy_ssh_key_id": key["id"]},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["reverse_proxy_ssh_key_id"] == key["id"]
+
+    # Unknown key id -> 400.
+    bad = client.patch(
+        "/api/settings/reverse-proxy",
+        json={"reverse_proxy_ssh_key_id": 99999},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert bad.status_code == 400
+
+    # The resolver returns the registered path.
+    from app.db import get_connection
+    from app import repository
+    with get_connection() as conn:
+        row = repository.get_settings_row(conn)
+        assert repository.reverse_proxy_key_path(conn, row) == "/data/keys/rp"
+
+
+def test_reverse_proxy_response_never_leaks_materialized_path(admin) -> None:
+    """A stored key resolves to a data/keys/... file for ssh, but that
+    materialized path must never appear in the settings response."""
+    client, csrf, _ = admin
+    key = client.post(
+        "/api/settings/ssh-keys",
+        json={"name": "stored rp", "kind": "stored", "private_key": _PRIV},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    r = client.patch(
+        "/api/settings/reverse-proxy",
+        json={"reverse_proxy_ssh_key_id": key["id"]},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["reverse_proxy_ssh_key_id"] == key["id"]
+    # Response keeps the (empty) raw path, NOT the materialized key file.
+    assert "data/keys/ssh-key-" not in r.text
+    assert body["ssh_key_path"] == ""
+    # But the resolver does return the materialized path for ssh use.
+    from app.db import get_connection
+    from app import repository
+    with get_connection() as conn:
+        resolved = repository.reverse_proxy_key_path(
+            conn, repository.get_settings_row(conn)
+        )
+    assert resolved.endswith(f"ssh-key-{key['id']}")
+
+
+def test_clear_server_template_key(admin) -> None:
+    client, csrf, _ = admin
+    key = client.post(
+        "/api/settings/ssh-keys",
+        json={"name": "clr key", "kind": "path", "path": "/data/keys/c"},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    tpl = client.post(
+        "/api/settings/server-templates",
+        json={"vmid": 9001, "name": "C", "kind": "lxc",
+              "admin_ssh_key_id": key["id"]},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    assert tpl["admin_ssh_key_id"] == key["id"]
+    # Explicit null clears the assignment.
+    cleared = client.patch(
+        f"/api/settings/server-templates/{tpl['id']}",
+        json={"admin_ssh_key_id": None},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["admin_ssh_key_id"] is None
+    # Omitting the field leaves it unchanged (rename only).
+    renamed = client.patch(
+        f"/api/settings/server-templates/{tpl['id']}",
+        json={"name": "C2"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert renamed.json()["admin_ssh_key_id"] is None
+    # Now that it is unreferenced, the key can be deleted.
+    assert client.delete(
+        f"/api/settings/ssh-keys/{key['id']}", headers={"X-CSRF-Token": csrf}
+    ).status_code == 200
+
+
+def test_server_template_uses_key_registry(admin) -> None:
+    client, csrf, _ = admin
+    key = client.post(
+        "/api/settings/ssh-keys",
+        json={"name": "tpl key", "kind": "path", "path": "/data/keys/tpl"},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    created = client.post(
+        "/api/settings/server-templates",
+        json={"vmid": 9001, "name": "T", "kind": "lxc",
+              "admin_ssh_key_id": key["id"]},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["admin_ssh_key_id"] == key["id"]
+
+    # Deleting the referenced key is blocked.
+    d = client.delete(
+        f"/api/settings/ssh-keys/{key['id']}",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert d.status_code == 409
+
+    # Unknown key on create -> 400.
+    bad = client.post(
+        "/api/settings/server-templates",
+        json={"vmid": 9002, "name": "T2", "kind": "lxc",
+              "admin_ssh_key_id": 99999},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert bad.status_code == 400
+
+
 def test_ssh_keys_require_admin(admin) -> None:
     client, csrf, _ = admin
     created = client.post(

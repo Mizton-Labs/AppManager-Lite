@@ -1208,6 +1208,7 @@ def update_settings_row(
     nginx_user: str | None = None,
     nginx_conf_path: str | None = None,
     ssh_key_path: str | None = None,
+    reverse_proxy_ssh_key_id: int | None = None,
     appmanager_proxy_host: str | None = None,
     appmanager_proxy_port: str | None = None,
     alias_template: str | None = None,
@@ -1233,6 +1234,8 @@ def update_settings_row(
         columns["appmanager_proxy_port"] = appmanager_proxy_port
     if alias_template is not None:
         columns["alias_template"] = alias_template
+    if reverse_proxy_ssh_key_id is not None:
+        columns["reverse_proxy_ssh_key_id"] = reverse_proxy_ssh_key_id
     if app_name is not None:
         columns["app_name"] = app_name
     if app_logo is not None:
@@ -1400,6 +1403,22 @@ def delete_ssh_key(conn: sqlite3.Connection, key_id: int) -> bool:
     return cur.rowcount > 0
 
 
+def reverse_proxy_key_path(conn: sqlite3.Connection, row: dict[str, Any]) -> str:
+    """Effective SSH key path for reverse-proxy operations.
+
+    Resolves the registry key referenced by ``reverse_proxy_ssh_key_id``
+    (materializing a stored key when needed), falling back to the legacy
+    ``ssh_key_path`` column.
+    """
+    from . import servers
+
+    return servers.resolve_ssh_key(
+        conn,
+        row.get("reverse_proxy_ssh_key_id"),
+        fallback_path=(row.get("ssh_key_path") or "").strip(),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Server templates (Proxmox templates registered for user-server creation)
 # ---------------------------------------------------------------------------
@@ -1439,14 +1458,17 @@ def create_server_template(
     name: str,
     kind: str,
     admin_ssh_key_path: str = "",
+    admin_ssh_key_id: int | None = None,
 ) -> dict[str, Any]:
     try:
         cur = conn.execute(
             """
-            INSERT INTO server_templates (vmid, name, kind, admin_ssh_key_path)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO server_templates
+                (vmid, name, kind, admin_ssh_key_path, admin_ssh_key_id)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (vmid, name.strip(), kind, admin_ssh_key_path.strip()),
+            (vmid, name.strip(), kind, admin_ssh_key_path.strip(),
+             admin_ssh_key_id),
         )
     except sqlite3.IntegrityError as exc:
         raise ValueError(
@@ -1465,6 +1487,8 @@ def update_server_template(
     name: str | None = None,
     kind: str | None = None,
     admin_ssh_key_path: str | None = None,
+    admin_ssh_key_id: int | None = None,
+    clear_admin_ssh_key_id: bool = False,
 ) -> dict[str, Any] | None:
     if get_server_template(conn, template_id) is None:
         return None
@@ -1477,6 +1501,10 @@ def update_server_template(
         columns["kind"] = kind
     if admin_ssh_key_path is not None:
         columns["admin_ssh_key_path"] = admin_ssh_key_path.strip()
+    if admin_ssh_key_id is not None:
+        columns["admin_ssh_key_id"] = admin_ssh_key_id
+    elif clear_admin_ssh_key_id:
+        columns["admin_ssh_key_id"] = None
     if columns:
         assignments = ", ".join(f"{col} = ?" for col in columns)
         try:
@@ -1520,9 +1548,10 @@ def _row_to_user_server(row: sqlite3.Row) -> dict[str, Any]:
         "memory_gb": row["memory_gb"],
         "disk_gb": row["disk_gb"],
         "admin_modified": bool(row["admin_modified"]),
-        # Internal only: UserServerOut has no such field, so this never
-        # reaches API responses.
+        # Internal only: UserServerOut has no such fields, so these never
+        # reach API responses.
         "admin_ssh_key_path": row["admin_ssh_key_path"],
+        "admin_ssh_key_id": row["admin_ssh_key_id"],
         "status": row["status"],
         "last_log": row["last_log"],
         "created_at": row["created_at"],
@@ -1606,6 +1635,7 @@ def create_user_server(
     disk_gb: int = 0,
     admin_modified: bool = False,
     admin_ssh_key_path: str = "",
+    admin_ssh_key_id: int | None = None,
     status: str = "created",
     last_log: str = "",
 ) -> dict[str, Any]:
@@ -1615,13 +1645,15 @@ def create_user_server(
             INSERT INTO user_servers
                 (user_id, name, hostname, template_id, template_name, vmid,
                  node, kind, ip_address, cpus, memory_gb, disk_gb,
-                 admin_modified, admin_ssh_key_path, status, last_log)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 admin_modified, admin_ssh_key_path, admin_ssh_key_id,
+                 status, last_log)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id, name, hostname, template_id, template_name, vmid,
                 node, kind, ip_address, cpus, memory_gb, disk_gb,
-                int(admin_modified), admin_ssh_key_path, status, last_log,
+                int(admin_modified), admin_ssh_key_path, admin_ssh_key_id,
+                status, last_log,
             ),
         )
     except sqlite3.IntegrityError as exc:

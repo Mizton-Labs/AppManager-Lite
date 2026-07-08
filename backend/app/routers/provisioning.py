@@ -306,6 +306,10 @@ def create_server_template(
     __: None = Depends(verify_csrf),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> ServerTemplateOut:
+    if payload.admin_ssh_key_id is not None and (
+        repository.get_ssh_key(conn, payload.admin_ssh_key_id) is None
+    ):
+        raise HTTPException(status_code=400, detail="Unknown SSH key")
     try:
         template = repository.create_server_template(
             conn,
@@ -313,6 +317,7 @@ def create_server_template(
             name=payload.name,
             kind=payload.kind,
             admin_ssh_key_path=payload.admin_ssh_key_path,
+            admin_ssh_key_id=payload.admin_ssh_key_id,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -342,6 +347,16 @@ def update_server_template(
     __: None = Depends(verify_csrf),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> ServerTemplateOut:
+    if payload.admin_ssh_key_id is not None and (
+        repository.get_ssh_key(conn, payload.admin_ssh_key_id) is None
+    ):
+        raise HTTPException(status_code=400, detail="Unknown SSH key")
+    # Distinguish "field omitted" (leave unchanged) from an explicit null
+    # (clear the assigned key), which Pydantic collapses to None.
+    clear_key = (
+        "admin_ssh_key_id" in payload.model_fields_set
+        and payload.admin_ssh_key_id is None
+    )
     try:
         template = repository.update_server_template(
             conn,
@@ -350,6 +365,8 @@ def update_server_template(
             name=payload.name,
             kind=payload.kind,
             admin_ssh_key_path=payload.admin_ssh_key_path,
+            admin_ssh_key_id=payload.admin_ssh_key_id,
+            clear_admin_ssh_key_id=clear_key,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -593,6 +610,11 @@ def create_user_server(
         _check_resource_quota(row, usage, template_resources)
 
     key = repository.get_user_ssh_key(conn, user_id)
+    admin_key_path = servers.resolve_ssh_key(
+        conn,
+        template.get("admin_ssh_key_id"),
+        fallback_path=(template.get("admin_ssh_key_path") or "").strip(),
+    )
     outcome = servers.create_server(
         provider_config=provider_config,
         template=template,
@@ -600,7 +622,9 @@ def create_user_server(
         owner_public_key=(key or {}).get("public_key", ""),
         install_pubkey=payload.install_pubkey,
         os_users=os_users,
+        admin_key_path=admin_key_path,
     )
+    # Persist which registry key was used, so rotation can reuse it.
     resources = outcome.get("resources") or {}
     # A record is "failed" only when no guest was produced; when the clone
     # exists (even if a later step errored) it consumes real capacity and
@@ -619,6 +643,7 @@ def create_user_server(
         "memory_gb": resources.get("memory_gb", 0),
         "disk_gb": resources.get("disk_gb", 0),
         "admin_modified": is_admin,
+        "admin_ssh_key_id": template.get("admin_ssh_key_id"),
         "status": record_status,
         "last_log": outcome["transcript"],
     }
