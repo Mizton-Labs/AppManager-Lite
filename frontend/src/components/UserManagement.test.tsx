@@ -33,6 +33,12 @@ function stubUsers() {
     if (method === "GET" && url.endsWith("/api/settings/bundle-templates")) {
       return json([]);
     }
+    if (method === "GET" && /\/api\/users\/\d+\/servers$/.test(url)) {
+      return json([]);
+    }
+    if (method === "GET" && url.endsWith("/api/account/server-templates")) {
+      return json([]);
+    }
     if (method === "POST" && url.endsWith("/api/settings/bundle-templates")) {
       const body = JSON.parse(init?.body as string);
       return json({ id: 1, ...body });

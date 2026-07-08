@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { api, ApiError } from "../api";
-import type { ApiUser, SshKeyInfo } from "../types";
+import type { ApiUser, ServerAccess, SshKeyInfo } from "../types";
 import { ChangePasswordForm } from "./ChangePasswordForm";
+import { UserServersPanel } from "./UserServers";
 
 function saveTextFile(content: string, filename: string) {
   const blob = new Blob([content], { type: "text/plain" });
@@ -79,8 +80,40 @@ export function AccountPanel(props: {
 
       <SshKeyCard />
 
+      <MyServersCard user={user} />
+
       <BundleDownloadCard />
     </div>
+  );
+}
+
+function MyServersCard(props: { user: ApiUser }) {
+  const [access, setAccess] = useState<ServerAccess | null>(null);
+
+  useEffect(() => {
+    api
+      .getAccountServerAccess()
+      .then(setAccess)
+      .catch(() => setAccess({ can_create: false, reason: "" }));
+  }, []);
+
+  return (
+    <section className="card">
+      <h2>My servers</h2>
+      <p className="muted">
+        Your provisioned servers. LXC servers receive their IP automatically;
+        for a VM, configure it in Proxmox and enter its IP here.
+      </p>
+      {access && !access.can_create && access.reason && (
+        <p className="muted">{access.reason}</p>
+      )}
+      <UserServersPanel
+        userId={props.user.id}
+        canCreate={access?.can_create ?? false}
+        canDelete={props.user.self_service || props.user.role === "admin"}
+        defaultPubkeyUser={props.user.user_id}
+      />
+    </section>
   );
 }
 

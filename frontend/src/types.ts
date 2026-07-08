@@ -150,6 +150,53 @@ export interface ServerTemplate {
   admin_ssh_key_path: string;
 }
 
+/** A user's provisioned (or referenced) LXC/VM server. */
+export interface UserServer {
+  id: number;
+  user_id: number;
+  name: string;
+  hostname: string;
+  template_id: number | null;
+  template_name: string;
+  vmid: number | null;
+  node: string;
+  kind: "lxc" | "vm";
+  ip_address: string;
+  cpus: number;
+  memory_gb: number;
+  disk_gb: number;
+  admin_modified: boolean;
+  status: "created" | "reference" | "failed";
+  last_log: string;
+  created_at: string;
+}
+
+export interface CreateUserServerInput {
+  template_id: number;
+  name: string;
+  install_pubkey?: boolean;
+  pubkey_users?: string;
+}
+
+export interface UpdateUserServerInput {
+  ip_address?: string;
+  cpus?: number;
+  memory_gb?: number;
+  disk_gb?: number;
+}
+
+/** User-facing template option (no vmid or key paths). */
+export interface ServerTemplateOption {
+  id: number;
+  name: string;
+  kind: "lxc" | "vm";
+}
+
+export interface ServerAccess {
+  can_create: boolean;
+  reason: string;
+}
+
 export interface CreateServerTemplateInput {
   vmid: number;
   name: string;

@@ -1,0 +1,400 @@
+import { FormEvent, useEffect, useState } from "react";
+import { api, ApiError } from "../api";
+import type { ServerTemplateOption, UserServer } from "../types";
+
+/**
+ * Per-user server list + Add Server form (issue_015 phase 3).
+ *
+ * Reused by User Management (admins managing any user) and the Account page
+ * (self-service users managing their own servers). Servers are shown as
+ * small cards ("NAME - IP"); LXC servers get their IP automatically, VMs
+ * prompt for a manual IP after being configured in Proxmox.
+ */
+export function UserServersPanel(props: {
+  userId: number;
+  /** Whether the caller may create servers for this user. */
+  canCreate: boolean;
+  /** Whether the caller may remove server records. */
+  canDelete: boolean;
+  /** Prefill for the comma-separated OS users receiving the public key. */
+  defaultPubkeyUser?: string;
+}) {
+  const [serversList, setServersList] = useState<UserServer[] | null>(null);
+  const [templates, setTemplates] = useState<ServerTemplateOption[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+
+  async function refresh() {
+    try {
+      setServersList(await api.listUserServers(props.userId));
+      setError(null);
+    } catch (err) {
+      setError(
+        err instanceof ApiError ? err.message : "Failed to load servers.",
+      );
+    }
+  }
+
+  useEffect(() => {
+    setServersList(null);
+    void refresh();
+    if (props.canCreate) {
+      api
+        .listAccountServerTemplates()
+        .then(setTemplates)
+        .catch(() => setTemplates([]));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.userId, props.canCreate]);
+
+  return (
+    <div className="server-panel">
+      <div className="server-panel-head">
+        <h3>Servers</h3>
+        {props.canCreate && (
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={() => {
+              setAdding((v) => !v);
+              setNotice(null);
+            }}
+          >
+            {adding ? "Close" : "Add Server"}
+          </button>
+        )}
+      </div>
+      {error && (
+        <p className="alert error" role="alert">
+          {error}
+        </p>
+      )}
+      {notice && (
+        <p className="alert success" role="status">
+          {notice}
+        </p>
+      )}
+      {adding && (
+        <AddServerForm
+          userId={props.userId}
+          templates={templates}
+          defaultPubkeyUser={props.defaultPubkeyUser ?? ""}
+          onCreated={async (server) => {
+            setAdding(false);
+            const withWarnings = /ERROR:|WARNING:/.test(server.last_log);
+            setNotice(
+              server.status === "created"
+                ? `Server '${server.name}' created` +
+                    (withWarnings ? " with warnings (see its log)" : " successfully") +
+                    (server.kind === "vm"
+                      ? "; configure the VM in Proxmox and enter its IP address"
+                      : server.ip_address
+                        ? ` (IP ${server.ip_address})`
+                        : "")
+                : null,
+            );
+            await refresh();
+          }}
+          onFailed={refresh}
+        />
+      )}
+      {serversList === null ? (
+        <p role="status">Loading servers...</p>
+      ) : serversList.length === 0 ? (
+        <p className="muted">No servers.</p>
+      ) : (
+        <div className="server-list">
+          {serversList.map((server) => (
+            <ServerCard
+              key={server.id}
+              server={server}
+              canDelete={props.canDelete}
+              onChanged={refresh}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AddServerForm(props: {
+  userId: number;
+  templates: ServerTemplateOption[];
+  defaultPubkeyUser: string;
+  onCreated: (server: UserServer) => void | Promise<void>;
+  onFailed?: () => void | Promise<void>;
+}) {
+  const [templateId, setTemplateId] = useState(
+    props.templates[0] ? String(props.templates[0].id) : "",
+  );
+  const [name, setName] = useState("");
+  const [installPubkey, setInstallPubkey] = useState(true);
+  const [pubkeyUsers, setPubkeyUsers] = useState(props.defaultPubkeyUser);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [failLog, setFailLog] = useState<string | null>(null);
+  const [showFailLog, setShowFailLog] = useState(false);
+
+  useEffect(() => {
+    if (!templateId && props.templates[0]) {
+      setTemplateId(String(props.templates[0].id));
+    }
+  }, [props.templates, templateId]);
+
+  const selectedKind =
+    props.templates.find((t) => String(t.id) === templateId)?.kind ?? "lxc";
+
+  async function onSubmit(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    setFailLog(null);
+    try {
+      const wantsKey = installPubkey && selectedKind === "lxc";
+      const server = await api.createUserServer(props.userId, {
+        template_id: Number(templateId),
+        name: name.trim(),
+        install_pubkey: wantsKey,
+        pubkey_users: wantsKey ? pubkeyUsers.trim() : "",
+      });
+      if (server.status === "failed") {
+        setError("Server creation failed.");
+        setFailLog(server.last_log);
+        await props.onFailed?.();
+      } else {
+        setName("");
+        await props.onCreated(server);
+      }
+    } catch (err) {
+      setError(
+        err instanceof ApiError ? err.message : "Unable to create the server.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (props.templates.length === 0) {
+    return (
+      <p className="muted">
+        No server templates are available. An administrator must register
+        templates under Settings → Server Provisioning first.
+      </p>
+    );
+  }
+
+  return (
+    <form className="create-form" onSubmit={onSubmit}>
+      {error && (
+        <p className="alert error" role="alert">
+          {error}{" "}
+          {failLog && (
+            <button
+              type="button"
+              className="btn ghost"
+              aria-expanded={showFailLog}
+              onClick={() => setShowFailLog((v) => !v)}
+            >
+              {showFailLog ? "Hide details" : "View details"}
+            </button>
+          )}
+        </p>
+      )}
+      {failLog && showFailLog && <pre className="push-log">{failLog}</pre>}
+      <label className="field">
+        <span>Template</span>
+        <select
+          value={templateId}
+          onChange={(e) => setTemplateId(e.target.value)}
+        >
+          {props.templates.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.name} ({t.kind.toUpperCase()})
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="field">
+        <span>Server name</span>
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          maxLength={40}
+          required
+        />
+      </label>
+      {selectedKind === "vm" ? (
+        <p className="muted">
+          SSH key installation is not available for VM templates: configure
+          the VM in Proxmox first, then enter its IP address on the server
+          card.
+        </p>
+      ) : (
+        <>
+          <label className="checkbox-field">
+            <input
+              type="checkbox"
+              checked={installPubkey}
+              onChange={(e) => setInstallPubkey(e.target.checked)}
+            />
+            <span>Install the user's SSH public key on the new server</span>
+          </label>
+          {installPubkey && (
+            <label className="field">
+              <span>OS users receiving the key (comma-separated)</span>
+              <input
+                value={pubkeyUsers}
+                onChange={(e) => setPubkeyUsers(e.target.value)}
+                placeholder="user1, user2"
+              />
+            </label>
+          )}
+        </>
+      )}
+      <div className="row-actions">
+        <button
+          type="submit"
+          className="btn primary"
+          disabled={busy || !name.trim() || !templateId}
+        >
+          {busy ? "Creating server..." : "Create Server"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function ServerCard(props: {
+  server: UserServer;
+  canDelete: boolean;
+  onChanged: () => void | Promise<void>;
+}) {
+  const { server } = props;
+  const [showLog, setShowLog] = useState(false);
+  const [ipDraft, setIpDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+
+  const needsIp = server.kind === "vm" && !server.ip_address &&
+    server.status !== "failed";
+
+  async function saveIp() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.updateUserServer(server.user_id, server.id, {
+        ip_address: ipDraft.trim(),
+      });
+      await props.onChanged();
+    } catch (err) {
+      setError(
+        err instanceof ApiError ? err.message : "Unable to save the IP.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.deleteUserServer(server.user_id, server.id);
+      await props.onChanged();
+    } catch (err) {
+      setError(
+        err instanceof ApiError ? err.message : "Unable to remove the record.",
+      );
+      setBusy(false);
+    }
+  }
+
+  return (
+    <article
+      className={
+        server.status === "failed" ? "server-card failed" : "server-card"
+      }
+    >
+      <div className="server-card-head">
+        <span className="server-name">
+          {server.name}
+          {server.ip_address ? ` - ${server.ip_address}` : ""}
+        </span>
+        <span className="role-badge">{server.kind.toUpperCase()}</span>
+        {server.status === "failed" ? (
+          <span className="status-badge warn">failed</span>
+        ) : server.status === "reference" ? (
+          <span className="status-badge ok">reference</span>
+        ) : null}
+      </div>
+      <p className="muted server-meta">
+        {server.template_name && <>Template: {server.template_name} · </>}
+        {server.cpus > 0 && (
+          <>
+            {server.cpus} CPU · {server.memory_gb} GB RAM · {server.disk_gb} GB
+            disk
+          </>
+        )}
+      </p>
+      {error && (
+        <p className="alert error" role="alert">
+          {error}
+        </p>
+      )}
+      {needsIp && (
+        <div className="row-actions">
+          <input
+            aria-label="Server IP address"
+            placeholder="Enter the VM's IP address"
+            value={ipDraft}
+            onChange={(e) => setIpDraft(e.target.value)}
+            maxLength={15}
+          />
+          <button
+            type="button"
+            className="btn primary"
+            onClick={saveIp}
+            disabled={busy || !ipDraft.trim()}
+          >
+            Save IP
+          </button>
+        </div>
+      )}
+      <div className="row-actions">
+        {server.last_log && (
+          <button
+            type="button"
+            className="btn ghost"
+            aria-expanded={showLog}
+            onClick={() => setShowLog((v) => !v)}
+          >
+            {showLog ? "Hide log" : "View log"}
+          </button>
+        )}
+        {props.canDelete &&
+          (confirmingDelete ? (
+            <button
+              type="button"
+              className="btn danger"
+              onClick={remove}
+              disabled={busy}
+            >
+              Confirm remove record
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn ghost"
+              onClick={() => setConfirmingDelete(true)}
+            >
+              Remove
+            </button>
+          ))}
+      </div>
+      {showLog && <pre className="push-log">{server.last_log}</pre>}
+    </article>
+  );
+}

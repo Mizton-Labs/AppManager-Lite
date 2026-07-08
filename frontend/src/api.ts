@@ -14,14 +14,19 @@ import type {
   GeneratedPassword,
   ReverseProxySettings,
   CreateServerTemplateInput,
+  CreateUserServerInput,
   ProviderTemplates,
   ProvisioningSettings,
+  ServerAccess,
   ServerTemplate,
+  ServerTemplateOption,
   SessionState,
   SshKeyInfo,
   SsoConfig,
   UpdateProvisioningSettingsInput,
   UpdateServerTemplateInput,
+  UpdateUserServerInput,
+  UserServer,
   Team,
   UpdateBundleTemplateInput,
   UpdateApplicationInput,
@@ -251,6 +256,37 @@ export const api = {
     request<{ detail: string }>(`settings/server-templates/${id}`, {
       method: "DELETE",
     }),
+
+  /** Per-user servers (admin, or the user themself). */
+  listUserServers: (userId: number) =>
+    request<UserServer[]>(`users/${userId}/servers`),
+
+  createUserServer: (userId: number, input: CreateUserServerInput) =>
+    request<UserServer>(`users/${userId}/servers`, {
+      method: "POST",
+      body: input,
+    }),
+
+  updateUserServer: (
+    userId: number,
+    serverId: number,
+    input: UpdateUserServerInput,
+  ) =>
+    request<UserServer>(`users/${userId}/servers/${serverId}`, {
+      method: "PATCH",
+      body: input,
+    }),
+
+  deleteUserServer: (userId: number, serverId: number) =>
+    request<{ detail: string }>(`users/${userId}/servers/${serverId}`, {
+      method: "DELETE",
+    }),
+
+  listAccountServerTemplates: () =>
+    request<ServerTemplateOption[]>("account/server-templates"),
+
+  getAccountServerAccess: () =>
+    request<ServerAccess>("account/server-access"),
 
   /** Configurable branding (administrators only). */
   getBrandingSettings: () => request<BrandingSettings>("settings/branding"),

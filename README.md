@@ -522,6 +522,40 @@ Provisioning** (admin only):
   optional path to an admin SSH key on this server for later customization.
   Templates are assumed to be preconfigured (SSH keys, resources, user).
 
+### User servers
+
+Each user can have multiple servers, shown as small `NAME - IP` cards in their
+User Management card and on their own **Account → My servers** card.
+Administrators can add a server to any user; self-service users can create
+their own (when self-service provisioning is enabled); normal users cannot
+request servers.
+
+Creating a server picks a registered template and a name, then AppManager
+clones it in Proxmox (full clone, next free VMID) and — for **LXC** — starts
+the container and reads its IP address back automatically. A **VM** is cloned
+only: the operator is guided to configure it in Proxmox and enter its IP
+manually on the server card. An optional toggle installs the owner's SSH
+public key on the new server for a comma-separated list of OS users (default:
+the owner's user ID), connecting with the template's admin SSH key; only the
+public key ever leaves this host. Every creation stores a timestamped,
+secret-free transcript on the server record (**View log**), successes show a
+green confirmation, and everything is audited. A record is marked `failed`
+only when no guest was produced; if the clone succeeded but a later step
+errored (IP discovery, key installation), the record stays `created` — with
+the error in its log — because the guest exists, consumes capacity, and
+counts against quotas.
+
+Quotas apply to non-administrator creators: the per-user server count and the
+summed CPU/memory/disk of quota-counted servers are checked against the
+provisioning policy (template resources are read from Proxmox before cloning).
+Servers created or resource-modified by an administrator are flagged
+(`admin_modified`) and exempt from quota accounting, so admin-granted capacity
+does not consume the user's own limits. Resource changes (CPU, memory, and
+grow-only disk) are applied to LXC servers via the Proxmox API; self-service
+users may change resources only when the policy allows it and within their
+remaining quota. Removing a server card deletes only the AppManager record —
+the LXC/VM itself is never touched.
+
 ## Home
 
 The Home page shows two groups of applications:

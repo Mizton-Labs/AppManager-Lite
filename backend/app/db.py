@@ -125,6 +125,32 @@ CREATE TABLE IF NOT EXISTS server_templates (
     updated_at         TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Per-user provisioned (or referenced) LXC/VM servers.
+CREATE TABLE IF NOT EXISTS user_servers (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name           TEXT    NOT NULL,
+    hostname       TEXT    NOT NULL DEFAULT '',
+    template_id    INTEGER REFERENCES server_templates(id) ON DELETE SET NULL,
+    template_name  TEXT    NOT NULL DEFAULT '',
+    vmid           INTEGER,
+    node           TEXT    NOT NULL DEFAULT '',
+    kind           TEXT    NOT NULL CHECK (kind IN ('lxc', 'vm')),
+    ip_address     TEXT    NOT NULL DEFAULT '',
+    cpus           INTEGER NOT NULL DEFAULT 0,
+    memory_gb      INTEGER NOT NULL DEFAULT 0,
+    disk_gb        INTEGER NOT NULL DEFAULT 0,
+    admin_modified INTEGER NOT NULL DEFAULT 0,
+    -- created: provisioned by AppManager; reference: imported record of a
+    -- pre-existing server; failed: creation attempt kept for its log.
+    status         TEXT    NOT NULL DEFAULT 'created'
+                       CHECK (status IN ('created', 'reference', 'failed')),
+    last_log       TEXT    NOT NULL DEFAULT '',
+    created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(user_id, name)
+);
+
 CREATE TABLE IF NOT EXISTS bundle_templates (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     name       TEXT    NOT NULL UNIQUE,
@@ -185,6 +211,7 @@ CREATE INDEX IF NOT EXISTS idx_application_teams_team
 CREATE INDEX IF NOT EXISTS idx_audit_category_id ON audit_log(category, id);
 CREATE INDEX IF NOT EXISTS idx_bundle_template_mappings_template
     ON bundle_template_mappings(template_id);
+CREATE INDEX IF NOT EXISTS idx_user_servers_user ON user_servers(user_id);
 """
 
 
