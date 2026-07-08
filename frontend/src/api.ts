@@ -16,6 +16,7 @@ import type {
   CreateServerTemplateInput,
   CreateSshKeyInput,
   CreateUserServerInput,
+  JumpSyncEntry,
   ProviderTemplates,
   ProvisioningSettings,
   ServerAccess,
@@ -241,6 +242,11 @@ export const api = {
 
   listProviderTemplates: () =>
     request<ProviderTemplates>("settings/provisioning/provider-templates"),
+
+  syncJumpServerUsers: () =>
+    request<{ results: JumpSyncEntry[] }>("settings/jump-server/sync", {
+      method: "POST",
+    }),
 
   listServerTemplates: () =>
     request<ServerTemplate[]>("settings/server-templates"),

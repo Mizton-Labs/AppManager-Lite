@@ -20,6 +20,10 @@ const defaults: ProvisioningSettings = {
   provisioning_max_cpus: 12,
   provisioning_max_memory_gb: 24,
   provisioning_max_disk_gb: 200,
+  jump_enabled: false,
+  jump_host: "",
+  jump_user: "",
+  jump_ssh_key_id: null,
 };
 
 function stubProvisioning(initial: Partial<ProvisioningSettings> = {}) {
@@ -63,6 +67,13 @@ function stubProvisioning(initial: Partial<ProvisioningSettings> = {}) {
         { id: 3, name: "admin key", kind: "path", path: "/k",
           public_key: "", fingerprint: "", has_private_key: false },
       ]);
+    }
+    if (url.endsWith("/api/settings/jump-server/sync")) {
+      return json({
+        results: [
+          { username: "a@example.com", status: "onboarded", detail: "" },
+        ],
+      });
     }
     if (url.endsWith("/api/settings/server-templates") && method === "GET") {
       return json(serverTemplates);
@@ -222,5 +233,27 @@ describe("ServerProvisioning", () => {
     expect(
       screen.getByText(/vulnerable to interception/i),
     ).toBeInTheDocument();
+  });
+
+  it("saves jump server settings and syncs users", async () => {
+    const fetchMock = stubProvisioning({
+      jump_enabled: true,
+      jump_host: "10.0.0.9",
+      jump_user: "root",
+      jump_ssh_key_id: 3,
+    });
+    render(<ServerProvisioning />);
+
+    await screen.findByRole("heading", { name: /jump server/i });
+    await userEvent.click(
+      screen.getByRole("button", { name: /sync users to jump server/i }),
+    );
+    expect(await screen.findByText(/sync summary/i)).toBeInTheDocument();
+    expect(screen.getByText("a@example.com")).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(([u]) =>
+        String(u).endsWith("/api/settings/jump-server/sync"),
+      ),
+    ).toBe(true);
   });
 });

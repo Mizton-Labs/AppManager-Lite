@@ -14,12 +14,22 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from .. import audit, keystore, proxmox, repository, servers, sshkeys
+from .. import (
+    audit,
+    jumpserver,
+    keystore,
+    proxmox,
+    repository,
+    servers,
+    sshkeys,
+)
 from ..deps import get_current_user, get_db, require_admin, verify_csrf
 from ..schemas import (
     CreateServerTemplateRequest,
     CreateSshKeyRequest,
     CreateUserServerRequest,
+    JumpSyncEntry,
+    JumpSyncOut,
     MessageOut,
     ProviderTemplatesOut,
     ProvisioningSettingsOut,
@@ -76,6 +86,10 @@ def _provisioning_out(row: dict[str, Any]) -> ProvisioningSettingsOut:
         provisioning_max_cpus=int(row.get("provisioning_max_cpus", 12)),
         provisioning_max_memory_gb=int(row.get("provisioning_max_memory_gb", 24)),
         provisioning_max_disk_gb=int(row.get("provisioning_max_disk_gb", 200)),
+        jump_enabled=bool(row.get("jump_enabled", 0)),
+        jump_host=row.get("jump_host", "") or "",
+        jump_user=row.get("jump_user", "") or "",
+        jump_ssh_key_id=row.get("jump_ssh_key_id"),
     )
 
 
@@ -122,6 +136,24 @@ def update_provisioning_settings(
         for k, v in payload.model_dump(exclude_unset=True).items()
         if v is not None
     }
+    if "jump_ssh_key_id" in changes and (
+        repository.get_ssh_key(conn, changes["jump_ssh_key_id"]) is None
+    ):
+        raise HTTPException(status_code=400, detail="Unknown SSH key")
+
+    # Enabling the jump server requires host, user, and key to be present in
+    # the resulting state (reject "enabled but not configured").
+    current = repository.get_settings_row(conn)
+    effective_enabled = changes.get("jump_enabled", bool(current.get("jump_enabled", 0)))
+    if effective_enabled:
+        eff_host = changes.get("jump_host", current.get("jump_host", ""))
+        eff_user = changes.get("jump_user", current.get("jump_user", ""))
+        eff_key = changes.get("jump_ssh_key_id", current.get("jump_ssh_key_id"))
+        if not (eff_host and eff_user and eff_key):
+            raise HTTPException(
+                status_code=400,
+                detail="Enabling the jump server requires a host, user, and SSH key.",
+            )
     row = repository.update_provisioning_settings(conn, **changes)
 
     # When provider connection settings are touched (and complete), run a
@@ -183,6 +215,50 @@ def list_provider_templates(
         log=result.transcript,
         templates=result.data or [],
     )
+
+
+# ---------------------------------------------------------------------------
+# Jump server: bulk onboarding of existing users
+# ---------------------------------------------------------------------------
+
+
+@router.post("/settings/jump-server/sync", response_model=JumpSyncOut)
+def sync_jump_server_users(
+    admin: dict[str, Any] = Depends(require_admin),
+    __: None = Depends(verify_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> JumpSyncOut:
+    """Onboard every active user to the configured jump server (idempotent)."""
+    config = jumpserver.load_config(conn)
+    if not config.enabled:
+        raise HTTPException(
+            status_code=400, detail="The jump server is not enabled"
+        )
+    if not config.ready:
+        raise HTTPException(
+            status_code=400,
+            detail="The jump server is enabled but not fully configured",
+        )
+    results: list[JumpSyncEntry] = []
+    for user in repository.list_users(conn):
+        if not user.get("is_active", True):
+            continue
+        status_str, detail = jumpserver.sync_user(conn, user)
+        results.append(
+            JumpSyncEntry(
+                username=user["username"], status=status_str, detail=detail
+            )
+        )
+    audit.record(
+        conn,
+        category=audit.CATEGORY_SYSTEM,
+        action="jump_sync",
+        actor=admin,
+        target_type="jump_server",
+        target_name=config.host,
+        detail=f"users={len(results)}",
+    )
+    return JumpSyncOut(results=results)
 
 
 # ---------------------------------------------------------------------------

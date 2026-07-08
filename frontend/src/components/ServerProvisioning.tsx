@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { api, ApiError } from "../api";
 import type {
+  JumpSyncEntry,
   ProviderTemplate,
   ProvisioningSettings,
   ServerTemplate,
@@ -45,8 +46,163 @@ export function ServerProvisioning() {
     <div className="grid">
       <ProviderCard settings={settings} onSaved={setSettings} />
       <PolicyCard settings={settings} onSaved={setSettings} />
+      <JumpServerCard settings={settings} onSaved={setSettings} />
       <ServerTemplatesCard />
     </div>
+  );
+}
+
+function JumpServerCard(props: {
+  settings: ProvisioningSettings;
+  onSaved: (next: ProvisioningSettings) => void;
+}) {
+  const { settings } = props;
+  const [enabled, setEnabled] = useState(settings.jump_enabled);
+  const [host, setHost] = useState(settings.jump_host);
+  const [user, setUser] = useState(settings.jump_user);
+  const [keyId, setKeyId] = useState(
+    settings.jump_ssh_key_id !== null ? String(settings.jump_ssh_key_id) : "",
+  );
+  const [sshKeys, setSshKeys] = useState<SshKey[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  const [syncResults, setSyncResults] = useState<JumpSyncEntry[] | null>(null);
+
+  useEffect(() => {
+    api
+      .listSshKeys()
+      .then((keys) => setSshKeys(Array.isArray(keys) ? keys : []))
+      .catch(() => undefined);
+  }, []);
+
+  async function onSubmit(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    setSaved(false);
+    try {
+      const next = await api.updateProvisioningSettings({
+        jump_enabled: enabled,
+        jump_host: host.trim(),
+        jump_user: user.trim(),
+        jump_ssh_key_id: keyId ? Number(keyId) : null,
+      });
+      props.onSaved(next);
+      setSaved(true);
+    } catch (err) {
+      setError(
+        err instanceof ApiError ? err.message : "Unable to save the jump server.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onSync() {
+    setBusy(true);
+    setError(null);
+    setSyncResults(null);
+    try {
+      const result = await api.syncJumpServerUsers();
+      setSyncResults(result.results);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Sync failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="card">
+      <h2>Jump server</h2>
+      <p className="muted">
+        When enabled, each new user gets an account on this bastion with their
+        SSH public key installed; deleting a user removes their key. Select the
+        SSH key used to reach the jump server.
+      </p>
+      {error && (
+        <p className="alert error" role="alert">
+          {error}
+        </p>
+      )}
+      {saved && (
+        <p className="alert success" role="status">
+          Jump server settings saved.
+        </p>
+      )}
+      <form className="create-form" onSubmit={onSubmit}>
+        <label className="checkbox-field">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(e) => setEnabled(e.target.checked)}
+          />
+          <span>Enable jump server onboarding</span>
+        </label>
+        <label className="field">
+          <span>Jump host (IP or hostname)</span>
+          <input value={host} onChange={(e) => setHost(e.target.value)} />
+        </label>
+        <label className="field">
+          <span>Jump user (account used to manage the bastion)</span>
+          <input value={user} onChange={(e) => setUser(e.target.value)} />
+        </label>
+        <label className="field">
+          <span>SSH key</span>
+          <select value={keyId} onChange={(e) => setKeyId(e.target.value)}>
+            <option value="">None</option>
+            {sshKeys.map((k) => (
+              <option key={k.id} value={k.id}>
+                {k.name} ({k.kind})
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="row-actions">
+          <button type="submit" className="btn primary" disabled={busy}>
+            {busy ? "Saving..." : "Save jump server"}
+          </button>
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={onSync}
+            disabled={busy || !settings.jump_enabled}
+            title={
+              settings.jump_enabled
+                ? "Onboard all existing users"
+                : "Save an enabled jump server first"
+            }
+          >
+            Sync users to jump server
+          </button>
+        </div>
+      </form>
+      {syncResults && (
+        <div className="rotation-summary">
+          <h3>Sync summary</h3>
+          <ul>
+            {syncResults.map((r) => (
+              <li key={r.username}>
+                <span
+                  className={
+                    r.status === "onboarded"
+                      ? "status-badge ok"
+                      : r.status === "failed"
+                        ? "status-badge warn"
+                        : "status-badge off"
+                  }
+                >
+                  {r.status}
+                </span>{" "}
+                {r.username}
+                {r.detail ? <span className="muted"> — {r.detail}</span> : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </section>
   );
 }
 

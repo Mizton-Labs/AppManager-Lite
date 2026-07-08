@@ -1273,6 +1273,10 @@ _PROVISIONING_COLUMNS = (
     "provisioning_max_cpus",
     "provisioning_max_memory_gb",
     "provisioning_max_disk_gb",
+    "jump_enabled",
+    "jump_host",
+    "jump_user",
+    "jump_ssh_key_id",
 )
 
 
