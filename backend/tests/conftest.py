@@ -33,8 +33,11 @@ def _configure(
     monkeypatch.setenv("APP_LOG_DIR", str(tmp_path / "logs"))
 
     from app.config import get_settings
+    from app import keystore
 
     get_settings.cache_clear()
+    # The master key is per-data-dir; drop the cached Fernet between tests.
+    keystore.reset_cache()
 
 
 def _build_client() -> TestClient:

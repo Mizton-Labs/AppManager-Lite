@@ -19,7 +19,7 @@ from fastapi import (
 from fastapi.responses import PlainTextResponse, RedirectResponse
 from starlette.responses import Response as StarletteResponse
 
-from .. import audit, repository, security, servers, sessions, sshkeys, sso
+from .. import audit, keystore, repository, security, servers, sessions, sshkeys, sso
 from ..proxmox import ProxmoxResult
 from ..config import get_settings
 from ..deps import get_current_user, get_db, verify_csrf
@@ -536,7 +536,13 @@ def download_account_ssh_key(
     downloads are audited as an event (metadata only) so owners have a
     forensic trail should a session ever be hijacked.
     """
-    key = repository.get_user_ssh_key(conn, user["id"])
+    try:
+        key = repository.get_user_ssh_key(conn, user["id"])
+    except keystore.MasterKeyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Server key store is misconfigured; contact an administrator.",
+        ) from exc
     if key is None:
         raise HTTPException(status_code=404, detail="SSH key not available")
     if part == "public":
