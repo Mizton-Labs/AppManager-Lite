@@ -8,7 +8,6 @@ import type {
 } from "../types";
 import { ChangePasswordForm } from "./ChangePasswordForm";
 import { UserServersPanel } from "./UserServers";
-import { SubTabs } from "./SubTabs";
 
 function saveTextFile(content: string, filename: string) {
   const blob = new Blob([content], { type: "text/plain" });
@@ -28,43 +27,16 @@ export function AccountPanel(props: {
 }) {
   const { user } = props;
   return (
-    <SubTabs
-      ariaLabel="Account sections"
-      tabs={[
-        {
-          id: "user-info",
-          label: "User Info",
-          render: () => (
-            <div className="grid">
-              <ProfileCard user={user} />
-              <MyServersCard user={user} />
-            </div>
-          ),
-        },
-        {
-          id: "ssh-info",
-          label: "SSH Info",
-          render: () => (
-            <div className="grid">
-              <BundleDownloadCard />
-              <SshKeyCard />
-            </div>
-          ),
-        },
-        {
-          id: "change-password",
-          label: "Change Password",
-          render: () => (
-            <div className="grid">
-              <section className="card">
-                <h2>Change password</h2>
-                <ChangePasswordForm onChanged={props.onPasswordChanged} />
-              </section>
-            </div>
-          ),
-        },
-      ]}
-    />
+    <div className="grid account-grid">
+      <ProfileCard user={user} />
+      <MyServersCard user={user} />
+      <BundleDownloadCard />
+      <SshKeyCard />
+      <section className="card">
+        <h2>Change password</h2>
+        <ChangePasswordForm onChanged={props.onPasswordChanged} />
+      </section>
+    </div>
   );
 }
 

@@ -419,6 +419,21 @@ textarea:focus,
   align-items: start;
 }
 
+/*
+ * Account page: all cards shown together in a uniform matrix. Cards stretch
+ * to a consistent row height so the layout reads as an even grid rather than
+ * a ragged stack.
+ */
+.account-grid {
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  align-items: stretch;
+}
+
+.account-grid > .card {
+  display: flex;
+  flex-direction: column;
+}
+
 .form-row {
   display: flex;
   gap: var(--gap);
