@@ -13,9 +13,15 @@ import type {
   CreateUserInput,
   GeneratedPassword,
   ReverseProxySettings,
+  CreateServerTemplateInput,
+  ProviderTemplates,
+  ProvisioningSettings,
+  ServerTemplate,
   SessionState,
   SshKeyInfo,
   SsoConfig,
+  UpdateProvisioningSettingsInput,
+  UpdateServerTemplateInput,
   Team,
   UpdateBundleTemplateInput,
   UpdateApplicationInput,
@@ -211,6 +217,39 @@ export const api = {
     request<ReverseProxySettings>("settings/reverse-proxy", {
       method: "PATCH",
       body: input,
+    }),
+
+  /** Server-provisioning provider + policy settings (administrators only). */
+  getProvisioningSettings: () =>
+    request<ProvisioningSettings>("settings/provisioning"),
+
+  updateProvisioningSettings: (input: UpdateProvisioningSettingsInput) =>
+    request<ProvisioningSettings>("settings/provisioning", {
+      method: "PATCH",
+      body: input,
+    }),
+
+  listProviderTemplates: () =>
+    request<ProviderTemplates>("settings/provisioning/provider-templates"),
+
+  listServerTemplates: () =>
+    request<ServerTemplate[]>("settings/server-templates"),
+
+  createServerTemplate: (input: CreateServerTemplateInput) =>
+    request<ServerTemplate>("settings/server-templates", {
+      method: "POST",
+      body: input,
+    }),
+
+  updateServerTemplate: (id: number, input: UpdateServerTemplateInput) =>
+    request<ServerTemplate>(`settings/server-templates/${id}`, {
+      method: "PATCH",
+      body: input,
+    }),
+
+  deleteServerTemplate: (id: number) =>
+    request<{ detail: string }>(`settings/server-templates/${id}`, {
+      method: "DELETE",
     }),
 
   /** Configurable branding (administrators only). */

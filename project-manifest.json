@@ -117,7 +117,9 @@
         "authlib>=1.3,<2",
         "python3-saml>=1.16,<2",
         "python-multipart>=0.0.20,<1",
-        "pydantic>=2.7,<3"
+        "pydantic>=2.7,<3",
+        "cryptography>=42",
+        "httpx>=0.27,<0.29"
       ],
       "devDependencies": ["pytest>=9.0.3,<10", "httpx>=0.27,<0.29"]
     },
@@ -239,7 +241,14 @@
       { "method": "POST", "path": "/api/settings/teams", "auth": "admin", "csrf": true, "summary": "Create a team." },
       { "method": "PATCH", "path": "/api/settings/teams/{team_id}", "auth": "admin", "csrf": true, "summary": "Rename a team and/or change its icon." },
       { "method": "DELETE", "path": "/api/settings/teams/{team_id}", "auth": "admin", "csrf": true, "summary": "Delete a team." },
-      { "method": "POST", "path": "/api/settings/teams/reorder", "auth": "admin", "csrf": true, "summary": "Set the sidebar order of all teams." }
+      { "method": "POST", "path": "/api/settings/teams/reorder", "auth": "admin", "csrf": true, "summary": "Set the sidebar order of all teams." },
+      { "method": "GET", "path": "/api/settings/provisioning", "auth": "admin", "csrf": false, "summary": "Read LXC/VM provider and provisioning-policy settings (the Proxmox API key is never returned; only a presence flag)." },
+      { "method": "PATCH", "path": "/api/settings/provisioning", "auth": "admin", "csrf": true, "summary": "Update provider/policy settings; touching provider connection fields runs a Proxmox connection test and stores its status and log." },
+      { "method": "GET", "path": "/api/settings/provisioning/provider-templates", "auth": "admin", "csrf": false, "summary": "Live template/VM list from the provider, honoring the name filter and templates-only toggle." },
+      { "method": "GET", "path": "/api/settings/server-templates", "auth": "admin", "csrf": false, "summary": "List registered server templates." },
+      { "method": "POST", "path": "/api/settings/server-templates", "auth": "admin", "csrf": true, "summary": "Register a server template (vmid, name, lxc|vm, optional admin SSH key path)." },
+      { "method": "PATCH", "path": "/api/settings/server-templates/{template_id}", "auth": "admin", "csrf": true, "summary": "Update a server template." },
+      { "method": "DELETE", "path": "/api/settings/server-templates/{template_id}", "auth": "admin", "csrf": true, "summary": "Delete a server template." }
     ]
   },
   "dataModel": {
@@ -300,8 +309,14 @@
       },
       {
         "name": "settings",
-        "description": "Single pinned row (id = 1) for reverse-proxy and branding configuration.",
-        "columns": ["id", "nginx_host", "nginx_user", "nginx_conf_path", "ssh_key_path", "appmanager_proxy_host", "appmanager_proxy_port", "alias_template", "app_name", "app_logo", "configured", "updated_at"],
+        "description": "Single pinned row (id = 1) for reverse-proxy, branding, LXC/VM provider (Proxmox; API key stored write-only), and server-provisioning policy configuration.",
+        "columns": ["id", "nginx_host", "nginx_user", "nginx_conf_path", "ssh_key_path", "appmanager_proxy_host", "appmanager_proxy_port", "alias_template", "app_name", "app_logo", "configured", "provider_type", "proxmox_url", "proxmox_token_name", "proxmox_api_key", "proxmox_template_filter", "proxmox_templates_only", "proxmox_verify_tls", "proxmox_conn_status", "proxmox_conn_log", "provisioning_self_service", "provisioning_max_servers", "provisioning_allow_resource_edit", "provisioning_max_cpus", "provisioning_max_memory_gb", "provisioning_max_disk_gb", "updated_at"],
+        "primaryKey": ["id"]
+      },
+      {
+        "name": "server_templates",
+        "description": "Admin-registered Proxmox templates (LXC or VM) offered when creating user servers.",
+        "columns": ["id", "vmid", "name", "kind", "admin_ssh_key_path", "created_at", "updated_at"],
         "primaryKey": ["id"]
       }
     ]

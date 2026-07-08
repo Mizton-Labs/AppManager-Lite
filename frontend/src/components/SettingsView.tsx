@@ -4,8 +4,9 @@ import { ApplicationManager } from "./ApplicationManager";
 import { UserManagement } from "./UserManagement";
 import { TeamManagement } from "./TeamManagement";
 import { GeneralSettings } from "./GeneralSettings";
+import { ServerProvisioning } from "./ServerProvisioning";
 
-type Tab = "apps" | "users" | "teams" | "general";
+type Tab = "apps" | "users" | "teams" | "servers" | "general";
 
 /**
  * Settings area. Every signed-in user can submit and manage applications for
@@ -36,6 +37,7 @@ export function SettingsView(props: {
   const [tab, setTab] = useState<Tab>(firstRun ? "general" : "apps");
   const showUsers = isAdmin && tab === "users";
   const showTeams = isAdmin && tab === "teams";
+  const showServers = isAdmin && tab === "servers";
   const showGeneral = isAdmin && tab === "general";
 
   return (
@@ -84,6 +86,14 @@ export function SettingsView(props: {
           </button>
           <button
             type="button"
+            className={tab === "servers" ? "tab active" : "tab"}
+            aria-current={tab === "servers"}
+            onClick={() => setTab("servers")}
+          >
+            Server Provisioning
+          </button>
+          <button
+            type="button"
             className={tab === "general" ? "tab active" : "tab"}
             aria-current={tab === "general"}
             onClick={() => setTab("general")}
@@ -97,6 +107,8 @@ export function SettingsView(props: {
         <UserManagement currentUser={currentUser} />
       ) : showTeams ? (
         <TeamManagement onTeamsChanged={props.onTeamsChanged} />
+      ) : showServers ? (
+        <ServerProvisioning />
       ) : showGeneral ? (
         <GeneralSettings firstRun={firstRun} onConfigured={props.onConfigured} />
       ) : (

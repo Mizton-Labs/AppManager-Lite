@@ -114,6 +114,17 @@ CREATE TABLE IF NOT EXISTS audit_log (
     detail         TEXT    NOT NULL DEFAULT ''
 );
 
+-- Admin-registered Proxmox templates used to create user servers.
+CREATE TABLE IF NOT EXISTS server_templates (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    vmid               INTEGER NOT NULL,
+    name               TEXT    NOT NULL UNIQUE,
+    kind               TEXT    NOT NULL CHECK (kind IN ('lxc', 'vm')),
+    admin_ssh_key_path TEXT    NOT NULL DEFAULT '',
+    created_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at         TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS bundle_templates (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     name       TEXT    NOT NULL UNIQUE,
@@ -145,6 +156,24 @@ CREATE TABLE IF NOT EXISTS settings (
     app_logo        TEXT    NOT NULL DEFAULT '',
     collaborators   TEXT    NOT NULL DEFAULT '[]',
     configured      INTEGER NOT NULL DEFAULT 0,
+    -- LXC/VM provider (Proxmox). The API key is write-only: stored here,
+    -- never returned by any endpoint or written to logs/audit entries.
+    provider_type            TEXT    NOT NULL DEFAULT '',
+    proxmox_url              TEXT    NOT NULL DEFAULT '',
+    proxmox_token_name       TEXT    NOT NULL DEFAULT '',
+    proxmox_api_key          TEXT    NOT NULL DEFAULT '',
+    proxmox_template_filter  TEXT    NOT NULL DEFAULT '',
+    proxmox_templates_only   INTEGER NOT NULL DEFAULT 1,
+    proxmox_verify_tls       INTEGER NOT NULL DEFAULT 1,
+    proxmox_conn_status      TEXT    NOT NULL DEFAULT '',
+    proxmox_conn_log         TEXT    NOT NULL DEFAULT '',
+    -- Server-provisioning policy.
+    provisioning_self_service     INTEGER NOT NULL DEFAULT 0,
+    provisioning_max_servers      INTEGER NOT NULL DEFAULT 3,
+    provisioning_allow_resource_edit INTEGER NOT NULL DEFAULT 0,
+    provisioning_max_cpus         INTEGER NOT NULL DEFAULT 12,
+    provisioning_max_memory_gb    INTEGER NOT NULL DEFAULT 24,
+    provisioning_max_disk_gb      INTEGER NOT NULL DEFAULT 200,
     updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -356,3 +385,45 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     # Teams gained an optional small icon (a bundled catalogue path or a capped
     # raster data URI), shown on the sidebar team button.
     _add_column(conn, "teams", "icon", "TEXT NOT NULL DEFAULT ''")
+
+    # LXC/VM provider configuration and server-provisioning policy (issue_015).
+    _add_column(conn, "settings", "provider_type", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "settings", "proxmox_url", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "settings", "proxmox_token_name", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "settings", "proxmox_api_key", "TEXT NOT NULL DEFAULT ''")
+    _add_column(
+        conn, "settings", "proxmox_template_filter", "TEXT NOT NULL DEFAULT ''"
+    )
+    _add_column(
+        conn, "settings", "proxmox_templates_only", "INTEGER NOT NULL DEFAULT 1"
+    )
+    _add_column(conn, "settings", "proxmox_verify_tls", "INTEGER NOT NULL DEFAULT 1")
+    _add_column(conn, "settings", "proxmox_conn_status", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "settings", "proxmox_conn_log", "TEXT NOT NULL DEFAULT ''")
+    _add_column(
+        conn,
+        "settings",
+        "provisioning_self_service",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    _add_column(
+        conn, "settings", "provisioning_max_servers", "INTEGER NOT NULL DEFAULT 3"
+    )
+    _add_column(
+        conn,
+        "settings",
+        "provisioning_allow_resource_edit",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    _add_column(
+        conn, "settings", "provisioning_max_cpus", "INTEGER NOT NULL DEFAULT 12"
+    )
+    _add_column(
+        conn,
+        "settings",
+        "provisioning_max_memory_gb",
+        "INTEGER NOT NULL DEFAULT 24",
+    )
+    _add_column(
+        conn, "settings", "provisioning_max_disk_gb", "INTEGER NOT NULL DEFAULT 200"
+    )

@@ -738,6 +738,182 @@ class UpdateReverseProxySettingsRequest(BaseModel):
         return value
 
 
+# --- Server provisioning (LXC/VM provider + policy) -------------------------
+
+_PROXMOX_URL_RE = re.compile(r"^https?://[A-Za-z0-9.\-\[\]:]+(?::\d{1,5})?/?$")
+
+
+class ProvisioningSettingsOut(BaseModel):
+    """Provider + policy settings. The API key itself is never returned."""
+
+    provider_type: str = ""
+    proxmox_url: str = ""
+    proxmox_token_name: str = ""
+    # Presence flag only; the stored secret is write-only.
+    proxmox_api_key_set: bool = False
+    proxmox_template_filter: str = ""
+    proxmox_templates_only: bool = True
+    proxmox_verify_tls: bool = True
+    proxmox_conn_status: str = ""
+    proxmox_conn_log: str = ""
+    provisioning_self_service: bool = False
+    provisioning_max_servers: int = 3
+    provisioning_allow_resource_edit: bool = False
+    provisioning_max_cpus: int = 12
+    provisioning_max_memory_gb: int = 24
+    provisioning_max_disk_gb: int = 200
+
+
+class UpdateProvisioningSettingsRequest(BaseModel):
+    provider_type: str | None = Field(default=None, max_length=20)
+    proxmox_url: str | None = Field(default=None, max_length=253)
+    proxmox_token_name: str | None = Field(default=None, max_length=253)
+    # Write-only secret: accepted here, stored, never echoed back.
+    proxmox_api_key: str | None = Field(default=None, max_length=512)
+    proxmox_template_filter: str | None = Field(default=None, max_length=120)
+    proxmox_templates_only: bool | None = None
+    proxmox_verify_tls: bool | None = None
+    provisioning_self_service: bool | None = None
+    provisioning_max_servers: int | None = Field(default=None, ge=0, le=100)
+    provisioning_allow_resource_edit: bool | None = None
+    provisioning_max_cpus: int | None = Field(default=None, ge=1, le=1024)
+    provisioning_max_memory_gb: int | None = Field(default=None, ge=1, le=4096)
+    provisioning_max_disk_gb: int | None = Field(default=None, ge=1, le=65536)
+
+    @field_validator("provider_type")
+    @classmethod
+    def _check_provider_type(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if value not in ("", "proxmox"):
+            raise ValueError("Provider type must be 'proxmox' (or empty to disable).")
+        return value
+
+    @field_validator("proxmox_url")
+    @classmethod
+    def _check_proxmox_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip().rstrip("/")
+        if not value:
+            return ""
+        if not _PROXMOX_URL_RE.match(value):
+            raise ValueError(
+                "Proxmox URL must look like https://host:8006 (PROTO://IP:PORT)."
+            )
+        return value
+
+    @field_validator("proxmox_token_name")
+    @classmethod
+    def _check_proxmox_token_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if any(ch in value for ch in " \t\r\n\"'"):
+            raise ValueError("Token name must not contain spaces or quotes.")
+        return value
+
+    @field_validator("proxmox_api_key")
+    @classmethod
+    def _strip_api_key(cls, value: str | None) -> str | None:
+        # A whitespace-only "secret" must not sneak past the configured check.
+        return None if value is None else value.strip()
+
+
+class ProviderTemplateOut(BaseModel):
+    """A VM/LXC entry read live from the provider for the admin dropdown."""
+
+    vmid: int
+    name: str
+    kind: str
+    node: str = ""
+    is_template: bool = False
+
+
+class ProviderTemplatesOut(BaseModel):
+    status: str
+    log: str = ""
+    templates: list[ProviderTemplateOut] = Field(default_factory=list)
+
+
+class ServerTemplateOut(BaseModel):
+    id: int
+    vmid: int
+    name: str
+    kind: str
+    admin_ssh_key_path: str = ""
+
+
+def _validate_admin_key_path(value: str) -> str:
+    """Admin SSH key path: shell-metachar-free and absolute when present.
+
+    Requiring a leading ``/`` forecloses ``-o...`` option injection and
+    ``host:path`` interpretation if the value is ever passed to scp-like
+    tools in other argv positions.
+    """
+    value = _validate_path_setting(value, "Admin SSH key path")
+    if value and not value.startswith("/"):
+        raise ValueError("Admin SSH key path must be an absolute path.")
+    return value
+
+
+class CreateServerTemplateRequest(BaseModel):
+    vmid: int = Field(ge=1, le=999999999)
+    name: str = Field(min_length=1, max_length=60)
+    kind: str
+    admin_ssh_key_path: str = Field(default="", max_length=4096)
+
+    @field_validator("kind")
+    @classmethod
+    def _check_kind(cls, value: str) -> str:
+        if value not in ("lxc", "vm"):
+            raise ValueError("Template kind must be 'lxc' or 'vm'.")
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Template name must not be blank.")
+        return value
+
+    @field_validator("admin_ssh_key_path")
+    @classmethod
+    def _check_admin_key_path(cls, value: str) -> str:
+        return _validate_admin_key_path(value)
+
+
+class UpdateServerTemplateRequest(BaseModel):
+    vmid: int | None = Field(default=None, ge=1, le=999999999)
+    name: str | None = Field(default=None, min_length=1, max_length=60)
+    kind: str | None = None
+    admin_ssh_key_path: str | None = Field(default=None, max_length=4096)
+
+    @field_validator("kind")
+    @classmethod
+    def _check_kind(cls, value: str | None) -> str | None:
+        if value is not None and value not in ("lxc", "vm"):
+            raise ValueError("Template kind must be 'lxc' or 'vm'.")
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("Template name must not be blank.")
+        return value
+
+    @field_validator("admin_ssh_key_path")
+    @classmethod
+    def _check_admin_key_path(cls, value: str | None) -> str | None:
+        return None if value is None else _validate_admin_key_path(value)
+
+
 class BrandingSettingsOut(BaseModel):
     app_name: str = ""
     app_logo: str = ""
