@@ -1,38 +1,56 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "../api";
+import { teamSlug } from "../teams";
 import type {
   BundleMappingSource,
   BundleTemplate,
   BundleTemplateMapping,
+  ServerTemplateOption,
 } from "../types";
 
-const BUNDLE_MAX_SERVER_VARS = 8;
+type MappingOption = { value: BundleMappingSource; label: string };
 
-const MAPPING_OPTIONS: { value: BundleMappingSource; label: string }[] = [
+const STATIC_MAPPING_OPTIONS: MappingOption[] = [
   { value: "username", label: "Username" },
   { value: "user_id", label: "User ID (derived identifier)" },
   { value: "user_apps_server", label: "Apps server host/IP fallback" },
   { value: "user_apps_server_host", label: "Apps server host" },
   { value: "user_apps_server_ip", label: "Apps server IP" },
   { value: "user_role", label: "User role" },
-  // Dynamic per-server variables (server1..serverN).
-  ...Array.from({ length: BUNDLE_MAX_SERVER_VARS }, (_, i) => i + 1).flatMap(
-    (n) => [
-      {
-        value: `server${n}_name` as BundleMappingSource,
-        label: `Server ${n} name`,
-      },
-      {
-        value: `server${n}_ip` as BundleMappingSource,
-        label: `Server ${n} IP`,
-      },
-      {
-        value: `server${n}_user` as BundleMappingSource,
-        label: `Server ${n} user`,
-      },
-    ],
-  ),
 ];
+
+/**
+ * Build the mapping-source options from the static sources plus one triple of
+ * variables per server template (keyed by the template's slug). Each template
+ * variable resolves to the user's first server created from that template.
+ */
+function buildMappingOptions(
+  serverTemplates: ServerTemplateOption[],
+): MappingOption[] {
+  // Distinct template names can slugify to the same value; keep the first so
+  // the dropdown has no duplicate option values/keys.
+  const seenSlugs = new Set<string>();
+  const dynamic = serverTemplates.flatMap((template) => {
+    const slug = teamSlug(template.name);
+    if (!slug || seenSlugs.has(slug)) return [];
+    seenSlugs.add(slug);
+    return [
+      {
+        value: `server_${slug}_name` as BundleMappingSource,
+        label: `${template.name} — name`,
+      },
+      {
+        value: `server_${slug}_ip` as BundleMappingSource,
+        label: `${template.name} — IP`,
+      },
+      {
+        value: `server_${slug}_user` as BundleMappingSource,
+        label: `${template.name} — user`,
+      },
+    ];
+  });
+  return [...STATIC_MAPPING_OPTIONS, ...dynamic];
+}
 
 function emptyMapping(): BundleTemplateMapping {
   return { field_name: "", source: "username" };
@@ -40,6 +58,9 @@ function emptyMapping(): BundleTemplateMapping {
 
 export function BundleTemplateManagement() {
   const [templates, setTemplates] = useState<BundleTemplate[]>([]);
+  const [serverTemplates, setServerTemplates] = useState<
+    ServerTemplateOption[]
+  >([]);
   const [editing, setEditing] = useState<BundleTemplate | null>(null);
   const [name, setName] = useState("");
   const [content, setContent] = useState("");
@@ -50,8 +71,18 @@ export function BundleTemplateManagement() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const mappingOptions = useMemo(
+    () => buildMappingOptions(serverTemplates),
+    [serverTemplates],
+  );
+
   async function reload() {
-    setTemplates(await api.listBundleTemplates());
+    const [bundles, servers] = await Promise.all([
+      api.listBundleTemplates(),
+      api.listServerTemplates(),
+    ]);
+    setTemplates(bundles);
+    setServerTemplates(servers);
   }
 
   useEffect(() => {
@@ -211,11 +242,18 @@ export function BundleTemplateManagement() {
                       })
                     }
                   >
-                    {MAPPING_OPTIONS.map((option) => (
+                    {mappingOptions.map((option) => (
                       <option key={option.value} value={option.value}>
                         {option.label}
                       </option>
                     ))}
+                    {/* Preserve a stale/deleted-template source so editing an
+                        existing mapping does not silently drop its value. */}
+                    {!mappingOptions.some((o) => o.value === mapping.source) && (
+                      <option value={mapping.source}>
+                        {mapping.source} (unknown template)
+                      </option>
+                    )}
                   </select>
                 </label>
                 <button

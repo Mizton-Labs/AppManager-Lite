@@ -527,7 +527,10 @@ def download_account_bundle(
         )
     elif template["mappings"]:
         content = repository.render_bundle_template(
-            template, user, _user_servers_with_main_user(conn, user["id"])
+            template,
+            user,
+            _user_servers_with_main_user(conn, user["id"]),
+            repository.list_server_templates(conn),
         )
     else:
         # No mappings and not builtin: generic per-server config fallback.

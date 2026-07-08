@@ -13,9 +13,9 @@ from .teams import slugify as _slugify_name
 ROLES = ("admin", "user")
 URL_TYPES = ("url", "alias")
 APPROVAL_STATES = ("pending", "approved", "rejected")
-# Per-server indexed mapping variables cap (must match repository).
-BUNDLE_MAX_SERVER_VARS = 8
-
+# Static (always-available) bundle mapping sources. Server-template-scoped
+# sources are dynamic (``server_<slug>_{name,ip,user}``) and are validated
+# separately against the live server templates at save time.
 BUNDLE_MAPPING_SOURCES = (
     "username",
     "user_id",
@@ -23,12 +23,26 @@ BUNDLE_MAPPING_SOURCES = (
     "user_apps_server_host",
     "user_apps_server_ip",
     "user_role",
-    *(
-        f"server{i}_{field}"
-        for i in range(1, BUNDLE_MAX_SERVER_VARS + 1)
-        for field in ("name", "ip", "user")
-    ),
 )
+
+# A server-template-scoped mapping source names a server template by its slug:
+# ``server_<slug>_name`` / ``_ip`` / ``_user``. It resolves to the user's first
+# server created from that template.
+SERVER_VAR_FIELDS = ("name", "ip", "user")
+SERVER_VAR_SOURCE_RE = re.compile(
+    r"^server_(?P<slug>[a-z0-9]+(?:-[a-z0-9]+)*)_(?P<field>name|ip|user)$"
+)
+
+
+def is_server_var_source(source: str) -> bool:
+    """True when ``source`` matches the ``server_<slug>_{name,ip,user}`` form."""
+    return SERVER_VAR_SOURCE_RE.match(source) is not None
+
+
+def server_var_source_slug(source: str) -> str | None:
+    """The template slug named by a server-var source, or None if not one."""
+    match = SERVER_VAR_SOURCE_RE.match(source)
+    return match.group("slug") if match else None
 
 # A local alias becomes part of a URL path, so it is restricted to URL-safe
 # characters: letters, digits, underscores, and dashes, with a hard length cap.
@@ -393,11 +407,13 @@ class BundleTemplateMapping(BaseModel):
     @classmethod
     def _check_source(cls, value: str) -> str:
         value = value.strip()
-        if value not in BUNDLE_MAPPING_SOURCES:
-            raise ValueError(
-                f"source must be one of {BUNDLE_MAPPING_SOURCES}."
-            )
-        return value
+        if value in BUNDLE_MAPPING_SOURCES or is_server_var_source(value):
+            return value
+        raise ValueError(
+            "source must be one of "
+            f"{BUNDLE_MAPPING_SOURCES} or a server template variable "
+            "(server_<template-slug>_name/_ip/_user)."
+        )
 
 
 class BundleTemplateOut(BaseModel):

@@ -13,10 +13,14 @@ import sqlite3
 from typing import Any
 
 from . import keystore, security, sshkeys
-from .schemas import BUNDLE_MAPPING_SOURCES, BUNDLE_MAX_SERVER_VARS
+from .schemas import (
+    BUNDLE_MAPPING_SOURCES,
+    is_server_var_source,
+    server_var_source_slug,
+)
 from .teams import slugify
 
-__all__ = ["BUNDLE_MAPPING_SOURCES", "BUNDLE_MAX_SERVER_VARS"]
+__all__ = ["BUNDLE_MAPPING_SOURCES"]
 
 
 def _encrypt_private_key(value: str) -> str:
@@ -529,8 +533,21 @@ def _row_to_bundle_template(
     }
 
 
-def _validate_bundle_mappings(mappings: list[dict[str, str]]) -> None:
+def _validate_bundle_mappings(
+    conn: sqlite3.Connection,
+    mappings: list[dict[str, str]],
+    *,
+    allow_sources: set[str] | None = None,
+) -> None:
     seen: set[str] = set()
+    # Slugs of the server templates that currently exist; server-var sources
+    # must name one of these at save time (they may still go stale later, which
+    # renders as empty rather than failing the download).
+    template_slugs = {slugify(t["name"]) for t in list_server_templates(conn)}
+    # Sources already stored on this template are grandfathered so editing an
+    # unrelated field does not fail when a referenced template was since
+    # deleted (stale sources render empty at download).
+    grandfathered = allow_sources or set()
     for mapping in mappings:
         field_name = mapping["field_name"].strip()
         source = mapping["source"].strip()
@@ -538,15 +555,27 @@ def _validate_bundle_mappings(mappings: list[dict[str, str]]) -> None:
             raise ValueError("Bundle mapping field name must not be empty.")
         if field_name in seen:
             raise ValueError(f"Duplicate bundle mapping field: {field_name}")
-        if source not in BUNDLE_MAPPING_SOURCES:
+        if source in BUNDLE_MAPPING_SOURCES or source in grandfathered:
+            pass
+        elif is_server_var_source(source):
+            slug = server_var_source_slug(source)
+            if slug not in template_slugs:
+                raise ValueError(
+                    f"Unknown server template for mapping source: {source}"
+                )
+        else:
             raise ValueError(f"Unknown bundle mapping source: {source}")
         seen.add(field_name)
 
 
 def _replace_bundle_mappings(
-    conn: sqlite3.Connection, template_id: int, mappings: list[dict[str, str]]
+    conn: sqlite3.Connection,
+    template_id: int,
+    mappings: list[dict[str, str]],
+    *,
+    allow_sources: set[str] | None = None,
 ) -> None:
-    _validate_bundle_mappings(mappings)
+    _validate_bundle_mappings(conn, mappings, allow_sources=allow_sources)
     conn.execute(
         "DELETE FROM bundle_template_mappings WHERE template_id = ?", (template_id,)
     )
@@ -602,7 +631,8 @@ def update_bundle_template(
     content: str | None = None,
     mappings: list[dict[str, str]] | None = None,
 ) -> dict[str, Any] | None:
-    if get_bundle_template(conn, template_id) is None:
+    existing = get_bundle_template(conn, template_id)
+    if existing is None:
         return None
     columns: dict[str, Any] = {}
     if name is not None:
@@ -617,7 +647,12 @@ def update_bundle_template(
             [*columns.values(), template_id],
         )
     if mappings is not None:
-        _replace_bundle_mappings(conn, template_id, mappings)
+        # Grandfather sources already stored on this template so an edit that
+        # keeps a since-deleted template's source does not fail validation.
+        allow = {m["source"] for m in existing["mappings"]}
+        _replace_bundle_mappings(
+            conn, template_id, mappings, allow_sources=allow
+        )
     return get_bundle_template(conn, template_id)
 
 
@@ -636,9 +671,16 @@ def _server_var_user(server: dict[str, Any], user_id: str) -> str:
 
 
 def bundle_mapping_values(
-    user: dict[str, Any], user_servers: list[dict[str, Any]] | None = None
+    user: dict[str, Any],
+    user_servers: list[dict[str, Any]] | None = None,
+    server_templates: list[dict[str, Any]] | None = None,
 ) -> dict[str, str]:
-    """All mapping-source -> value pairs for a user (static + per-server)."""
+    """All mapping-source -> value pairs for a user (static + per-template).
+
+    Server-template-scoped variables (``server_<slug>_{name,ip,user}``) resolve
+    to the user's FIRST usable server created from that template. Templates with
+    no usable server for the user render as empty strings.
+    """
     user_id = user.get("user_id", "") or derive_user_id(
         user.get("username", "") or ""
     )
@@ -652,24 +694,31 @@ def bundle_mapping_values(
         "user_apps_server_ip": user.get("apps_server_ip", "") or "",
         "user_role": user.get("role", "") or "",
     }
-    # Per-server indexed variables (server1..serverN); usable servers only.
     usable = [
         s
         for s in (user_servers or [])
         if s.get("status") != "failed" and s.get("ip_address")
     ]
-    for i in range(1, BUNDLE_MAX_SERVER_VARS + 1):
-        srv = usable[i - 1] if i - 1 < len(usable) else None
-        if srv is not None:
-            raw = srv.get("hostname") or srv.get("name", "server")
+    # One set of variables per server template slug; resolved to the user's
+    # first usable server of that template.
+    for template in server_templates or []:
+        slug = slugify(template.get("name", ""))
+        if not slug:
+            continue
+        first = next(
+            (s for s in usable if slugify(s.get("template_name", "")) == slug),
+            None,
+        )
+        if first is not None:
+            raw = first.get("hostname") or first.get("name", "server")
             name = re.sub(r"[^a-z0-9-]+", "-", raw.lower()).strip("-") or "server"
-            values[f"server{i}_name"] = name
-            values[f"server{i}_ip"] = srv.get("ip_address", "")
-            values[f"server{i}_user"] = _server_var_user(srv, user_id)
+            values[f"server_{slug}_name"] = name
+            values[f"server_{slug}_ip"] = first.get("ip_address", "")
+            values[f"server_{slug}_user"] = _server_var_user(first, user_id)
         else:
-            values[f"server{i}_name"] = ""
-            values[f"server{i}_ip"] = ""
-            values[f"server{i}_user"] = ""
+            values[f"server_{slug}_name"] = ""
+            values[f"server_{slug}_ip"] = ""
+            values[f"server_{slug}_user"] = ""
     return values
 
 
@@ -677,10 +726,13 @@ def render_bundle_template(
     template: dict[str, Any],
     user: dict[str, Any],
     user_servers: list[dict[str, Any]] | None = None,
+    server_templates: list[dict[str, Any]] | None = None,
 ) -> str:
-    values = bundle_mapping_values(user, user_servers)
+    values = bundle_mapping_values(user, user_servers, server_templates)
     rendered = str(template["content"])
     for mapping in template["mappings"]:
+        # Stale/deleted-template sources are absent from ``values`` and render
+        # as empty rather than raising.
         rendered = rendered.replace(
             mapping["field_name"], values.get(mapping["source"], "")
         )

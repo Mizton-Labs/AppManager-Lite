@@ -38,22 +38,37 @@ def _seed_servers(user_id, rows):
 # ---------------------------------------------------------------------------
 
 
-def test_mapping_sources_include_indexed_servers() -> None:
-    assert "server1_ip" in repository.BUNDLE_MAPPING_SOURCES
-    assert "server8_user" in repository.BUNDLE_MAPPING_SOURCES
-    assert "server9_ip" not in repository.BUNDLE_MAPPING_SOURCES
+def test_mapping_sources_are_static_only() -> None:
+    # Static sources are always available; server-template variables are
+    # dynamic and no longer part of the static BUNDLE_MAPPING_SOURCES tuple.
+    assert "user_id" in repository.BUNDLE_MAPPING_SOURCES
+    assert "username" in repository.BUNDLE_MAPPING_SOURCES
+    assert not any(
+        s.startswith("server") for s in repository.BUNDLE_MAPPING_SOURCES
+    )
 
 
-def test_per_server_bundle_variables_render(admin) -> None:
+def test_per_template_bundle_variables_render(admin) -> None:
     client, csrf, _ = admin
+    # Two server templates provide the named variables.
+    web = client.post(
+        "/api/settings/server-templates",
+        json={"vmid": 9101, "name": "Web Box", "kind": "lxc"},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    db = client.post(
+        "/api/settings/server-templates",
+        json={"vmid": 9102, "name": "DB Box", "kind": "lxc"},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
     template = client.post(
         "/api/settings/bundle-templates",
-        json={"name": "PerServer",
-              "content": "s1=S1IP user=S1USER s2=S2IP",
+        json={"name": "PerTemplate",
+              "content": "web=WEBIP user=WEBUSER db=DBIP",
               "mappings": [
-                  {"field_name": "S1IP", "source": "server1_ip"},
-                  {"field_name": "S1USER", "source": "server1_user"},
-                  {"field_name": "S2IP", "source": "server2_ip"},
+                  {"field_name": "WEBIP", "source": "server_web-box_ip"},
+                  {"field_name": "WEBUSER", "source": "server_web-box_user"},
+                  {"field_name": "DBIP", "source": "server_db-box_ip"},
               ]},
         headers={"X-CSRF-Token": csrf},
     )
@@ -61,16 +76,105 @@ def test_per_server_bundle_variables_render(admin) -> None:
     created = _create_member(client, csrf)
     uid = created["user"]["id"]
     _seed_servers(uid, [
-        {"name": "alpha", "hostname": "alpha", "ip_address": "10.0.0.1"},
-        {"name": "beta", "hostname": "beta", "ip_address": "10.0.0.2"},
+        {"name": "alpha", "hostname": "alpha", "ip_address": "10.0.0.1",
+         "template_id": web["id"], "template_name": "Web Box"},
+        {"name": "beta", "hostname": "beta", "ip_address": "10.0.0.2",
+         "template_id": db["id"], "template_name": "DB Box"},
     ])
     member, _ = _login(client.app, "bt@example.com", created["password"])
     dl = member.get(f"/api/account/bundles/{template.json()['id']}/download")
     assert dl.status_code == 200
-    # server1 -> alpha (first by name), user falls back to derived user id.
-    assert "s1=10.0.0.1" in dl.text
+    # web-box -> the user's first Web Box server; user falls back to user id.
+    assert "web=10.0.0.1" in dl.text
     assert "user=bt" in dl.text
-    assert "s2=10.0.0.2" in dl.text
+    assert "db=10.0.0.2" in dl.text
+
+
+def test_unknown_template_mapping_source_is_rejected(admin) -> None:
+    client, csrf, _ = admin
+    r = client.post(
+        "/api/settings/bundle-templates",
+        json={"name": "Bad",
+              "content": "x=X",
+              "mappings": [
+                  {"field_name": "X", "source": "server_nope_ip"},
+              ]},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 400, r.text
+
+
+def test_stale_template_mapping_renders_empty(admin) -> None:
+    client, csrf, _ = admin
+    tpl = client.post(
+        "/api/settings/server-templates",
+        json={"vmid": 9103, "name": "Temp Box", "kind": "lxc"},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    bundle = client.post(
+        "/api/settings/bundle-templates",
+        json={"name": "Stale",
+              "content": "ip=[TIP]",
+              "mappings": [
+                  {"field_name": "TIP", "source": "server_temp-box_ip"},
+              ]},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert bundle.status_code == 201, bundle.text
+    # Delete the template the mapping refers to: it becomes stale.
+    assert client.delete(
+        f"/api/settings/server-templates/{tpl['id']}",
+        headers={"X-CSRF-Token": csrf},
+    ).status_code == 200
+    created = _create_member(client, csrf)
+    member, _ = _login(client.app, "bt@example.com", created["password"])
+    dl = member.get(f"/api/account/bundles/{bundle.json()['id']}/download")
+    assert dl.status_code == 200
+    # The stale variable renders empty rather than erroring.
+    assert "ip=[]" in dl.text
+
+
+def test_edit_bundle_grandfathers_stale_template_source(admin) -> None:
+    """Editing a bundle keeps a since-deleted template's source (no 400)."""
+    client, csrf, _ = admin
+    tpl = client.post(
+        "/api/settings/server-templates",
+        json={"vmid": 9104, "name": "Gone Box", "kind": "lxc"},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    bundle = client.post(
+        "/api/settings/bundle-templates",
+        json={"name": "Grand",
+              "content": "ip=GIP",
+              "mappings": [
+                  {"field_name": "GIP", "source": "server_gone-box_ip"},
+              ]},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    assert client.delete(
+        f"/api/settings/server-templates/{tpl['id']}",
+        headers={"X-CSRF-Token": csrf},
+    ).status_code == 200
+    # Editing only the content, keeping the now-stale source, must succeed.
+    upd = client.patch(
+        f"/api/settings/bundle-templates/{bundle['id']}",
+        json={"content": "ip=GIP updated",
+              "mappings": [
+                  {"field_name": "GIP", "source": "server_gone-box_ip"},
+              ]},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert upd.status_code == 200, upd.text
+    # But introducing a NEW unknown template source still fails.
+    bad = client.patch(
+        f"/api/settings/bundle-templates/{bundle['id']}",
+        json={"mappings": [
+            {"field_name": "GIP", "source": "server_gone-box_ip"},
+            {"field_name": "NEW", "source": "server_never-existed_ip"},
+        ]},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert bad.status_code == 400, bad.text
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +245,7 @@ def test_builtin_render_with_jump_server(admin, monkeypatch) -> None:
 
 
 def test_server_user_uses_template_main_user(admin) -> None:
-    """serverN_user and builtin Host blocks use the template main user."""
+    """Template-scoped _user vars and builtin Host blocks use the main user."""
     client, csrf, _ = admin
     # A template with a fixed main user.
     tpl = client.post(
@@ -154,15 +258,15 @@ def test_server_user_uses_template_main_user(admin) -> None:
     uid = created["user"]["id"]
     _seed_servers(uid, [
         {"name": "srv", "hostname": "srv", "ip_address": "10.0.0.3",
-         "template_id": tpl["id"]},
+         "template_id": tpl["id"], "template_name": "MU"},
     ])
     member, _ = _login(client.app, "bt@example.com", created["password"])
 
-    # Per-server mapping var resolves to the template main user.
+    # Per-template mapping var resolves to the template main user.
     per = client.post(
         "/api/settings/bundle-templates",
-        json={"name": "MUvars", "content": "u=S1USER",
-              "mappings": [{"field_name": "S1USER", "source": "server1_user"}]},
+        json={"name": "MUvars", "content": "u=MUUSER",
+              "mappings": [{"field_name": "MUUSER", "source": "server_mu_user"}]},
         headers={"X-CSRF-Token": csrf},
     ).json()
     dl = member.get(f"/api/account/bundles/{per['id']}/download")
