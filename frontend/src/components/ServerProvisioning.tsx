@@ -77,11 +77,7 @@ export function ServerProvisioning() {
         {
           id: "templates",
           label: "Server Templates",
-          render: () => (
-            <div className="grid">
-              <ServerTemplatesCard />
-            </div>
-          ),
+          render: () => <ServerTemplatesSection />,
         },
       ]}
     />
@@ -610,19 +606,11 @@ function PolicyCard(props: {
   );
 }
 
-function ServerTemplatesCard() {
+function ServerTemplatesSection() {
   const [templates, setTemplates] = useState<ServerTemplate[]>([]);
   const [sshKeys, setSshKeys] = useState<SshKey[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [vmid, setVmid] = useState("");
-  const [name, setName] = useState("");
-  const [kind, setKind] = useState<"lxc" | "vm">("lxc");
-  const [keyId, setKeyId] = useState("");
-  const [mainUser, setMainUser] = useState("");
-  const [enableSudo, setEnableSudo] = useState(true);
-  const [enableTrusted, setEnableTrusted] = useState(true);
-  const [busy, setBusy] = useState(false);
 
   async function refresh() {
     setError(null);
@@ -646,10 +634,48 @@ function ServerTemplatesCard() {
     void refresh();
   }, []);
 
+  return (
+    <div className="grid">
+      {error && (
+        <p className="alert error" role="alert">
+          {error}
+        </p>
+      )}
+      <AddServerTemplateCard
+        sshKeys={sshKeys}
+        onError={setError}
+        onAdded={refresh}
+      />
+      <ServerTemplatesListCard
+        templates={templates}
+        sshKeys={sshKeys}
+        loading={loading}
+        onError={setError}
+        onDeleted={refresh}
+      />
+    </div>
+  );
+}
+
+function AddServerTemplateCard(props: {
+  sshKeys: SshKey[];
+  onError: (message: string | null) => void;
+  onAdded: () => Promise<void> | void;
+}) {
+  const { sshKeys } = props;
+  const [vmid, setVmid] = useState("");
+  const [name, setName] = useState("");
+  const [kind, setKind] = useState<"lxc" | "vm">("lxc");
+  const [keyId, setKeyId] = useState("");
+  const [mainUser, setMainUser] = useState("");
+  const [enableSudo, setEnableSudo] = useState(true);
+  const [enableTrusted, setEnableTrusted] = useState(true);
+  const [busy, setBusy] = useState(false);
+
   async function onAdd(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
-    setError(null);
+    props.onError(null);
     try {
       await api.createServerTemplate({
         vmid: Number(vmid),
@@ -666,9 +692,9 @@ function ServerTemplatesCard() {
       setMainUser("");
       setEnableSudo(true);
       setEnableTrusted(true);
-      await refresh();
+      await props.onAdded();
     } catch (err) {
-      setError(
+      props.onError(
         err instanceof ApiError ? err.message : "Unable to add the template.",
       );
     } finally {
@@ -676,31 +702,14 @@ function ServerTemplatesCard() {
     }
   }
 
-  async function onDelete(template: ServerTemplate) {
-    setError(null);
-    try {
-      await api.deleteServerTemplate(template.id);
-      await refresh();
-    } catch (err) {
-      setError(
-        err instanceof ApiError ? err.message : "Unable to delete the template.",
-      );
-    }
-  }
-
   return (
     <section className="card">
-      <h2>Server templates</h2>
+      <h2>Add server template</h2>
       <p className="muted">
         Preconfigured Proxmox templates (LXC or VM) offered to users when
         creating a server. Templates are assumed to be preconfigured (SSH
         keys, resources, user).
       </p>
-      {error && (
-        <p className="alert error" role="alert">
-          {error}
-        </p>
-      )}
       <form className="create-form" onSubmit={onAdd}>
         <label className="field">
           <span>LXC/VM ID</span>
@@ -752,6 +761,11 @@ function ServerTemplatesCard() {
               </option>
             ))}
           </select>
+          <span className="hint">
+            The key used to manage server-template operations: cloning the
+            template, installing user keys, and configuring trusted access on
+            the resulting servers.
+          </span>
           {sshKeys.length === 0 && (
             <span className="hint">
               Register keys under Settings &rarr; Remote Access first.
@@ -798,44 +812,98 @@ function ServerTemplatesCard() {
           </button>
         </div>
       </form>
+    </section>
+  );
+}
+
+function ServerTemplatesListCard(props: {
+  templates: ServerTemplate[];
+  sshKeys: SshKey[];
+  loading: boolean;
+  onError: (message: string | null) => void;
+  onDeleted: () => Promise<void> | void;
+}) {
+  const { templates, sshKeys, loading } = props;
+
+  async function onDelete(template: ServerTemplate) {
+    props.onError(null);
+    try {
+      await api.deleteServerTemplate(template.id);
+      await props.onDeleted();
+    } catch (err) {
+      props.onError(
+        err instanceof ApiError ? err.message : "Unable to delete the template.",
+      );
+    }
+  }
+
+  return (
+    <section className="card">
+      <h2>Server templates</h2>
+      <p className="muted">
+        Registered templates and the options applied to the servers they create.
+      </p>
       {loading ? (
         <p role="status">Loading server templates...</p>
       ) : templates.length === 0 ? (
         <p className="muted">No server templates registered yet.</p>
       ) : (
         <div className="user-list">
-          {templates.map((template) => (
-            <article key={template.id} className="user-card">
-              <div className="user-card-head">
-                <div className="user-identity">
-                  <span className="user-name">{template.name}</span>
-                  <span className="role-badge">
-                    {template.kind.toUpperCase()}
+          {templates.map((template) => {
+            const adminKey =
+              template.admin_ssh_key_id !== null
+                ? sshKeys.find((k) => k.id === template.admin_ssh_key_id)
+                    ?.name ?? `#${template.admin_ssh_key_id}`
+                : template.admin_ssh_key_path || null;
+            return (
+              <article key={template.id} className="user-card">
+                <div className="user-card-head">
+                  <div className="user-identity">
+                    <span className="user-name">{template.name}</span>
+                    <span className="role-badge">
+                      {template.kind.toUpperCase()}
+                    </span>
+                    <span className="status-badge ok">#{template.vmid}</span>
+                  </div>
+                  <div className="row-actions">
+                    <button
+                      type="button"
+                      className="btn danger"
+                      onClick={() => onDelete(template)}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+                <div className="badge-row">
+                  <span className="status-badge">
+                    Main user: {template.main_os_user || "(user's own ID)"}
                   </span>
-                  <span className="status-badge ok">#{template.vmid}</span>
-                </div>
-                <div className="row-actions">
-                  <button
-                    type="button"
-                    className="btn danger"
-                    onClick={() => onDelete(template)}
+                  <span
+                    className={
+                      template.enable_sudo
+                        ? "status-badge ok"
+                        : "status-badge off"
+                    }
                   >
-                    Delete
-                  </button>
+                    Sudo: {template.enable_sudo ? "on" : "off"}
+                  </span>
+                  <span
+                    className={
+                      template.enable_trusted_access
+                        ? "status-badge ok"
+                        : "status-badge off"
+                    }
+                  >
+                    Trusted SSH: {template.enable_trusted_access ? "on" : "off"}
+                  </span>
                 </div>
-              </div>
-              {(template.admin_ssh_key_id !== null ||
-                template.admin_ssh_key_path) && (
                 <p className="muted">
-                  Admin key:{" "}
-                  {template.admin_ssh_key_id !== null
-                    ? sshKeys.find((k) => k.id === template.admin_ssh_key_id)
-                        ?.name ?? `#${template.admin_ssh_key_id}`
-                    : template.admin_ssh_key_path}
+                  Admin key: {adminKey ?? "None"}
                 </p>
-              )}
-            </article>
-          ))}
+              </article>
+            );
+          })}
         </div>
       )}
     </section>

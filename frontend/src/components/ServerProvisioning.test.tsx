@@ -213,7 +213,7 @@ describe("ServerProvisioning", () => {
     render(<ServerProvisioning />);
     await openTab(/Server Templates/i);
 
-    await screen.findByRole("heading", { name: /server templates/i });
+    await screen.findByRole("heading", { name: /^server templates$/i });
     await userEvent.type(screen.getByLabelText(/lxc\/vm id/i), "9001");
     await userEvent.type(screen.getByLabelText(/^template name$/i), "Debian Coder");
     await userEvent.click(screen.getByLabelText(/existing vm template/i));
@@ -225,6 +225,13 @@ describe("ServerProvisioning", () => {
 
     expect(await screen.findByText("Debian Coder")).toBeInTheDocument();
     expect(screen.getByText("VM")).toBeInTheDocument();
+    // The list card shows the configured options as badges.
+    expect(screen.getByText(/sudo: on/i)).toBeInTheDocument();
+    expect(screen.getByText(/trusted ssh: on/i)).toBeInTheDocument();
+    // The add card explains the admin key's purpose.
+    expect(
+      screen.getByText(/manage server-template operations/i),
+    ).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: /delete/i }));
     expect(
