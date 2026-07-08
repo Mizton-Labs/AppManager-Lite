@@ -8,6 +8,7 @@ import type {
 } from "../types";
 import { ChangePasswordForm } from "./ChangePasswordForm";
 import { UserServersPanel } from "./UserServers";
+import { SubTabs } from "./SubTabs";
 
 function saveTextFile(content: string, filename: string) {
   const blob = new Blob([content], { type: "text/plain" });
@@ -27,68 +28,98 @@ export function AccountPanel(props: {
 }) {
   const { user } = props;
   return (
-    <div className="grid">
-      <section className="card">
-        <h2>Profile</h2>
-        <dl className="detail-list">
-          <div>
-            <dt>Username</dt>
-            <dd>{user.username}</dd>
-          </div>
-          <div>
-            <dt>User ID</dt>
-            <dd>
-              <code className="user-id">{user.user_id}</code>
-            </dd>
-          </div>
-          <div>
-            <dt>Role</dt>
-            <dd>
-              <span className="role-badge">{user.role}</span>
-            </dd>
-          </div>
-          <div>
-            <dt>Teams</dt>
-            <dd>
-              {user.teams.length > 0 ? (
-                <span className="tag-row">
-                  {user.teams.map((team) => (
-                    <span key={team} className="tag">
-                      {team}
-                    </span>
-                  ))}
-                </span>
-              ) : (
-                <span className="muted">No teams assigned</span>
-              )}
-            </dd>
-          </div>
-          <div>
-            <dt>Self-service</dt>
-            <dd>
-              {user.self_service ? (
-                <span className="status-badge ok">enabled</span>
-              ) : (
-                <span className="muted">
-                  Disabled &mdash; new applications need administrator approval
-                </span>
-              )}
-            </dd>
-          </div>
-        </dl>
-      </section>
+    <SubTabs
+      ariaLabel="Account sections"
+      tabs={[
+        {
+          id: "user-info",
+          label: "User Info",
+          render: () => (
+            <div className="grid">
+              <ProfileCard user={user} />
+              <MyServersCard user={user} />
+            </div>
+          ),
+        },
+        {
+          id: "ssh-info",
+          label: "SSH Info",
+          render: () => (
+            <div className="grid">
+              <BundleDownloadCard />
+              <SshKeyCard />
+            </div>
+          ),
+        },
+        {
+          id: "change-password",
+          label: "Change Password",
+          render: () => (
+            <div className="grid">
+              <section className="card">
+                <h2>Change password</h2>
+                <ChangePasswordForm onChanged={props.onPasswordChanged} />
+              </section>
+            </div>
+          ),
+        },
+      ]}
+    />
+  );
+}
 
-      <section className="card">
-        <h2>Change password</h2>
-        <ChangePasswordForm onChanged={props.onPasswordChanged} />
-      </section>
-
-      <SshKeyCard />
-
-      <MyServersCard user={user} />
-
-      <BundleDownloadCard />
-    </div>
+function ProfileCard(props: { user: ApiUser }) {
+  const { user } = props;
+  return (
+    <section className="card">
+      <h2>Profile</h2>
+      <dl className="detail-list">
+        <div>
+          <dt>Username</dt>
+          <dd>{user.username}</dd>
+        </div>
+        <div>
+          <dt>User ID</dt>
+          <dd>
+            <code className="user-id">{user.user_id}</code>
+          </dd>
+        </div>
+        <div>
+          <dt>Role</dt>
+          <dd>
+            <span className="role-badge">{user.role}</span>
+          </dd>
+        </div>
+        <div>
+          <dt>Teams</dt>
+          <dd>
+            {user.teams.length > 0 ? (
+              <span className="tag-row">
+                {user.teams.map((team) => (
+                  <span key={team} className="tag">
+                    {team}
+                  </span>
+                ))}
+              </span>
+            ) : (
+              <span className="muted">No teams assigned</span>
+            )}
+          </dd>
+        </div>
+        <div>
+          <dt>Self-service</dt>
+          <dd>
+            {user.self_service ? (
+              <span className="status-badge ok">enabled</span>
+            ) : (
+              <span className="muted">
+                Disabled &mdash; new applications need administrator approval
+              </span>
+            )}
+          </dd>
+        </div>
+      </dl>
+    </section>
   );
 }
 

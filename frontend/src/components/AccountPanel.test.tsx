@@ -87,7 +87,29 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/** Click an Account sub-tab by its visible label. */
+async function openTab(label: RegExp) {
+  await userEvent.click(await screen.findByRole("button", { name: label }));
+}
+
 describe("AccountPanel", () => {
+  it("renders the three account tabs", async () => {
+    stubAccount();
+    render(
+      <AccountPanel
+        user={makeUser({ username: "analyst@example.com" })}
+        onPasswordChanged={() => undefined}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "User Info" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "SSH Info" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Change Password" }),
+    ).toBeInTheDocument();
+    // User Info is the default tab: profile is visible.
+    expect(screen.getByText("Profile")).toBeInTheDocument();
+  });
+
   it("lists and downloads account bundles", async () => {
     const click = stubDownloads();
     const fetchMock = stubAccount();
@@ -98,6 +120,7 @@ describe("AccountPanel", () => {
         onPasswordChanged={() => undefined}
       />,
     );
+    await openTab(/SSH Info/i);
 
     expect(await screen.findByText("Shell profile")).toBeInTheDocument();
     expect(
@@ -135,6 +158,7 @@ describe("AccountPanel", () => {
         onPasswordChanged={() => undefined}
       />,
     );
+    await openTab(/SSH Info/i);
 
     expect(await screen.findByText(sshKey.public_key)).toBeInTheDocument();
     await userEvent.click(
@@ -171,6 +195,7 @@ describe("AccountPanel", () => {
         onPasswordChanged={() => undefined}
       />,
     );
+    await openTab(/SSH Info/i);
 
     await screen.findByText(sshKey.public_key);
     await userEvent.click(screen.getByRole("button", { name: /regenerate key/i }));
