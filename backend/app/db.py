@@ -605,13 +605,28 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     _encrypt_existing_user_keys(conn)
     _import_key_paths_to_registry(conn)
 
-    # Predefined bundle template reserved for the dynamically generated SSH
-    # configuration file (no mappings: content is built from the user's
-    # servers at download time). Idempotent by the unique template name.
+    # Bundle templates gained builtin/enabled flags (issue_015-r2). Builtin
+    # templates render dynamically, can be cloned but not renamed/deleted, and
+    # can be disabled to hide them from the account download list.
+    _add_column(
+        conn, "bundle_templates", "is_builtin", "INTEGER NOT NULL DEFAULT 0"
+    )
+    _add_column(
+        conn, "bundle_templates", "enabled", "INTEGER NOT NULL DEFAULT 1"
+    )
+
+    # Predefined built-in SSH-config template. Rendered dynamically from the
+    # user's servers + jump server at download time (its content is a marker,
+    # not used verbatim). Idempotent by the unique template name; ensure the
+    # builtin flag is set even for rows seeded before this migration.
     conn.execute(
-        "INSERT OR IGNORE INTO bundle_templates (name, content) VALUES (?, ?)",
+        "INSERT OR IGNORE INTO bundle_templates (name, content, is_builtin) "
+        "VALUES (?, ?, 1)",
         (
             "SSH Config Default",
             "# Generated dynamically from your servers at download time.\n",
         ),
+    )
+    conn.execute(
+        "UPDATE bundle_templates SET is_builtin = 1 WHERE name = 'SSH Config Default'"
     )

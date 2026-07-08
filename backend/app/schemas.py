@@ -13,6 +13,9 @@ from .teams import slugify as _slugify_name
 ROLES = ("admin", "user")
 URL_TYPES = ("url", "alias")
 APPROVAL_STATES = ("pending", "approved", "rejected")
+# Per-server indexed mapping variables cap (must match repository).
+BUNDLE_MAX_SERVER_VARS = 8
+
 BUNDLE_MAPPING_SOURCES = (
     "username",
     "user_id",
@@ -20,6 +23,11 @@ BUNDLE_MAPPING_SOURCES = (
     "user_apps_server_host",
     "user_apps_server_ip",
     "user_role",
+    *(
+        f"server{i}_{field}"
+        for i in range(1, BUNDLE_MAX_SERVER_VARS + 1)
+        for field in ("name", "ip", "user")
+    ),
 )
 
 # A local alias becomes part of a URL path, so it is restricted to URL-safe
@@ -397,6 +405,24 @@ class BundleTemplateOut(BaseModel):
     name: str
     content: str
     mappings: list[BundleTemplateMapping] = Field(default_factory=list)
+    is_builtin: bool = False
+    enabled: bool = True
+
+
+class CloneBundleTemplateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+
+    @field_validator("name")
+    @classmethod
+    def _clean_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Name must not be empty.")
+        return value
+
+
+class SetBundleTemplateEnabledRequest(BaseModel):
+    enabled: bool
 
 
 class CreateBundleTemplateRequest(BaseModel):
