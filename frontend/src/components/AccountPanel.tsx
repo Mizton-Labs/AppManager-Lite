@@ -1,6 +1,11 @@
 import { useEffect, useState } from "react";
 import { api, ApiError } from "../api";
-import type { ApiUser, ServerAccess, SshKeyInfo } from "../types";
+import type {
+  ApiUser,
+  ServerAccess,
+  ServerKeyRotation,
+  SshKeyInfo,
+} from "../types";
 import { ChangePasswordForm } from "./ChangePasswordForm";
 import { UserServersPanel } from "./UserServers";
 
@@ -124,6 +129,7 @@ function SshKeyCard() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [rotation, setRotation] = useState<ServerKeyRotation[]>([]);
 
   useEffect(() => {
     api
@@ -161,9 +167,18 @@ function SshKeyCard() {
     try {
       const next = await api.regenerateAccountSshKey();
       setInfo(next);
+      setRotation(next.rotation);
       setConfirming(false);
+      const updated = next.rotation.filter((r) => r.status === "updated").length;
+      const failed = next.rotation.filter((r) => r.status === "failed").length;
       setNotice(
-        "A new SSH keypair was generated. Download the new private key; the old key is no longer available.",
+        "A new SSH keypair was generated. Download the new private key; " +
+          "the old key is no longer available." +
+          (next.rotation.length > 0
+            ? ` Key rotation on your servers: ${updated} updated` +
+              (failed ? `, ${failed} failed` : "") +
+              ` of ${next.rotation.length}.`
+            : ""),
       );
     } catch (err) {
       setError(
@@ -244,9 +259,37 @@ function SshKeyCard() {
           {confirming && (
             <p className="alert error" role="alert">
               Regenerating replaces your keypair immediately. The current
-              private key stops working and servers that trust the old public
-              key must be updated. This cannot be undone.
+              private key stops working; AppManager will attempt to remove
+              the old public key from your servers and install the new one,
+              and will show a per-server summary. This cannot be undone.
             </p>
+          )}
+          {rotation.length > 0 && (
+            <div className="rotation-summary">
+              <h3>Key rotation summary</h3>
+              <ul>
+                {rotation.map((entry) => (
+                  <li key={entry.server}>
+                    <span
+                      className={
+                        entry.status === "updated"
+                          ? "status-badge ok"
+                          : entry.status === "failed"
+                            ? "status-badge warn"
+                            : "status-badge off"
+                      }
+                    >
+                      {entry.status}
+                    </span>{" "}
+                    {entry.server}
+                    {entry.ip_address ? ` (${entry.ip_address})` : ""}
+                    {entry.detail ? (
+                      <span className="muted"> — {entry.detail}</span>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
         </>
       )}
@@ -298,10 +341,12 @@ function BundleDownloadCard() {
 
   return (
     <section className="card">
-      <h2>Bundles</h2>
+      <h2>SSH Configuration File</h2>
       <p className="muted">
-        Download a personal configuration bundle generated from administrator
-        templates and your account details.
+        Download a personal SSH configuration file. Templates with field
+        mappings are filled in from your account details; templates without
+        mappings (such as "SSH Config Default") are generated dynamically
+        from your servers.
       </p>
       {error && (
         <p className="alert error" role="alert">
@@ -309,13 +354,13 @@ function BundleDownloadCard() {
         </p>
       )}
       {loading ? (
-        <p role="status">Loading bundles...</p>
+        <p role="status">Loading configuration files...</p>
       ) : bundles.length === 0 ? (
-        <p className="muted">No bundles are available yet.</p>
+        <p className="muted">No configuration files are available yet.</p>
       ) : (
         <div className="create-form">
           <label className="field">
-            <span>Available bundles</span>
+            <span>Available configuration files</span>
             <select value={selectedId} onChange={(e) => setSelectedId(e.target.value)}>
               {bundles.map((bundle) => (
                 <option key={bundle.id} value={bundle.id}>
@@ -330,7 +375,7 @@ function BundleDownloadCard() {
             onClick={download}
             disabled={busy || !selectedId}
           >
-            {busy ? "Preparing..." : "Download bundle"}
+            {busy ? "Preparing..." : "Download file"}
           </button>
         </div>
       )}

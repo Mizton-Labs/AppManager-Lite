@@ -37,9 +37,8 @@ function stubAccount(overrides: {
       return textResponse("personal bundle", "profile.txt");
     }
     if (url.endsWith("/api/account/ssh-key/regenerate")) {
-      return jsonResponse(
-        overrides.onRegenerate ? overrides.onRegenerate() : sshKey,
-      );
+      const base = overrides.onRegenerate ? overrides.onRegenerate() : sshKey;
+      return jsonResponse({ rotation: [], ...(base as object) });
     }
     if (url.includes("/api/account/ssh-key/download?part=private")) {
       return textResponse(
@@ -101,7 +100,10 @@ describe("AccountPanel", () => {
     );
 
     expect(await screen.findByText("Shell profile")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: /download bundle/i }));
+    expect(
+      screen.getByRole("heading", { name: /ssh configuration file/i }),
+    ).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /download file/i }));
 
     expect(
       fetchMock.mock.calls.some(([url]) =>
@@ -148,7 +150,19 @@ describe("AccountPanel", () => {
   });
 
   it("regenerates the SSH key only after an explicit confirmation", async () => {
-    const regenerated = { ...sshKey, public_key: "ssh-ed25519 NEWKEY analyst" };
+    const regenerated = {
+      ...sshKey,
+      public_key: "ssh-ed25519 NEWKEY analyst",
+      rotation: [
+        {
+          server: "coder box",
+          ip_address: "10.0.7.42",
+          status: "updated",
+          detail: "key rotated",
+        },
+        { server: "no-ip", ip_address: "", status: "skipped", detail: "no IP" },
+      ],
+    };
     const fetchMock = stubAccount({ onRegenerate: () => regenerated });
 
     render(
@@ -181,5 +195,13 @@ describe("AccountPanel", () => {
       ),
     ).toBe(true);
     expect(await screen.findByText(regenerated.public_key)).toBeInTheDocument();
+
+    // Per-server rotation summary with statuses.
+    expect(
+      screen.getByRole("heading", { name: /key rotation summary/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("updated")).toBeInTheDocument();
+    expect(screen.getByText("skipped")).toBeInTheDocument();
+    expect(screen.getByText(/1 updated of 2/i)).toBeInTheDocument();
   });
 });

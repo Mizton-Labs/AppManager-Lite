@@ -43,7 +43,11 @@ def test_admin_manages_bundle_templates(admin) -> None:
     assert created["name"] == "Shell profile"
     assert created["mappings"][0] == {"field_name": "USER", "source": "username"}
     listed = client.get("/api/settings/bundle-templates")
-    assert [template["name"] for template in listed.json()] == ["Shell profile"]
+    # The predefined "SSH Config Default" template is seeded on startup.
+    assert {template["name"] for template in listed.json()} == {
+        "SSH Config Default",
+        "Shell profile",
+    }
 
     updated = client.patch(
         f"/api/settings/bundle-templates/{created['id']}",
@@ -64,7 +68,9 @@ def test_admin_manages_bundle_templates(admin) -> None:
         headers={"X-CSRF-Token": csrf},
     )
     assert deleted.status_code == 200, deleted.text
-    assert client.get("/api/settings/bundle-templates").json() == []
+    assert [t["name"] for t in client.get("/api/settings/bundle-templates").json()] == [
+        "SSH Config Default"
+    ]
 
 
 def test_bundle_template_rejects_unknown_mapping_source(admin) -> None:
@@ -122,7 +128,10 @@ def test_account_download_renders_bundle_for_current_user(admin) -> None:
         download = member.get(f"/api/account/bundles/{template['id']}/download")
 
     assert options.status_code == 200, options.text
-    assert options.json() == [{"id": template["id"], "name": "Shell profile"}]
+    assert {o["name"] for o in options.json()} == {
+        "SSH Config Default",
+        "Shell profile",
+    }
     assert download.status_code == 200, download.text
     assert download.text == "analyst@example.com runs on apps.example.com as user"
     assert "attachment" in download.headers["content-disposition"]

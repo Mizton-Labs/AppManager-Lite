@@ -277,7 +277,20 @@ creation (existing accounts are backfilled automatically on startup). From the
 **Account** page a user can view their public key, download the private or
 public key, and regenerate the keypair after an explicit confirmation
 (regeneration and private-key downloads are audited — metadata only, never key
-material; key material is served only to the owning, signed-in user). Administrators can also set the user's **apps server**
+material; key material is served only to the owning, signed-in user).
+Regenerating also **rotates the key on the user's servers**: the old public
+key is removed from `authorized_keys` (root and every `/home` user) and the
+new one installed, using each server's admin SSH key; a per-server
+verification summary (updated / skipped / failed, with reasons) is shown and
+appended to each server's log.
+
+The Account page's **SSH Configuration File** card downloads a personal SSH
+config: templates with field mappings are rendered from account details
+(mapping sources include the username, the derived **user ID**, apps
+server host/IP, and role), while templates **without mappings** — such as the
+predefined **"SSH Config Default"** — are generated dynamically from the
+user's servers (`Host <hostname>` / `HostName <ip>` / `IdentityFile
+~/.ssh/id_ed25519`). Administrators can also set the user's **apps server**
 (host/IP) — the host where that user runs their applications, used as the
 upstream for that user's reverse-proxy aliases. Each application carries its
 **own port** (see below), so there is no per-user port. A normal user only sets

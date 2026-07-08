@@ -141,6 +141,10 @@ CREATE TABLE IF NOT EXISTS user_servers (
     memory_gb      INTEGER NOT NULL DEFAULT 0,
     disk_gb        INTEGER NOT NULL DEFAULT 0,
     admin_modified INTEGER NOT NULL DEFAULT 0,
+    -- Optional per-server admin key path (used for key rotation on servers
+    -- that have no template, e.g. imported reference servers). Never exposed
+    -- through the API.
+    admin_ssh_key_path TEXT NOT NULL DEFAULT '',
     -- created: provisioned by AppManager; reference: imported record of a
     -- pre-existing server; failed: creation attempt kept for its log.
     status         TEXT    NOT NULL DEFAULT 'created'
@@ -453,4 +457,21 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     )
     _add_column(
         conn, "settings", "provisioning_max_disk_gb", "INTEGER NOT NULL DEFAULT 200"
+    )
+
+    # Reference servers imported without a template carry their own admin
+    # key path for key rotation.
+    _add_column(
+        conn, "user_servers", "admin_ssh_key_path", "TEXT NOT NULL DEFAULT ''"
+    )
+
+    # Predefined bundle template reserved for the dynamically generated SSH
+    # configuration file (no mappings: content is built from the user's
+    # servers at download time). Idempotent by the unique template name.
+    conn.execute(
+        "INSERT OR IGNORE INTO bundle_templates (name, content) VALUES (?, ?)",
+        (
+            "SSH Config Default",
+            "# Generated dynamically from your servers at download time.\n",
+        ),
     )

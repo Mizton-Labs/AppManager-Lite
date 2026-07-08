@@ -19,7 +19,8 @@ from fastapi import (
 from fastapi.responses import PlainTextResponse, RedirectResponse
 from starlette.responses import Response as StarletteResponse
 
-from .. import audit, repository, security, sessions, sshkeys, sso
+from .. import audit, repository, security, servers, sessions, sshkeys, sso
+from ..proxmox import ProxmoxResult
 from ..config import get_settings
 from ..deps import get_current_user, get_db, verify_csrf
 from ..schemas import (
@@ -27,8 +28,10 @@ from ..schemas import (
     BundleOptionOut,
     LoginRequest,
     MessageOut,
+    ServerKeyRotationOut,
     SessionOut,
     SshKeyInfoOut,
+    SshKeyRegenerateOut,
     SsoConfigOut,
     SsoProviderOut,
     UserOut,
@@ -482,7 +485,15 @@ def download_account_bundle(
     template = repository.get_bundle_template(conn, template_id)
     if template is None:
         raise HTTPException(status_code=404, detail="Bundle template not found")
-    content = repository.render_bundle_template(template, user)
+    if template["mappings"]:
+        content = repository.render_bundle_template(template, user)
+    else:
+        # No mappings: generate a generic SSH configuration file from the
+        # user's servers (Host <name> / HostName <ip>). This powers the
+        # predefined "SSH Config Default" template.
+        content = repository.render_generic_ssh_config(
+            user, repository.list_user_servers(conn, user["id"])
+        )
     safe_name = "".join(
         ch if ch.isalnum() or ch in ("-", "_") else "-" for ch in template["name"].lower()
     ).strip("-") or "bundle"
@@ -554,26 +565,104 @@ def download_account_ssh_key(
     )
 
 
-@router.post("/account/ssh-key/regenerate", response_model=SshKeyInfoOut)
+def _rotate_key_on_servers(
+    conn: sqlite3.Connection,
+    user: dict[str, Any],
+    old_public_key: str,
+    new_public_key: str,
+) -> list[ServerKeyRotationOut]:
+    """Propagate a regenerated key to the user's servers.
+
+    Best-effort per server: each outcome is reported so the user sees a
+    verification summary. Nothing here raises.
+    """
+    summary: list[ServerKeyRotationOut] = []
+    for server in repository.list_user_servers(conn, user["id"]):
+        entry = ServerKeyRotationOut(
+            server=server["name"],
+            ip_address=server["ip_address"],
+            status="skipped",
+        )
+        if server["status"] == "failed":
+            entry.detail = "creation failed; nothing to rotate"
+            summary.append(entry)
+            continue
+        if not server["ip_address"]:
+            entry.detail = "no IP address on record"
+            summary.append(entry)
+            continue
+        admin_key_path = server.get("admin_ssh_key_path", "")
+        if not admin_key_path and server["template_id"] is not None:
+            template = repository.get_server_template(
+                conn, server["template_id"]
+            )
+            admin_key_path = (template or {}).get("admin_ssh_key_path", "")
+        if not admin_key_path:
+            entry.detail = "no admin SSH key configured for this server"
+            summary.append(entry)
+            continue
+        if not old_public_key:
+            # Without the previous key there is nothing to locate/replace on
+            # the server; install the new key manually or via re-provision.
+            entry.detail = "no previous key on record; nothing to replace"
+            summary.append(entry)
+            continue
+        result = ProxmoxResult()
+        rotation_status = servers.rotate_public_key(
+            ip=server["ip_address"],
+            admin_key_path=admin_key_path,
+            old_public_key=old_public_key,
+            new_public_key=new_public_key,
+            result=result,
+        )
+        if rotation_status == "updated":
+            entry.status = "updated"
+        elif rotation_status == "noop":
+            entry.status = "skipped"
+        else:
+            entry.status = "failed"
+        entry.detail = result.transcript.splitlines()[-1] if result.steps else ""
+        repository.update_user_server(
+            conn,
+            user["id"],
+            server["id"],
+            last_log=(server["last_log"] + "\n\n--- key rotation ---\n"
+                      + result.transcript).strip(),
+        )
+        summary.append(entry)
+    return summary
+
+
+@router.post("/account/ssh-key/regenerate", response_model=SshKeyRegenerateOut)
 def regenerate_account_ssh_key(
     user: dict[str, Any] = Depends(get_current_user),
     _: None = Depends(verify_csrf),
     conn: sqlite3.Connection = Depends(get_db),
-) -> SshKeyInfoOut:
+) -> SshKeyRegenerateOut:
     """Replace the caller's SSH keypair with a freshly generated one.
 
-    The previous key stops being served immediately. Removing the old public
-    key from provisioned servers (and installing the new one) is handled by
-    the server-provisioning workflow.
+    The previous key stops being served immediately, and the old public key
+    is removed from (and the new one installed on) each of the user's
+    reachable servers; the per-server outcome is returned as a summary.
     """
     if repository.get_user_by_id(conn, user["id"]) is None:
         raise HTTPException(status_code=404, detail="SSH key not available")
+    old_key = repository.get_user_ssh_key(conn, user["id"])
     private_key, public_key = sshkeys.generate_keypair(user["username"])
     repository.set_user_ssh_key(
         conn, user["id"], private_key=private_key, public_key=public_key
     )
+    # Persist the new key before touching any server: if the process dies
+    # mid-rotation, the DB must already serve the key the servers trust.
+    conn.commit()
+    rotation = _rotate_key_on_servers(
+        conn, user, (old_key or {}).get("public_key", ""), public_key
+    )
     logger.info(
-        "SSH key regenerated by user=%r (id=%s)", user["username"], user["id"]
+        "SSH key regenerated by user=%r (id=%s); rotation: %s",
+        user["username"],
+        user["id"],
+        ", ".join(f"{r.server}={r.status}" for r in rotation) or "no servers",
     )
     audit.record(
         conn,
@@ -583,8 +672,14 @@ def regenerate_account_ssh_key(
         target_type="user",
         target_id=user["id"],
         target_name=user["username"],
+        detail=(
+            "rotation: "
+            + (", ".join(f"{r.server}={r.status}" for r in rotation)
+               or "no servers")
+        ),
     )
     key = repository.get_user_ssh_key(conn, user["id"])
     if key is None:  # pragma: no cover - written one statement above
         raise HTTPException(status_code=500, detail="SSH key rotation failed")
-    return _ssh_key_info(user, key)
+    info = _ssh_key_info(user, key)
+    return SshKeyRegenerateOut(**info.model_dump(), rotation=rotation)
