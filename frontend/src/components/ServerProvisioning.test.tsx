@@ -98,6 +98,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/** Click a Server Provisioning sub-tab by its visible label. */
+async function openTab(label: RegExp) {
+  await userEvent.click(await screen.findByRole("button", { name: label }));
+}
+
 describe("ServerProvisioning", () => {
   it("saves the provider, shows the test result, and lists found templates", async () => {
     const fetchMock = stubProvisioning();
@@ -176,6 +181,7 @@ describe("ServerProvisioning", () => {
   it("saves the provisioning policy", async () => {
     const fetchMock = stubProvisioning();
     render(<ServerProvisioning />);
+    await openTab(/^Policy$/i);
 
     await screen.findByRole("heading", { name: /server provisioning policy/i });
     await userEvent.click(
@@ -204,6 +210,7 @@ describe("ServerProvisioning", () => {
   it("adds and deletes a server template", async () => {
     stubProvisioning();
     render(<ServerProvisioning />);
+    await openTab(/Server Templates/i);
 
     await screen.findByRole("heading", { name: /server templates/i });
     await userEvent.type(screen.getByLabelText(/lxc\/vm id/i), "9001");
@@ -243,6 +250,7 @@ describe("ServerProvisioning", () => {
       jump_ssh_key_id: 3,
     });
     render(<ServerProvisioning />);
+    await openTab(/Jump Server/i);
 
     await screen.findByRole("heading", { name: /jump server/i });
     await userEvent.click(

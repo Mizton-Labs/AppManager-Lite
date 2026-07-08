@@ -7,6 +7,7 @@ import type {
   ServerTemplate,
   SshKey,
 } from "../types";
+import { SubTabs } from "./SubTabs";
 
 /**
  * Settings -> Server Provisioning (administrators only).
@@ -43,12 +44,47 @@ export function ServerProvisioning() {
     return <p role="status">Loading provisioning settings...</p>;
   }
   return (
-    <div className="grid">
-      <ProviderCard settings={settings} onSaved={setSettings} />
-      <PolicyCard settings={settings} onSaved={setSettings} />
-      <JumpServerCard settings={settings} onSaved={setSettings} />
-      <ServerTemplatesCard />
-    </div>
+    <SubTabs
+      ariaLabel="Server provisioning sections"
+      tabs={[
+        {
+          id: "provider",
+          label: "Provider",
+          render: () => (
+            <div className="grid">
+              <ProviderCard settings={settings} onSaved={setSettings} />
+            </div>
+          ),
+        },
+        {
+          id: "policy",
+          label: "Policy",
+          render: () => (
+            <div className="grid">
+              <PolicyCard settings={settings} onSaved={setSettings} />
+            </div>
+          ),
+        },
+        {
+          id: "jump",
+          label: "Jump Server",
+          render: () => (
+            <div className="grid">
+              <JumpServerCard settings={settings} onSaved={setSettings} />
+            </div>
+          ),
+        },
+        {
+          id: "templates",
+          label: "Server Templates",
+          render: () => (
+            <div className="grid">
+              <ServerTemplatesCard />
+            </div>
+          ),
+        },
+      ]}
+    />
   );
 }
 

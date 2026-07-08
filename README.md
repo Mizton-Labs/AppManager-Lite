@@ -512,7 +512,9 @@ reported as skipped on removal.
 ## Server provisioning (LXC/VM)
 
 Administrators configure server provisioning under **Settings → Server
-Provisioning** (admin only):
+Provisioning** (admin only). Each Settings section groups its cards into
+**sub-tabs**; Server Provisioning has **Provider**, **Policy**, **Jump
+Server**, and **Server Templates**.
 
 - **LXC/VM provider** — currently Proxmox (API-token authentication). Configure
   the Proxmox URL (`PROTO://IP:PORT`), token name, and API key; the key is
@@ -532,8 +534,28 @@ Provisioning** (admin only):
   count against these limits.
 - **Server templates** — register the Proxmox templates (LXC or VM, by VM ID)
   offered to users when creating a server, each with an app-facing name and an
-  optional path to an admin SSH key on this server for later customization.
-  Templates are assumed to be preconfigured (SSH keys, resources, user).
+  **SSH key** chosen from the registry (see Remote Access) for later
+  customization. Templates are assumed to be preconfigured (SSH keys,
+  resources, user).
+- **Jump server** — optionally onboard users onto a bastion. When enabled with
+  a host, management user, and registry SSH key, creating a user provisions an
+  OS account on the jump server with their public key installed, deleting a
+  user removes that key, and regenerating a key rotates it there too. A **Sync
+  users to jump server** action backfills existing users. All jump operations
+  are best-effort (they never block user create, delete, or login) and audited.
+
+## Remote Access (SSH key registry)
+
+Under **Settings → Remote Access**, administrators manage a registry of SSH
+keys used across the app. A key is either a **reference to a key file path** on
+the server, or a **pasted private key stored encrypted at rest** in the
+database (AES via Fernet, using a master key from `APP_MASTER_KEY` or an
+auto-generated `data/master.key`). Pasted keys are write-only — never returned,
+logged, or echoed in errors; the registry shows only the name, kind, and (for
+stored keys) the public key and fingerprint. Every place that needs an SSH key
+(reverse proxy, server templates, jump server) selects a registered key by name
+from a dropdown. A key that is still in use cannot be deleted. Per-user SSH
+keypairs are also stored encrypted at rest with the same master key.
 
 ### User servers
 

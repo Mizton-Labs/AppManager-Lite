@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, ApiError } from "../api";
 import type { BrandingSettings, ReverseProxySettings, SshKey } from "../types";
+import { SubTabs } from "./SubTabs";
 import { setBranding } from "../branding";
 import { fileToLogoDataUrl } from "../lib/image";
 import { resolveIconSrc } from "../lib/links";
@@ -39,17 +40,39 @@ export function GeneralSettings(
   props: { firstRun?: boolean; onConfigured?: () => void } = {},
 ) {
   return (
-    <>
-      <ApplicationBasicInformation
-        markConfigured={!props.firstRun}
-        onSaved={props.onConfigured}
-      />
-      <ReverseProxyConfiguration
-        firstRun={props.firstRun}
-        onConfigured={props.onConfigured}
-      />
-      <AboutCollaborators />
-    </>
+    <SubTabs
+      ariaLabel="General settings sections"
+      // On first run, land on the Reverse Proxy sub-tab: saving that form
+      // (with a successful protected-alias status) is what completes setup.
+      initialTab={props.firstRun ? "reverse-proxy" : undefined}
+      tabs={[
+        {
+          id: "basic",
+          label: "Basic Information",
+          render: () => (
+            <ApplicationBasicInformation
+              markConfigured={!props.firstRun}
+              onSaved={props.onConfigured}
+            />
+          ),
+        },
+        {
+          id: "reverse-proxy",
+          label: "Reverse Proxy",
+          render: () => (
+            <ReverseProxyConfiguration
+              firstRun={props.firstRun}
+              onConfigured={props.onConfigured}
+            />
+          ),
+        },
+        {
+          id: "collaborators",
+          label: "Collaborators",
+          render: () => <AboutCollaborators />,
+        },
+      ]}
+    />
   );
 }
 

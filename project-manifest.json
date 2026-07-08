@@ -183,6 +183,8 @@
       { "name": "APP_SSO_EMAIL_DOMAIN_ALLOWLIST", "default": "", "type": "string", "purpose": "Optional comma-separated email domain allowlist for SSO sign-ins." },
       { "name": "APP_OIDC_ENABLED", "default": "0", "type": "boolean", "purpose": "Enable OIDC/OAuth2 login." },
       { "name": "APP_OIDC_PROVIDER", "default": "oidc", "type": "string", "purpose": "OIDC provider preset: google, microsoft, okta, auth0, keycloak, or generic." },
+      { "name": "APP_MASTER_KEY", "default": "", "type": "secret", "purpose": "Fernet master key for encrypting SSH private keys at rest; if unset, an auto-generated data/master.key (0600) is used. Back it up: changing/losing it makes encrypted data unrecoverable." },
+      { "name": "APP_MASTER_KEY_FILE", "default": "<data_dir>/master.key", "type": "path", "purpose": "Location of the auto-generated master key file when APP_MASTER_KEY is not set." },
       { "name": "APP_OIDC_LABEL", "default": "Single Sign-On", "type": "string", "purpose": "Login button label for OIDC." },
       { "name": "APP_OIDC_CLIENT_ID", "default": "", "type": "secret", "purpose": "OIDC client/application ID." },
       { "name": "APP_OIDC_CLIENT_SECRET", "default": "", "type": "secret", "purpose": "OIDC client secret, including Microsoft Entra/SPN secret values." },
@@ -245,6 +247,10 @@
       { "method": "GET", "path": "/api/settings/provisioning", "auth": "admin", "csrf": false, "summary": "Read LXC/VM provider and provisioning-policy settings (the Proxmox API key is never returned; only a presence flag)." },
       { "method": "PATCH", "path": "/api/settings/provisioning", "auth": "admin", "csrf": true, "summary": "Update provider/policy settings; touching provider connection fields runs a Proxmox connection test and stores its status and log." },
       { "method": "GET", "path": "/api/settings/provisioning/provider-templates", "auth": "admin", "csrf": false, "summary": "Live template/VM list from the provider, honoring the name filter and templates-only toggle." },
+      { "method": "POST", "path": "/api/settings/jump-server/sync", "auth": "admin", "csrf": true, "summary": "Onboard every active user to the configured jump server (idempotent); returns a per-user summary." },
+      { "method": "GET", "path": "/api/settings/ssh-keys", "auth": "admin", "csrf": false, "summary": "List registered SSH keys (registry; no private material returned)." },
+      { "method": "POST", "path": "/api/settings/ssh-keys", "auth": "admin", "csrf": true, "summary": "Register an SSH key: a key file path (kind=path) or a pasted private key stored encrypted (kind=stored, write-only)." },
+      { "method": "DELETE", "path": "/api/settings/ssh-keys/{key_id}", "auth": "admin", "csrf": true, "summary": "Delete a registered SSH key (409 if still referenced)." },
       { "method": "GET", "path": "/api/settings/server-templates", "auth": "admin", "csrf": false, "summary": "List registered server templates." },
       { "method": "POST", "path": "/api/settings/server-templates", "auth": "admin", "csrf": true, "summary": "Register a server template (vmid, name, lxc|vm, optional admin SSH key path)." },
       { "method": "PATCH", "path": "/api/settings/server-templates/{template_id}", "auth": "admin", "csrf": true, "summary": "Update a server template." },
@@ -316,19 +322,25 @@
       {
         "name": "settings",
         "description": "Single pinned row (id = 1) for reverse-proxy, branding, LXC/VM provider (Proxmox; API key stored write-only), and server-provisioning policy configuration.",
-        "columns": ["id", "nginx_host", "nginx_user", "nginx_conf_path", "ssh_key_path", "appmanager_proxy_host", "appmanager_proxy_port", "alias_template", "app_name", "app_logo", "configured", "provider_type", "proxmox_url", "proxmox_token_name", "proxmox_api_key", "proxmox_template_filter", "proxmox_templates_only", "proxmox_verify_tls", "proxmox_conn_status", "proxmox_conn_log", "provisioning_self_service", "provisioning_max_servers", "provisioning_allow_resource_edit", "provisioning_max_cpus", "provisioning_max_memory_gb", "provisioning_max_disk_gb", "updated_at"],
+        "columns": ["id", "nginx_host", "nginx_user", "nginx_conf_path", "ssh_key_path", "reverse_proxy_ssh_key_id", "appmanager_proxy_host", "appmanager_proxy_port", "alias_template", "app_name", "app_logo", "configured", "provider_type", "proxmox_url", "proxmox_token_name", "proxmox_api_key", "proxmox_template_filter", "proxmox_templates_only", "proxmox_verify_tls", "proxmox_conn_status", "proxmox_conn_log", "provisioning_self_service", "provisioning_max_servers", "provisioning_allow_resource_edit", "provisioning_max_cpus", "provisioning_max_memory_gb", "provisioning_max_disk_gb", "jump_enabled", "jump_host", "jump_user", "jump_ssh_key_id", "updated_at"],
+        "primaryKey": ["id"]
+      },
+      {
+        "name": "ssh_keys",
+        "description": "Registry of SSH keys usable across the app: a key file path (kind=path) or a private key stored encrypted at rest (kind=stored). Secret material is never returned by the API.",
+        "columns": ["id", "name", "kind", "path", "encrypted_private_key", "public_key", "fingerprint", "created_at", "updated_at"],
         "primaryKey": ["id"]
       },
       {
         "name": "server_templates",
-        "description": "Admin-registered Proxmox templates (LXC or VM) offered when creating user servers.",
-        "columns": ["id", "vmid", "name", "kind", "admin_ssh_key_path", "created_at", "updated_at"],
+        "description": "Admin-registered Proxmox templates (LXC or VM) offered when creating user servers; admin key referenced from the ssh_keys registry.",
+        "columns": ["id", "vmid", "name", "kind", "admin_ssh_key_path", "admin_ssh_key_id", "created_at", "updated_at"],
         "primaryKey": ["id"]
       },
       {
         "name": "user_servers",
         "description": "Per-user provisioned or referenced LXC/VM servers with resource accounting (admin_modified rows are exempt from user quotas) and a secret-free creation transcript.",
-        "columns": ["id", "user_id", "name", "hostname", "template_id", "template_name", "vmid", "node", "kind", "ip_address", "cpus", "memory_gb", "disk_gb", "admin_modified", "admin_ssh_key_path", "status", "last_log", "created_at", "updated_at"],
+        "columns": ["id", "user_id", "name", "hostname", "template_id", "template_name", "vmid", "node", "kind", "ip_address", "cpus", "memory_gb", "disk_gb", "admin_modified", "admin_ssh_key_path", "admin_ssh_key_id", "status", "last_log", "created_at", "updated_at"],
         "primaryKey": ["id"],
         "foreignKeys": ["user_id -> users.id (cascade)", "template_id -> server_templates.id (set null)"]
       }

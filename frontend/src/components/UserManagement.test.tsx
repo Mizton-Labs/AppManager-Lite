@@ -73,6 +73,11 @@ afterEach(() => {
   delete (document as unknown as { execCommand?: unknown }).execCommand;
 });
 
+/** Click a User Management sub-tab by its visible label. */
+async function openTab(label: RegExp) {
+  await userEvent.click(await screen.findByRole("button", { name: label }));
+}
+
 describe("UserManagement credential copy", () => {
   it("copies the generated password via the Clipboard API", async () => {
     stubUsers();
@@ -130,6 +135,7 @@ describe("UserManagement credential copy", () => {
   it("creates a bundle template", async () => {
     const fetchMock = stubUsers();
     render(<UserManagement currentUser={makeUser({ id: 1, role: "admin" })} />);
+    await openTab(/Bundle Templates/i);
 
     await screen.findByRole("heading", { name: /bundle templates/i });
     await userEvent.type(screen.getByLabelText(/template name/i), "Shell profile");
@@ -172,6 +178,7 @@ describe("UserManagement credential copy", () => {
   it("offers explicit host and IP bundle mapping values", async () => {
     stubUsers();
     render(<UserManagement currentUser={makeUser({ id: 1, role: "admin" })} />);
+    await openTab(/Bundle Templates/i);
 
     await screen.findByRole("heading", { name: /bundle templates/i });
     expect(screen.getByRole("option", { name: /apps server host$/i })).toBeInTheDocument();
