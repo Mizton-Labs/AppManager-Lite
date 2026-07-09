@@ -188,7 +188,9 @@ def _login(app, username, password):
 def test_server_name_and_ip_validation() -> None:
     assert servers.validate_server_name(" My Server-1 ") == "My Server-1"
     assert servers.hostname_for("My Server-1") == "my-server-1"
-    for bad in ("", "-lead", "a" * 41, "semi;colon"):
+    # 63 chars is the maximum; 64 is rejected.
+    assert servers.validate_server_name("a" * 63) == "a" * 63
+    for bad in ("", "-lead", "a" * 64, "semi;colon"):
         with pytest.raises(servers.ServerError):
             servers.validate_server_name(bad)
     assert servers.validate_ip("10.0.0.7") == "10.0.0.7"
@@ -260,7 +262,9 @@ def test_admin_creates_lxc_server_with_key_install(admin, monkeypatch) -> None:
         assert '"no such user"; exit 1' in argv[-1]
 
     listed = client.get(f"/api/users/{user_id}/servers")
-    assert [s["name"] for s in listed.json()] == ["coder box"]
+    # The stored name carries the slugified static prefix "<template>-<owner-id>-";
+    # the request's "coder box" is only the suffix.
+    assert [s["name"] for s in listed.json()] == ["debian-coder-srvuser-coder box"]
 
 
 def test_lxc_records_in_guest_ip_over_hypervisor_ip(admin, monkeypatch) -> None:
@@ -1431,6 +1435,213 @@ def test_duplicate_server_name_rejected(admin, monkeypatch) -> None:
         headers={"X-CSRF-Token": csrf},
     )
     assert dup.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Server-name composition + global uniqueness (issue_015-r5 F1)
+# ---------------------------------------------------------------------------
+
+
+def test_server_name_composed_with_static_prefix(admin, monkeypatch) -> None:
+    """The request 'name' is only a suffix; the stored name is
+    '<template>-<owner-derived-id>-<suffix>'."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)  # name "Debian Coder"
+    created = _create_member(client, csrf, username="morris@example.com")
+    user_id = created["user"]["id"]
+    assert created["user"]["user_id"] == "morris"
+
+    resp = client.post(
+        f"/api/users/{user_id}/servers",
+        json={"template_id": template["id"], "name": "test-x",
+              "install_pubkey": False},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 201, resp.text
+    # The template portion is slugified (lowercase, dashes).
+    assert resp.json()["name"] == "debian-coder-morris-test-x"
+
+
+def test_server_name_prefix_applies_to_self_service_creator(
+    admin, monkeypatch
+) -> None:
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    client.patch(
+        "/api/settings/provisioning",
+        json={"provisioning_self_service": True},
+        headers={"X-CSRF-Token": csrf},
+    )
+    created = _create_member(
+        client, csrf, username="morris@example.com", self_service=True
+    )
+    user_id = created["user"]["id"]
+    member, member_csrf = _login(
+        client.app, "morris@example.com", created["password"]
+    )
+    resp = member.post(
+        f"/api/users/{user_id}/servers",
+        json={"template_id": template["id"], "name": "mybox",
+              "install_pubkey": False},
+        headers={"X-CSRF-Token": member_csrf},
+    )
+    assert resp.status_code == 201, resp.text
+    # Self-service creators get the same forced prefix (based on their own id).
+    assert resp.json()["name"] == "debian-coder-morris-mybox"
+
+
+def test_server_name_globally_unique_across_users(admin, monkeypatch) -> None:
+    """Server names are globally unique: a name already taken by another user
+    (here via two templates that compose to the same string) is rejected."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    # Two templates whose names differ but can compose to the same full name:
+    #   "Debian Coder" + owner "morris" + suffix "x"      -> "Debian Coder-morris-x"
+    #   "Debian"       + owner "morris" + suffix "coder-x" would differ; instead
+    # we rely on the repository-level guarantee plus a same-name cross-user
+    # attempt constructed directly.
+    template = _add_template(client, csrf)
+    u1 = _create_member(client, csrf, username="morris@example.com")
+    r1 = client.post(
+        f"/api/users/{u1['user']['id']}/servers",
+        json={"template_id": template["id"], "name": "shared",
+              "install_pubkey": False},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r1.status_code == 201
+    full = r1.json()["name"]  # "Debian Coder-morris-shared"
+
+    # A second user; insert a server for THEM with the exact same full name
+    # directly, then confirm server_name_exists sees it globally.
+    from app.db import get_connection
+    from app import repository
+    u2 = _create_member(client, csrf, username="nadia@example.com")
+    with get_connection() as conn:
+        assert repository.server_name_exists(conn, full) is True
+        assert repository.server_name_exists(conn, full.upper()) is True
+        assert repository.server_name_exists(conn, "no-such-name") is False
+        # The DB unique index enforces global uniqueness case-insensitively:
+        # inserting the same name for a DIFFERENT user raises (backstops the
+        # application pre-check against a cross-user race).
+        import pytest as _pytest
+        with _pytest.raises(ValueError):
+            repository.create_user_server(
+                conn, user_id=u2["user"]["id"], name=full.upper(),
+                kind="lxc", status="created",
+            )
+
+
+def test_server_name_globally_unique_endpoint_conflict(admin, monkeypatch) -> None:
+    """The create endpoint rejects a name already used by ANOTHER user."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    u1 = _create_member(client, csrf, username="morris@example.com")
+    r1 = client.post(
+        f"/api/users/{u1['user']['id']}/servers",
+        json={"template_id": template["id"], "name": "shared",
+              "install_pubkey": False},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r1.status_code == 201
+    # Rename u1's server directly to a name a second user could also compose.
+    from app.db import get_connection
+    u2 = _create_member(client, csrf, username="nadia@example.com")
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE user_servers SET name = ? WHERE id = ?",
+            ("debian-coder-nadia-clash", r1.json()["id"]),
+        )
+    # Now u2 trying to create "clash" composes the same name -> global 409.
+    dup = client.post(
+        f"/api/users/{u2['user']['id']}/servers",
+        json={"template_id": template["id"], "name": "clash",
+              "install_pubkey": False},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert dup.status_code == 409
+    assert "different name suffix" in dup.json()["detail"]
+
+
+def test_server_name_suffix_too_long_rejected(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)  # "Debian Coder" (12 chars)
+    created = _create_member(client, csrf, username="morris@example.com")
+    user_id = created["user"]["id"]
+    # prefix "Debian Coder-morris-" = 20 chars -> 43 available. 44 must fail.
+    resp = client.post(
+        f"/api/users/{user_id}/servers",
+        json={"template_id": template["id"], "name": "a" * 44,
+              "install_pubkey": False},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 400
+    assert "at most 43 character" in resp.json()["detail"]
+    # Exactly 43 fits (full name = 63).
+    ok = client.post(
+        f"/api/users/{user_id}/servers",
+        json={"template_id": template["id"], "name": "a" * 43,
+              "install_pubkey": False},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert ok.status_code == 201, ok.text
+    assert len(ok.json()["name"]) == 63
+
+
+def test_server_name_empty_suffix_rejected(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    created = _create_member(client, csrf)
+    user_id = created["user"]["id"]
+    resp = client.post(
+        f"/api/users/{user_id}/servers",
+        json={"template_id": template["id"], "name": "   ",
+              "install_pubkey": False},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 400
+
+
+def test_server_name_prefix_slugifies_odd_template_name(admin, monkeypatch) -> None:
+    """A template whose name has spaces/punctuation still composes a valid
+    full server name (the template portion is slugified)."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    # Template name with spaces, punctuation, mixed case.
+    tpl = client.post(
+        "/api/settings/server-templates",
+        json={"vmid": 9001, "name": "Coder!! (Prod)", "kind": "lxc",
+              "admin_ssh_key_path": "/keys/admin"},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    created = _create_member(client, csrf, username="morris@example.com")
+    user_id = created["user"]["id"]
+    resp = client.post(
+        f"/api/users/{user_id}/servers",
+        json={"template_id": tpl["id"], "name": "x", "install_pubkey": False},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 201, resp.text
+    # "Coder!! (Prod)" -> "coder-prod"
+    assert resp.json()["name"] == "coder-prod-morris-x"
 
 
 def test_account_server_helpers(admin, monkeypatch) -> None:

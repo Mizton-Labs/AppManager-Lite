@@ -128,6 +128,7 @@ function MyServersCard(props: { user: ApiUser }) {
         canCreate={access?.can_create ?? false}
         canDelete={props.user.self_service || props.user.role === "admin"}
         isAdmin={props.user.role === "admin"}
+        userDerivedId={props.user.user_id}
         defaultPubkeyUser={props.user.user_id}
       />
     </section>

@@ -1274,9 +1274,12 @@ class UserServerOut(BaseModel):
 
 class CreateUserServerRequest(BaseModel):
     template_id: int = Field(ge=1)
-    name: str = Field(min_length=1, max_length=40)
+    # The user-supplied SUFFIX only; the server's full name is composed
+    # server-side as "<template>-<owner-derived-id>-<suffix>". Capped so the
+    # composed name still fits the 63-char server-name limit (validated after
+    # composition, which returns a clearer "N characters available" error).
+    name: str = Field(min_length=1, max_length=63)
     install_pubkey: bool = True
-    # Comma-separated OS usernames that receive the owner's public key.
     pubkey_users: str = Field(default="", max_length=512)
 
 

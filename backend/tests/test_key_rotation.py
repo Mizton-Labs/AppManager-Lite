@@ -233,7 +233,7 @@ def test_regenerate_rotates_key_on_servers(admin, monkeypatch) -> None:
     ssh = _FakeSsh(monkeypatch)
     created = _create_member(client, csrf)
     user_id = created["user"]["id"]
-    _provision_server(client, csrf, user_id, monkeypatch)
+    provisioned = _provision_server(client, csrf, user_id, monkeypatch)
 
     member, member_csrf = _login(
         client.app, "rotuser@example.com", created["password"]
@@ -249,8 +249,10 @@ def test_regenerate_rotates_key_on_servers(admin, monkeypatch) -> None:
     assert body["public_key"] != old_pub
     assert len(body["rotation"]) == 1
     entry = body["rotation"][0]
+    # The server name carries the composed static prefix (issue_015-r5 F1).
+    assert provisioned["name"] == "tpl-rotuser-box"
     assert entry == {
-        "server": "box",
+        "server": provisioned["name"],
         "ip_address": "10.0.7.42",
         "status": "updated",
         "detail": entry["detail"],
@@ -358,7 +360,7 @@ def test_regenerate_reports_skips_and_failures(admin, monkeypatch) -> None:
     )
     assert resp.status_code == 200, resp.text
     rotation = {r["server"]: r for r in resp.json()["rotation"]}
-    assert rotation["box"]["status"] == "failed"
+    assert rotation[server["name"]]["status"] == "failed"
     assert rotation["no-ip"]["status"] == "skipped"
     assert "no IP address" in rotation["no-ip"]["detail"]
     assert server["id"]  # keep flake-happy reference
@@ -476,7 +478,8 @@ def test_default_ssh_config_generated_from_servers(admin, monkeypatch) -> None:
     download = member.get(f"/api/account/bundles/{default['id']}/download")
     assert download.status_code == 200
     text = download.text
-    assert "Host coder-box" in text
+    # The Host alias is derived from the composed name "Tpl-rotuser-coder box".
+    assert "Host tpl-rotuser-coder-box" in text
     assert "Hostname 10.0.7.42" in text
     assert "User rotuser" in text
     assert "IdentityFile ~/.ssh/id_ed25519" in text

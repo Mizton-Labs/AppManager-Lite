@@ -1210,11 +1210,50 @@ def create_user_server(
         raise HTTPException(status_code=404, detail="Server template not found")
 
     template_main_user = (template.get("main_os_user") or "").strip()
+    # The server's full name always carries a static prefix so every server
+    # follows the same "<template>-<owner-id>-<suffix>" convention (matching the
+    # auto-provision naming). The request's `name` is only the user-chosen
+    # suffix; the prefix is derived from the template and the TARGET user, for
+    # admin- and self-service-initiated creations alike. The template portion is
+    # slugified so an oddly-named template can never compose an invalid name.
+    derived_uid = target.get("user_id") or repository.derive_user_id(
+        target.get("username", "") or ""
+    )
+    if not derived_uid:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This user has no valid derived id to build a server name; an "
+                "administrator should adjust the username."
+            ),
+        )
+    prefix = servers.server_name_prefix(template.get("name", ""), derived_uid)
+    suffix = payload.name.strip()
     try:
-        name = servers.validate_server_name(payload.name)
         os_users = servers.parse_os_users(payload.pubkey_users)
     except servers.ServerError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not suffix:
+        raise HTTPException(
+            status_code=400, detail="A server name suffix is required."
+        )
+    try:
+        name = servers.validate_server_name(prefix + suffix)
+    except servers.ServerError as exc:
+        available = servers.MAX_SERVER_NAME_LEN - len(prefix)
+        if available <= 0:
+            detail = (
+                "The template and account names already exceed the server-name "
+                f"limit ({servers.MAX_SERVER_NAME_LEN}); an administrator must "
+                "shorten the template name."
+            )
+        else:
+            detail = (
+                f"The full server name '{prefix}{suffix}' is invalid: {exc} "
+                f"The suffix may be at most {available} character(s) and may "
+                "contain letters, digits, spaces, dots, dashes, and underscores."
+            )
+        raise HTTPException(status_code=400, detail=detail) from exc
     if payload.install_pubkey:
         if template_main_user:
             # A template main user overrides the request/default: the user's
@@ -1228,13 +1267,16 @@ def create_user_server(
             except servers.ServerError:
                 os_users = []
 
-    if any(
-        s["name"].lower() == name.lower()
-        for s in repository.list_user_servers(conn, user_id)
-    ):
+    # Server names are globally unique (case-insensitive): the composed name
+    # already embeds owner and template, so a collision means the suffix must
+    # change.
+    if repository.server_name_exists(conn, name):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"A server named '{name}' already exists for this user",
+            detail=(
+                f"A server named '{name}' already exists. Choose a different "
+                "name suffix."
+            ),
         )
 
     provider_config = _provider_config(row)
@@ -1370,11 +1412,25 @@ def _clone_and_persist_server(
         server = repository.create_user_server(conn, name=name, **row_kwargs)
     except ValueError:
         # Concurrent create raced past the pre-check; never lose the record
-        # (and its transcript) of an already-cloned guest.
-        fallback = f"{name}-{outcome.get('vmid') or 'retry'}"[:40]
-        server = repository.create_user_server(
-            conn, name=fallback, **row_kwargs
-        )
+        # (and its transcript) of an already-cloned guest. Append the unique
+        # vmid, reserving space so the discriminator is not truncated away even
+        # when the composed name is already at the length limit.
+        disc = str(outcome.get("vmid") or "retry")
+        head = name[: max(0, servers.MAX_SERVER_NAME_LEN - len(disc) - 1)]
+        fallback = f"{head}-{disc}"[: servers.MAX_SERVER_NAME_LEN]
+        try:
+            server = repository.create_user_server(
+                conn, name=fallback, **row_kwargs
+            )
+        except ValueError:
+            # Extremely unlikely (same vmid colliding); fall back to a globally
+            # unique-enough name rather than 500 and lose the guest record.
+            fallback = f"{head}-{disc}-{id(outcome) & 0xffff:x}"[
+                : servers.MAX_SERVER_NAME_LEN
+            ]
+            server = repository.create_user_server(
+                conn, name=fallback, **row_kwargs
+            )
     # Trusted-access mesh: once the new server record exists, reconcile the SSH
     # mesh across all of this user's trusted servers created from templates that
     # enable trusted access. Best-effort and fully guarded: a mesh failure must
@@ -1460,10 +1516,15 @@ def provision_default_servers(
                 "detail": "The LXC/VM provider is not configured yet.",
             })
             continue
-        # Default naming convention: TEMPLATE_NAME-USERID (validated + capped).
-        raw_name = f"{template_name}-{derived_user_id}"
+        # Default naming convention: <template-slug>-USERID (validated + capped),
+        # matching the static prefix used for user-created servers.
+        raw_name = servers.server_name_prefix(
+            template_name, derived_user_id
+        ).rstrip("-")
         try:
-            name = servers.validate_server_name(raw_name[:40])
+            name = servers.validate_server_name(
+                raw_name[: servers.MAX_SERVER_NAME_LEN]
+            )
         except servers.ServerError as exc:
             results.append({
                 "template_id": template_id,

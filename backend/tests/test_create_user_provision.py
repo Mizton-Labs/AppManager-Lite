@@ -109,13 +109,13 @@ def test_create_user_provisions_selected_templates(admin, monkeypatch) -> None:
     assert results[0]["template_id"] == tpl["id"]
     assert results[0]["status"] == "created"
 
-    # The server exists and follows the TEMPLATE_NAME-USERID naming convention.
+    # The server exists and follows the <template-slug>-USERID naming convention.
     user_id = body["user"]["id"]
     derived = body["user"]["user_id"]
     with get_connection() as conn:
         servers_rows = repository.list_user_servers(conn, user_id)
     assert len(servers_rows) == 1
-    assert servers_rows[0]["name"] == f"Debian Coder-{derived}"
+    assert servers_rows[0]["name"] == f"debian-coder-{derived}"
     assert servers_rows[0]["status"] == "created"
 
 

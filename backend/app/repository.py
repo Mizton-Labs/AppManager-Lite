@@ -1832,6 +1832,19 @@ def list_user_servers(
     return [_row_to_user_server(r) for r in rows]
 
 
+def server_name_exists(conn: sqlite3.Connection, name: str) -> bool:
+    """True when any server (any owner) already has this name, case-insensitive.
+
+    Server names are globally unique in AppManager (they embed the owner and
+    template), so this backs the pre-create uniqueness check.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM user_servers WHERE lower(name) = lower(?) LIMIT 1",
+        (name,),
+    ).fetchone()
+    return row is not None
+
+
 def get_user_server(
     conn: sqlite3.Connection, user_id: int, server_id: int
 ) -> dict[str, Any] | None:

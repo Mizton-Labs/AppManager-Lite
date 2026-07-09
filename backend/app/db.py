@@ -713,3 +713,16 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     _add_column(
         conn, "user_servers", "deletion_error", "TEXT NOT NULL DEFAULT ''"
     )
+
+    # Enforce globally-unique server names case-insensitively (issue_015-r5 F1)
+    # as a backstop to the application-level pre-check. Best-effort: if legacy
+    # data already contains a case-insensitive duplicate, the index cannot be
+    # created; leave it and rely on the application check rather than failing
+    # startup. New collisions are prevented once the index exists.
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_user_servers_name_ci "
+            "ON user_servers(lower(name))"
+        )
+    except sqlite3.IntegrityError:
+        pass
