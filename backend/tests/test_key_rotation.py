@@ -364,6 +364,82 @@ def test_regenerate_reports_skips_and_failures(admin, monkeypatch) -> None:
     assert server["id"]  # keep flake-happy reference
 
 
+def _enable_jump(client, csrf, key_id, host="10.0.0.9"):
+    r = client.patch(
+        "/api/settings/provisioning",
+        json={"jump_enabled": True, "jump_host": host,
+              "jump_management_user": "root", "jump_user": "root",
+              "jump_ssh_key_id": key_id},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_regenerate_jump_key_targets_shared_account(admin, monkeypatch) -> None:
+    """Regression (r4-F4): in shared mode the jump key rotates on the shared
+    jumper account, stamped with the owner's id -- not the user's own account.
+
+    Previously the rotation always used ``os_user_for(user)`` (the per-user
+    account) even in shared mode, so the shared jumper account was never
+    touched -- the user's old key kept working on 'cdt-jumper' while the
+    per-user account (unused for jumping in shared mode) was rotated instead.
+    """
+    client, csrf, _ = admin
+    ssh = _FakeSsh(monkeypatch)
+    key = client.post(
+        "/api/settings/ssh-keys",
+        json={"name": "jump key", "kind": "path", "path": "/jump/key"},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    created = _create_member(client, csrf)
+    _enable_jump(client, csrf, key["id"])
+    # Switch the bastion to shared mode (dedicated endpoint re-syncs members).
+    r = client.post(
+        "/api/settings/jump-server/account-mode",
+        json={"account_mode": "shared", "jumper_user": "cdt-jumper",
+              "acknowledge_sync": True},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["account_mode"] == "shared"
+
+    member, member_csrf = _login(
+        client.app, "rotuser@example.com", created["password"]
+    )
+    old_pub = member.get("/api/account/ssh-key").json()["public_key"]
+    ssh.commands.clear()
+    resp = member.post(
+        "/api/account/ssh-key/regenerate",
+        headers={"X-CSRF-Token": member_csrf},
+    )
+    assert resp.status_code == 200, resp.text
+    jump = [r for r in resp.json()["rotation"] if r["server"] == "jump server"]
+    assert jump and jump[0]["status"] == "updated", resp.json()["rotation"]
+
+    # The member's derived id is 'rotuser'; the shared account is 'cdt-jumper'.
+    # Both jump commands must target the shared account (via 'getent passwd
+    # cdt-jumper'), never the user's own account.
+    jump_cmds = [c[-1] for c in ssh.commands if "getent passwd cdt-jumper" in c[-1]]
+    assert jump_cmds, "expected the shared jumper account to be touched"
+    assert not any("getent passwd rotuser" in c[-1] for c in ssh.commands)
+    new_blob = resp.json()["public_key"].split()[1]
+    old_blob = old_pub.split()[1]
+    # Install (onboard): appends the new key to the shared account, stamped
+    # with the OWNER's provenance id -- not the shared account name.
+    installs = [
+        s for s in jump_cmds
+        if "AppManager-managed:rotuser" in s and new_blob in s
+    ]
+    assert installs, "expected a stamped new-key install on the shared account"
+    # Removal (offboard): filters the OLD blob out of the shared account's
+    # authorized_keys (grep -vF <old_blob>).
+    removals = [
+        s for s in jump_cmds
+        if "grep -vF" in s and old_blob in s
+    ]
+    assert removals, "expected the old key to be removed from the shared account"
+
+
 # ---------------------------------------------------------------------------
 # SSH Configuration File (generic fallback + user_id mapping)
 # ---------------------------------------------------------------------------

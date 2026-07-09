@@ -714,14 +714,25 @@ def _rotate_key_on_servers(
     try:
         jump_config = jumpserver.load_config(conn)
     except Exception:  # noqa: BLE001
-        jump_config = jumpserver.JumpConfig(False, "", "", "")
+        jump_config = jumpserver.JumpConfig(
+            enabled=False, host="", key_path="", management_user=""
+        )
     if jump_config.enabled:
-        os_user = jumpserver.os_user_for(user)
+        # The bastion account depends on the configured account model: the
+        # user's own account in 'per_user' mode, or the shared jumper account
+        # in 'shared' mode (matching jumpserver.sync_user). The owner's derived
+        # id is still used as the key's provenance stamp even in shared mode.
+        account = jumpserver.target_account(jump_config, user)
+        owner_id = jumpserver.os_user_for(user)
         jentry = ServerKeyRotationOut(
             server="jump server", ip_address=jump_config.host, status="skipped"
         )
         if not jump_config.ready:
             jentry.detail = "jump server enabled but not fully configured"
+        elif not servers._OS_USER_RE.match(account or ""):
+            jentry.detail = f"jump account {account!r} is not a valid username"
+        elif not servers._OS_USER_RE.match(owner_id or ""):
+            jentry.detail = f"owner id {owner_id!r} is not a valid stamp"
         elif not old_public_key:
             jentry.detail = "no previous key on record; nothing to replace"
         else:
@@ -730,11 +741,12 @@ def _rotate_key_on_servers(
             # remove the old one. If removal fails, the old key lingers (stale)
             # but the user is not locked out - reported as failed for follow-up.
             installed = jumpserver.onboard_user(
-                jump_config, os_user=os_user,
+                jump_config, os_user=account,
                 public_key=new_public_key, result=jresult,
+                stamp_id=owner_id,
             )
             removed = jumpserver.offboard_user(
-                jump_config, os_user=os_user,
+                jump_config, os_user=account,
                 public_key=old_public_key, result=jresult,
             )
             if installed and removed:
