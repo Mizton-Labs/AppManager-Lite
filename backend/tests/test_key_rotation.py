@@ -121,6 +121,26 @@ def test_rotate_public_key_command_shape(monkeypatch) -> None:
     assert "authorized_keys" in remote
 
 
+def test_rotate_public_key_stamps_new_line_with_marker(monkeypatch) -> None:
+    ssh = _FakeSsh(monkeypatch)
+    result = proxmox.ProxmoxResult()
+    outcome = servers.rotate_public_key(
+        ip="10.0.7.42",
+        admin_key_path="/keys/admin",
+        old_public_key="ssh-ed25519 AAAAOLDBLOB old@comment",
+        new_public_key="ssh-ed25519 AAAANEWBLOB rotuser@example.com",
+        result=result,
+        marker="AppManager-managed:rotuser",
+    )
+    assert outcome == "updated"
+    remote = ssh.commands[0][-1]
+    # The appended new line carries the AppManager marker, not the source
+    # comment; the old key is still matched/removed by its blob.
+    assert "AppManager-managed:rotuser" in remote
+    assert "rotuser@example.com" not in remote
+    assert "AAAANEWBLOB" in remote
+
+
 def test_rotate_public_key_rejects_malformed_keys(monkeypatch) -> None:
     _FakeSsh(monkeypatch)
     result = proxmox.ProxmoxResult()

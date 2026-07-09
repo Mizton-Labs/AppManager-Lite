@@ -568,6 +568,15 @@ Server**, and **Server Templates**.
   config (AppManager never dials it), so changing it needs no re-sync when it
   points to the same jump server.
 
+Every SSH public key AppManager installs on a remote host — on the jump server,
+on a user's servers, and across the trusted-access mesh — is stamped with an
+identifying comment on the `authorized_keys` line so its origin is clear:
+`AppManager-managed:<user_id>` for a user's own key and
+`AppManager-trusted:<user_id>` for keys shared between a user's servers. Installs
+are idempotent by the key blob (any earlier copy of the same key is replaced, so
+re-syncing never leaves duplicates), and key removal/rotation still match on the
+blob, so the comment is purely informational.
+
 When creating a user, administrators can also **auto-provision servers**: the
 Create user card lists every server template with a toggle (all enabled by
 default), and one server is created per selected template, named

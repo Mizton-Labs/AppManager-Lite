@@ -15,14 +15,31 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 # Comments may end up on remote ``authorized_keys`` lines; keep them to a safe
-# characterset regardless of what the username contains.
+# characterset regardless of what the username contains. Colon is allowed so
+# provenance markers like ``AppManager-managed:<user_id>`` survive intact.
 _SAFE_COMMENT_CHARS = set(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.@-_"
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.@-_:"
 )
 
 
 def _safe_comment(comment: str) -> str:
     return "".join(ch for ch in comment if ch in _SAFE_COMMENT_CHARS)[:64]
+
+
+def stamp_public_key(public_key: str, marker: str) -> str:
+    """Return the OpenSSH public key line with its comment set to ``marker``.
+
+    Keeps the ``<type> <blob>`` prefix and replaces (or adds) the trailing
+    comment field so that keys AppManager installs on remote hosts are clearly
+    attributable (e.g. ``AppManager-managed:<user_id>``). The marker is passed
+    through ``_safe_comment`` so it is always a safe single token. If the key
+    line is malformed (no blob) it is returned unchanged.
+    """
+    safe = _safe_comment(marker)
+    parts = public_key.strip().split()
+    if len(parts) < 2 or not safe:
+        return public_key.strip()
+    return f"{parts[0]} {parts[1]} {safe}"
 
 
 def generate_keypair(comment: str = "") -> tuple[str, str]:

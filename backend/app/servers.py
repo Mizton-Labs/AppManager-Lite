@@ -18,7 +18,7 @@ import subprocess  # noqa: S404 - argv arrays only, shell=False
 import sqlite3
 from typing import Any
 
-from . import keystore, proxmox, repository
+from . import keystore, proxmox, repository, sshkeys
 from .config import get_settings
 from .proxmox import ProxmoxResult
 
@@ -167,18 +167,36 @@ def install_public_key(
     public_key: str,
     result: ProxmoxResult,
     enable_sudo: bool = False,
+    marker: str = "",
 ) -> bool:
     """Append ``public_key`` to authorized_keys for each OS user on the host.
 
-    Idempotent: the key line is only added when absent. Only the public key
-    travels; the admin key stays on this server (path passed to ssh -i).
-    When ``enable_sudo`` is set, each OS user is added to the sudo/wheel group.
+    Idempotent: any existing line carrying the same key blob is removed first,
+    then a single canonical line is appended, so re-runs converge to exactly one
+    entry (and an old differently-commented copy is replaced rather than
+    duplicated). Only the public key travels; the admin key stays on this server
+    (path passed to ssh -i). When ``enable_sudo`` is set, each OS user is added
+    to the sudo/wheel group. When ``marker`` is set, the installed line's
+    comment is rewritten to it (e.g. ``AppManager-managed:<user_id>``) so the
+    key is clearly attributable to AppManager on the remote host.
     """
     if not os_users:
         result.log("No OS users requested for key installation; skipping")
         return True
+    stamped = sshkeys.stamp_public_key(public_key, marker) if marker else (
+        public_key.strip()
+    )
+    try:
+        blob = stamped.split()[1]
+    except IndexError:
+        result.fail("public key to install has an unexpected format")
+        return False
+    if not _KEY_BLOB_RE.match(blob):
+        result.fail("public key blob has an unexpected format")
+        return False
     ok = True
-    quoted_key = shlex.quote(public_key.strip())
+    quoted_key = shlex.quote(stamped)
+    quoted_blob = shlex.quote(blob)
     for os_user in os_users:
         if not _OS_USER_RE.match(os_user):  # defense in depth
             result.fail(f"invalid OS username {os_user!r}")
@@ -193,6 +211,10 @@ def install_public_key(
             if enable_sudo
             else ""
         )
+        # Rewrite authorized_keys atomically: build the deduped content (minus
+        # any existing line for this blob) plus the canonical stamped line in a
+        # temp file, then rename over the original. A mid-script death can never
+        # leave the file truncated/empty (which would lock the user out).
         remote = (
             "sh -c "
             + shlex.quote(
@@ -200,10 +222,10 @@ def install_public_key(
                 f"h=$(getent passwd {quoted_user} | cut -d: -f6); "
                 '[ -n "$h" ] || { echo "no such user"; exit 1; }; '
                 'mkdir -p "$h/.ssh"; chmod 700 "$h/.ssh"; '
-                f"grep -qxF {quoted_key} \"$h/.ssh/authorized_keys\" "
-                f"2>/dev/null || printf '%s\\n' {quoted_key} "
-                '>> "$h/.ssh/authorized_keys"; '
-                'chmod 600 "$h/.ssh/authorized_keys"; '
+                'f="$h/.ssh/authorized_keys"; touch "$f"; t="$f.appmgr.tmp"; '
+                f"{{ grep -vF {quoted_blob} \"$f\" || [ $? -eq 1 ]; }} > \"$t\"; "
+                f"printf '%s\\n' {quoted_key} >> \"$t\"; "
+                'chmod 600 "$t"; mv "$t" "$f"; '
                 f'chown -R {quoted_user}: "$h/.ssh"; '
                 + sudo_step
                 + "true"
@@ -319,6 +341,7 @@ def reconcile_trusted_mesh(
                 os_users=[os_user],
                 public_key=pub,
                 result=result,
+                marker=f"AppManager-trusted:{os_user}",
             ):
                 ok = False
     if ok:
@@ -336,6 +359,7 @@ def rotate_public_key(
     old_public_key: str,
     new_public_key: str,
     result: ProxmoxResult,
+    marker: str = "",
 ) -> str:
     """Replace the old public key with the new one on a server.
 
@@ -343,7 +367,8 @@ def rotate_public_key(
     carrying the old key blob, and appends the new key to each file that had
     the old one. Matching is by the base64 key blob so comment changes do
     not matter. Verification (old gone, new present) happens inline, per
-    file, in the same remote script.
+    file, in the same remote script. When ``marker`` is set, the appended new
+    line's comment is rewritten to it (e.g. ``AppManager-managed:<user_id>``).
 
     Returns ``"updated"``, ``"noop"`` (old key not present anywhere), or
     ``"failed"``.
@@ -356,18 +381,24 @@ def rotate_public_key(
     if not _KEY_BLOB_RE.match(old_blob):
         result.fail("stored public key blob has an unexpected format")
         return "failed"
+    new_line = sshkeys.stamp_public_key(new_public_key, marker) if marker else (
+        new_public_key.strip()
+    )
     quoted_old = shlex.quote(old_blob)
-    quoted_new = shlex.quote(new_public_key.strip())
+    quoted_new = shlex.quote(new_line)
     # NOTE: ``grep -v`` exits 1 when it selects no lines - the normal case
     # for a single-key authorized_keys file - so that status is tolerated.
+    # Each file is rewritten atomically (build in a temp file, then rename) so a
+    # mid-script death can never leave authorized_keys truncated.
     remote = "sh -c " + shlex.quote(
         "changed=''; fail=''; "
         "for f in /root/.ssh/authorized_keys /home/*/.ssh/authorized_keys; do "
         '[ -f "$f" ] || continue; '
         f"if grep -qF {quoted_old} \"$f\"; then "
-        f"{{ grep -vF {quoted_old} \"$f\" > \"$f.tmp\" || [ $? -eq 1 ]; }} "
-        '&& cat "$f.tmp" > "$f"; rm -f "$f.tmp"; '
-        f"grep -qxF {quoted_new} \"$f\" || printf '%s\\n' {quoted_new} >> \"$f\"; "
+        't="$f.appmgr.tmp"; '
+        f"{{ grep -vF {quoted_old} \"$f\" || [ $? -eq 1 ]; }} > \"$t\"; "
+        f"grep -qxF {quoted_new} \"$t\" || printf '%s\\n' {quoted_new} >> \"$t\"; "
+        'chmod 600 "$t"; mv "$t" "$f"; '
         f"if grep -qF {quoted_old} \"$f\"; then fail=\"$fail $f(old-present)\"; fi; "
         f"grep -qF {quoted_new} \"$f\" || fail=\"$fail $f(new-missing)\"; "
         'changed="$changed $f"; '
@@ -399,6 +430,7 @@ def create_server(
     os_users: list[str],
     admin_key_path: str | None = None,
     enable_sudo: bool = False,
+    owner_marker: str = "",
 ) -> dict[str, Any]:
     """Clone a template into a new user server.
 
@@ -501,6 +533,7 @@ def create_server(
             public_key=owner_public_key,
             result=result,
             enable_sudo=enable_sudo,
+            marker=owner_marker or "AppManager-managed",
         ):
             outcome["transcript"] = result.transcript
             return outcome

@@ -638,6 +638,10 @@ def _rotate_key_on_servers(
     verification summary. Nothing here raises.
     """
     summary: list[ServerKeyRotationOut] = []
+    owner_uid = user.get("user_id") or repository.derive_user_id(
+        user.get("username", "") or ""
+    )
+    owner_marker = f"AppManager-managed:{owner_uid}"
     for server in repository.list_user_servers(conn, user["id"]):
         entry = ServerKeyRotationOut(
             server=server["name"],
@@ -683,6 +687,7 @@ def _rotate_key_on_servers(
             old_public_key=old_public_key,
             new_public_key=new_public_key,
             result=result,
+            marker=owner_marker,
         )
         if rotation_status == "updated":
             entry.status = "updated"
