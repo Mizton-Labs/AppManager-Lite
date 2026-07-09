@@ -25,6 +25,9 @@ const defaults: ProvisioningSettings = {
   jump_user: "",
   jump_port: 22,
   jump_ssh_key_id: null,
+  jump_bundle_override: false,
+  jump_bundle_host: "",
+  jump_bundle_port: 22,
 };
 
 function stubProvisioning(initial: Partial<ProvisioningSettings> = {}) {
@@ -272,5 +275,132 @@ describe("ServerProvisioning", () => {
         String(u).endsWith("/api/settings/jump-server/sync"),
       ),
     ).toBe(true);
+  });
+
+  it("reveals bundle address fields when the admin-config toggle is off", async () => {
+    const fetchMock = stubProvisioning({
+      jump_enabled: true,
+      jump_host: "10.0.0.9",
+      jump_user: "root",
+      jump_port: 2222,
+      jump_ssh_key_id: 3,
+    });
+    render(<ServerProvisioning />);
+    await openTab(/Jump Server/i);
+    await screen.findByRole("heading", { name: /jump server/i });
+
+    const toggle = screen.getByLabelText(
+      /use jumpserver admin config in ssh config bundle/i,
+    );
+    expect(toggle).toBeChecked();
+    // Fields hidden while using the admin config.
+    expect(screen.queryByLabelText(/bundle host/i)).toBeNull();
+
+    await userEvent.click(toggle); // turn override ON
+    await userEvent.type(
+      screen.getByLabelText(/bundle host/i),
+      "public.example.com",
+    );
+    const portField = screen.getByLabelText(/bundle ssh port/i);
+    await userEvent.clear(portField);
+    await userEvent.type(portField, "443");
+    await userEvent.click(
+      screen.getByRole("button", { name: /save jump server/i }),
+    );
+
+    const patch = fetchMock.mock.calls.find(
+      ([u, init]) =>
+        String(u).endsWith("/api/settings/provisioning") &&
+        (init?.method ?? "GET") === "PATCH",
+    );
+    expect(JSON.parse((patch![1] as RequestInit).body as string)).toMatchObject({
+      jump_bundle_override: true,
+      jump_bundle_host: "public.example.com",
+      jump_bundle_port: 443,
+    });
+    // Bundle-only change advises that no re-sync is needed for the same host.
+    expect(
+      await screen.findByText(/only affects the address written/i),
+    ).toBeInTheDocument();
+  });
+
+  it("warns to re-sync users when a connection field changes", async () => {
+    stubProvisioning({
+      jump_enabled: true,
+      jump_host: "10.0.0.9",
+      jump_user: "root",
+      jump_port: 2222,
+      jump_ssh_key_id: 3,
+    });
+    render(<ServerProvisioning />);
+    await openTab(/Jump Server/i);
+    await screen.findByRole("heading", { name: /jump server/i });
+
+    const hostField = screen.getByLabelText(/jump host/i);
+    await userEvent.clear(hostField);
+    await userEvent.type(hostField, "10.0.0.50");
+    await userEvent.click(
+      screen.getByRole("button", { name: /save jump server/i }),
+    );
+
+    expect(
+      await screen.findByText(/existing users must be re-synced/i),
+    ).toBeInTheDocument();
+  });
+
+  it("does not warn to re-sync when the jump server is disabled", async () => {
+    stubProvisioning({
+      jump_enabled: false,
+      jump_host: "10.0.0.9",
+      jump_user: "root",
+      jump_port: 2222,
+      jump_ssh_key_id: 3,
+    });
+    render(<ServerProvisioning />);
+    await openTab(/Jump Server/i);
+    await screen.findByRole("heading", { name: /jump server/i });
+
+    const hostField = screen.getByLabelText(/jump host/i);
+    await userEvent.clear(hostField);
+    await userEvent.type(hostField, "10.0.0.50");
+    await userEvent.click(
+      screen.getByRole("button", { name: /save jump server/i }),
+    );
+
+    expect(await screen.findByText(/settings saved/i)).toBeInTheDocument();
+    expect(
+      screen.queryByText(/existing users must be re-synced/i),
+    ).toBeNull();
+  });
+
+  it("clears the sync reminder after syncing users", async () => {
+    stubProvisioning({
+      jump_enabled: true,
+      jump_host: "10.0.0.9",
+      jump_user: "root",
+      jump_port: 2222,
+      jump_ssh_key_id: 3,
+    });
+    render(<ServerProvisioning />);
+    await openTab(/Jump Server/i);
+    await screen.findByRole("heading", { name: /jump server/i });
+
+    const hostField = screen.getByLabelText(/jump host/i);
+    await userEvent.clear(hostField);
+    await userEvent.type(hostField, "10.0.0.50");
+    await userEvent.click(
+      screen.getByRole("button", { name: /save jump server/i }),
+    );
+    expect(
+      await screen.findByText(/existing users must be re-synced/i),
+    ).toBeInTheDocument();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /sync users to jump server/i }),
+    );
+    await screen.findByText(/sync summary/i);
+    expect(
+      screen.queryByText(/existing users must be re-synced/i),
+    ).toBeNull();
   });
 });

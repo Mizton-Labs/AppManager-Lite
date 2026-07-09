@@ -800,11 +800,21 @@ def render_builtin_ssh_config(
     ]
     jump_enabled = bool(jump and jump.get("enabled") and jump.get("host"))
     if jump_enabled:
+        # The bundle address may differ from the management address (e.g. the
+        # bastion has separate public/private interfaces). When the override is
+        # set and supplies a host, emit that; otherwise fall back to the
+        # management host/port. User/IdentityFile are unaffected.
+        if jump.get("bundle_override") and jump.get("bundle_host"):
+            bundle_host = jump["bundle_host"]
+            bundle_port = int(jump.get("bundle_port", 22) or 22)
+        else:
+            bundle_host = jump["host"]
+            bundle_port = int(jump.get("port", 22) or 22)
         parts.append(
             "Host jumpserver\n"
-            f"    Hostname {jump['host']}\n"
+            f"    Hostname {bundle_host}\n"
             f"    User {jump.get('user', '') or user_id}\n"
-            f"    Port {int(jump.get('port', 22) or 22)}\n"
+            f"    Port {bundle_port}\n"
             "    IdentityFile ~/.ssh/id_ed25519\n"
         )
     for server in user_servers:
@@ -1455,6 +1465,9 @@ _PROVISIONING_COLUMNS = (
     "jump_user",
     "jump_port",
     "jump_ssh_key_id",
+    "jump_bundle_override",
+    "jump_bundle_host",
+    "jump_bundle_port",
 )
 
 

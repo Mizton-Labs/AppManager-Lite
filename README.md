@@ -557,7 +557,16 @@ Server**, and **Server Templates**.
   key installed, deleting a user removes that key, and regenerating a key
   rotates it there too. A **Sync users to jump server** action backfills
   existing users. All jump operations are best-effort (they never block user
-  create, delete, or login) and audited.
+  create, delete, or login) and audited. Changing the jump server's connection
+  settings (host, user, port, or key) prompts a reminder to re-run **Sync users
+  to jump server**, since existing accounts would otherwise no longer match.
+  By default the generated SSH config bundle addresses the bastion at the same
+  management host/port. If the bastion is managed over one interface but users
+  connect over another (e.g. private vs. public), turn off **Use jumpserver
+  admin config in SSH config bundle** and supply a separate **bundle host** and
+  **bundle port**; that address is only written into users' downloaded SSH
+  config (AppManager never dials it), so changing it needs no re-sync when it
+  points to the same jump server.
 
 When creating a user, administrators can also **auto-provision servers**: the
 Create user card lists every server template with a toggle (all enabled by
