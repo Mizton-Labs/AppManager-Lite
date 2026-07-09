@@ -297,6 +297,21 @@ export interface ServerAccess {
   reason: string;
 }
 
+/** One resource dimension for the create-form quota bars (issue_015-r4 F3). */
+export interface ResourceUsage {
+  used: number;
+  limit: number;
+}
+
+/** Per-user provisioning usage vs. limits. `unlimited` is true for admins. */
+export interface ServerUsage {
+  unlimited: boolean;
+  servers: ResourceUsage;
+  cpus: ResourceUsage;
+  memory_gb: ResourceUsage;
+  disk_gb: ResourceUsage;
+}
+
 export interface CreateServerTemplateInput {
   vmid: number;
   name: string;

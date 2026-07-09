@@ -36,9 +36,11 @@ from ..schemas import (
     MessageOut,
     ProviderTemplatesOut,
     ProvisioningSettingsOut,
+    ResourceUsageOut,
     ServerAccessOut,
     ServerTemplateOptionOut,
     ServerTemplateOut,
+    ServerUsageOut,
     SshKeyOut,
     UpdateProvisioningSettingsRequest,
     UpdateServerTemplateRequest,
@@ -919,6 +921,57 @@ def list_user_servers(
     if repository.get_user_by_id(conn, user_id) is None:
         raise HTTPException(status_code=404, detail="User not found")
     return [_server_out(s) for s in repository.list_user_servers(conn, user_id)]
+
+
+@router.get("/users/{user_id}/servers/usage", response_model=ServerUsageOut)
+def get_user_server_usage(
+    user_id: int,
+    actor: dict[str, Any] = Depends(get_current_user),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> ServerUsageOut:
+    """Per-user provisioning usage vs. limits (for the create-form quota bars).
+
+    Self-or-admin. The committed usage mirrors quota enforcement exactly
+    (``count_user_servers`` and ``sum_user_server_resources``, which exclude
+    admin-set servers and never-cloned failures). Administrators are exempt
+    from per-user caps, so their result is flagged ``unlimited``.
+    """
+    _require_self_or_admin(actor, user_id)
+    target = repository.get_user_by_id(conn, user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    row = repository.get_settings_row(conn)
+    used_servers = repository.count_user_servers(conn, user_id)
+    res = repository.sum_user_server_resources(conn, user_id)
+    if target.get("role") == "admin":
+        # Admins have no per-user caps; report usage with no limit so the UI
+        # can show a "no restrictions" note instead of bars.
+        return ServerUsageOut(
+            unlimited=True,
+            servers=ResourceUsageOut(used=used_servers, limit=0),
+            cpus=ResourceUsageOut(used=int(res["cpus"]), limit=0),
+            memory_gb=ResourceUsageOut(used=int(res["memory_gb"]), limit=0),
+            disk_gb=ResourceUsageOut(used=int(res["disk_gb"]), limit=0),
+        )
+    return ServerUsageOut(
+        unlimited=False,
+        servers=ResourceUsageOut(
+            used=used_servers,
+            limit=int(row.get("provisioning_max_servers", 3)),
+        ),
+        cpus=ResourceUsageOut(
+            used=int(res["cpus"]),
+            limit=int(row.get("provisioning_max_cpus", 12)),
+        ),
+        memory_gb=ResourceUsageOut(
+            used=int(res["memory_gb"]),
+            limit=int(row.get("provisioning_max_memory_gb", 24)),
+        ),
+        disk_gb=ResourceUsageOut(
+            used=int(res["disk_gb"]),
+            limit=int(row.get("provisioning_max_disk_gb", 200)),
+        ),
+    )
 
 
 @router.post(
