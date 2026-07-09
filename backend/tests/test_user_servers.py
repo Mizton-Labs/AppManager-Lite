@@ -31,7 +31,8 @@ class _FakeProxmox:
     """Scripted responses for the proxmox HTTP seam, keyed by URL fragment."""
 
     def __init__(self, monkeypatch, *, template_resources=None,
-                 clone_ok=True, start_ok=True, ip="10.0.7.42"):
+                 clone_ok=True, start_ok=True, ip="10.0.7.42",
+                 extra_iface_ips=None):
         self.calls: list[str] = []
         self.template_resources = template_resources or {
             "cores": 2, "memory": 4096, "rootfs": "local:9001/x,size=20G",
@@ -39,6 +40,10 @@ class _FakeProxmox:
         self.clone_ok = clone_ok
         self.start_ok = start_ok
         self.ip = ip
+        # Additional IPv4s the hypervisor reports on the guest's interfaces
+        # (beyond the primary ``ip``). Used to exercise F2 corroboration: an
+        # in-guest report is only adopted if it appears in the hypervisor view.
+        self.extra_iface_ips = list(extra_iface_ips or [])
         monkeypatch.setattr(proxmox, "_http_request", self)
         monkeypatch.setattr(proxmox, "_sleep", lambda s: None)
 
@@ -65,10 +70,13 @@ class _FakeProxmox:
         if "/interfaces" in url:
             if not self.ip:
                 return (200, {"data": []})
-            return (200, {"data": [
+            ifaces = [
                 {"name": "lo", "inet": "127.0.0.1/8"},
                 {"name": "eth0", "inet": f"{self.ip}/24"},
-            ]})
+            ]
+            for i, extra in enumerate(self.extra_iface_ips, start=1):
+                ifaces.append({"name": f"eth{i}", "inet": f"{extra}/24"})
+            return (200, {"data": ifaces})
         if "/config" in url and (json_body is None):
             return (200, {"data": self.template_resources})
         if "/config" in url or "/resize" in url:
@@ -77,13 +85,28 @@ class _FakeProxmox:
 
 
 class _FakeSsh:
-    def __init__(self, monkeypatch, *, rc=0):
+    def __init__(self, monkeypatch, *, rc=0, guest_ip=""):
         self.commands: list[list[str]] = []
         self.rc = rc
+        # When set, the in-guest IP read (issue_015-r4 F2) resolves to this
+        # address; otherwise it returns nothing and the caller keeps the
+        # hypervisor-reported IP.
+        self.guest_ip = guest_ip
         monkeypatch.setattr(servers, "_run", self)
 
     def __call__(self, argv, *, timeout=20):
         self.commands.append(argv)
+        remote = argv[-1] if argv else ""
+        if self.guest_ip and "ip -4 -o addr show scope global" in remote:
+            stdout = (
+                "---ip---\n"
+                f"2: eth0    inet {self.guest_ip}/24 brd x scope global eth0\n"
+                "---hostname---\n"
+                f"{self.guest_ip} \n"
+            )
+            return subprocess.CompletedProcess(
+                argv, returncode=0, stdout=stdout, stderr=""
+            )
         return subprocess.CompletedProcess(
             argv, returncode=self.rc, stdout="", stderr="ssh failed"
         )
@@ -194,9 +217,15 @@ def test_admin_creates_lxc_server_with_key_install(admin, monkeypatch) -> None:
     assert "Server created successfully" in server["last_log"]
     assert "sekret" not in server["last_log"]
 
+    # First SSH call reads the in-guest IP (F2); it returned nothing here
+    # (default fake), so the hypervisor-reported 10.0.7.42 is kept.
+    ip_reads = [c for c in ssh.commands if "ip -4 -o addr" in c[-1]]
+    assert len(ip_reads) == 1
+    assert ip_reads[0][-2] == "root@10.0.7.42"
     # Key installed for both requested OS users via ssh -i <admin key>.
-    assert len(ssh.commands) == 2
-    for argv in ssh.commands:
+    installs = [c for c in ssh.commands if "authorized_keys" in c[-1]]
+    assert len(installs) == 2
+    for argv in installs:
         assert argv[0] == "ssh"
         assert argv[argv.index("-i") + 1] == "/home/svc/.ssh/id_ed25519"
         assert argv[-2] == "root@10.0.7.42"
@@ -211,6 +240,307 @@ def test_admin_creates_lxc_server_with_key_install(admin, monkeypatch) -> None:
 
     listed = client.get(f"/api/users/{user_id}/servers")
     assert [s["name"] for s in listed.json()] == ["coder box"]
+
+
+def test_lxc_records_in_guest_ip_over_hypervisor_ip(admin, monkeypatch) -> None:
+    """issue_015-r4 F2: the address the guest actually holds is recorded,
+    not the hypervisor's primary reported address, when they differ AND the
+    hypervisor corroborates the guest-reported address."""
+    client, csrf, _ = admin
+    # Proxmox's primary interface is 10.0.7.42, but it ALSO attributes
+    # 10.10.50.77 to the guest; the guest reports 10.10.50.77 as its address.
+    _FakeProxmox(monkeypatch, ip="10.0.7.42",
+                 extra_iface_ips=["10.10.50.77"])
+    ssh = _FakeSsh(monkeypatch, guest_ip="10.10.50.77")
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    created = _create_member(client, csrf)
+    user_id = created["user"]["id"]
+
+    resp = client.post(
+        f"/api/users/{user_id}/servers",
+        json={"template_id": template["id"], "name": "coder box",
+              "install_pubkey": True, "pubkey_users": "srvuser"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 201, resp.text
+    server = resp.json()
+    # The corroborated in-guest address wins and is what gets recorded.
+    assert server["ip_address"] == "10.10.50.77"
+    assert "corroborated by the hypervisor; recording 10.10.50.77" \
+        in server["last_log"]
+    # The IP read reached the guest at the hypervisor primary address...
+    ip_reads = [c for c in ssh.commands if "ip -4 -o addr" in c[-1]]
+    assert len(ip_reads) == 1
+    assert ip_reads[0][-2] == "root@10.0.7.42"
+    # ...and the key install then used the confirmed in-guest address.
+    installs = [c for c in ssh.commands if "authorized_keys" in c[-1]]
+    assert installs and all(c[-2] == "root@10.10.50.77" for c in installs)
+
+
+def test_lxc_ignores_uncorroborated_in_guest_ip(admin, monkeypatch) -> None:
+    """F2 security: a guest-reported address the hypervisor does NOT attribute
+    to the guest is ignored (a compromised guest cannot steer the record)."""
+    client, csrf, _ = admin
+    # Hypervisor only knows 10.0.7.42; the guest lies and claims 10.99.99.9.
+    _FakeProxmox(monkeypatch, ip="10.0.7.42")
+    ssh = _FakeSsh(monkeypatch, guest_ip="10.99.99.9")
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    created = _create_member(client, csrf)
+    user_id = created["user"]["id"]
+
+    resp = client.post(
+        f"/api/users/{user_id}/servers",
+        json={"template_id": template["id"], "name": "coder box",
+              "install_pubkey": True, "pubkey_users": "srvuser"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 201, resp.text
+    server = resp.json()
+    # Uncorroborated report ignored -> hypervisor address kept.
+    assert server["ip_address"] == "10.0.7.42"
+    assert "not corroborated by the hypervisor" in server["last_log"]
+    # The install must NOT have been redirected to the guest-claimed address.
+    installs = [c for c in ssh.commands if "authorized_keys" in c[-1]]
+    assert installs and all(c[-2] == "root@10.0.7.42" for c in installs)
+    assert not any("10.99.99.9" in c[-2] for c in ssh.commands)
+
+
+def test_lxc_falls_back_to_hypervisor_ip_when_guest_unreachable(
+    admin, monkeypatch
+) -> None:
+    """F2 fallback: if the in-guest read yields nothing (no usable output),
+    the hypervisor-reported IP is kept -- no regression."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch, ip="10.0.7.42")
+    # guest_ip unset -> IP read returns empty -> fallback.
+    ssh = _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    created = _create_member(client, csrf)
+    user_id = created["user"]["id"]
+
+    resp = client.post(
+        f"/api/users/{user_id}/servers",
+        json={"template_id": template["id"], "name": "coder box",
+              "install_pubkey": True, "pubkey_users": "srvuser"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 201, resp.text
+    server = resp.json()
+    assert server["ip_address"] == "10.0.7.42"
+    assert "keeping hypervisor-reported address" in server["last_log"]
+    assert ssh.commands, "expected an in-guest IP read attempt"
+
+
+# ---------------------------------------------------------------------------
+# In-guest IP parsing/read (issue_015-r4 F2) - unit level
+# ---------------------------------------------------------------------------
+
+
+def test_pick_guest_ip_prefers_ip_addr_output() -> None:
+    ip_out = (
+        "1: lo    inet 127.0.0.1/8 scope host lo\n"
+        "2: eth0    inet 10.10.50.12/24 brd 10.10.50.255 scope global eth0\n"
+    )
+    # A different usable address in hostname -I must NOT win: the `ip` section
+    # takes precedence.
+    assert servers._pick_guest_ip(ip_out, "10.20.30.40") == "10.10.50.12"
+
+
+def test_pick_guest_ip_falls_back_to_hostname_and_skips_special() -> None:
+    # No usable line in `ip` output -> use hostname -I, skipping IPv6,
+    # loopback, and link-local.
+    assert servers._pick_guest_ip("", "fe80::1 169.254.9.9 127.0.0.1 192.168.5.6") \
+        == "192.168.5.6"
+
+
+def test_pick_guest_ip_returns_empty_when_nothing_usable() -> None:
+    assert servers._pick_guest_ip("", "::1 fe80::abcd") == ""
+
+
+def test_is_usable_ipv4_rejects_special_and_malformed() -> None:
+    assert servers._is_usable_ipv4("10.0.0.1") is True
+    assert servers._is_usable_ipv4("127.0.0.1") is False       # loopback
+    assert servers._is_usable_ipv4("169.254.1.1") is False     # link-local
+    assert servers._is_usable_ipv4("999.1.1.1") is False       # out of range
+    assert servers._is_usable_ipv4("not-an-ip") is False
+
+
+def test_read_ip_from_guest_no_key_returns_empty(monkeypatch) -> None:
+    from app.proxmox import ProxmoxResult
+    ran = []
+    monkeypatch.setattr(servers, "_run", lambda *a, **k: ran.append(a))
+    r = ProxmoxResult()
+    assert servers.read_ip_from_guest(
+        ip="10.0.7.42", admin_key_path="", corroborating_ips=set(), result=r
+    ) == ""
+    assert ran == [], "must not SSH without an admin key"
+
+
+def test_read_ip_from_guest_bad_reach_ip_returns_empty(monkeypatch) -> None:
+    from app.proxmox import ProxmoxResult
+    ran = []
+    monkeypatch.setattr(servers, "_run", lambda *a, **k: ran.append(a))
+    r = ProxmoxResult()
+    assert servers.read_ip_from_guest(
+        ip="not-an-ip", admin_key_path="/keys/admin",
+        corroborating_ips=set(), result=r
+    ) == ""
+    assert ran == [], "must not SSH to an invalid reach address"
+
+
+def test_read_ip_from_guest_empty_output_returns_empty(monkeypatch) -> None:
+    """SSH succeeds but the guest yields no usable address -> keep hypervisor IP."""
+    from app.proxmox import ProxmoxResult
+    monkeypatch.setattr(
+        servers, "_run",
+        lambda argv, *, timeout=20: subprocess.CompletedProcess(
+            argv, returncode=0, stdout="---ip---\n---hostname---\n", stderr=""
+        ),
+    )
+    r = ProxmoxResult()
+    assert servers.read_ip_from_guest(
+        ip="10.0.7.42", admin_key_path="/keys/admin",
+        corroborating_ips={"10.0.7.42"}, result=r
+    ) == ""
+    assert "no usable address" in r.transcript
+
+
+def test_read_ip_from_guest_adopts_corroborated_report(monkeypatch) -> None:
+    """A differing in-guest IP is adopted when the hypervisor corroborates it.
+
+    The read is the ONLY SSH call -- no reachability probe (corroboration is
+    checked against the hypervisor's interface list, not by connecting).
+    """
+    from app.proxmox import ProxmoxResult
+    calls = []
+
+    def fake_run(argv, *, timeout=20):
+        calls.append(argv[-1])
+        assert argv[-2] == "root@10.0.7.42"
+        assert "ip -4 -o addr show scope global" in argv[-1]
+        return subprocess.CompletedProcess(
+            argv, returncode=0,
+            stdout=("---ip---\n2: eth0    inet 10.10.50.5/24 scope global eth0\n"
+                    "---hostname---\n10.10.50.5 \n"),
+            stderr="",
+        )
+
+    monkeypatch.setattr(servers, "_run", fake_run)
+    r = ProxmoxResult()
+    assert servers.read_ip_from_guest(
+        ip="10.0.7.42", admin_key_path="/keys/admin",
+        corroborating_ips={"10.0.7.42", "10.10.50.5"}, result=r
+    ) == "10.10.50.5"
+    assert len(calls) == 1, "only the read SSH call; no probe"
+    assert "corroborated by the hypervisor; recording 10.10.50.5" in r.transcript
+
+
+def test_read_ip_from_guest_ignores_uncorroborated_report(monkeypatch) -> None:
+    """F2 security: a guest-reported IP absent from the hypervisor view is
+    NOT adopted -- the hypervisor address is kept, and no probe is made."""
+    from app.proxmox import ProxmoxResult
+    calls = []
+
+    def fake_run(argv, *, timeout=20):
+        calls.append(argv[-1])
+        return subprocess.CompletedProcess(
+            argv, returncode=0,
+            stdout=("---ip---\n2: eth1    inet 10.99.99.9/24 scope global eth1\n"
+                    "---hostname---\n10.99.99.9 \n"),
+            stderr="",
+        )
+
+    monkeypatch.setattr(servers, "_run", fake_run)
+    r = ProxmoxResult()
+    assert servers.read_ip_from_guest(
+        ip="10.0.7.42", admin_key_path="/keys/admin",
+        corroborating_ips={"10.0.7.42"}, result=r
+    ) == ""
+    assert len(calls) == 1, "no extra SSH probe to the uncorroborated address"
+    assert "not corroborated by the hypervisor" in r.transcript
+
+
+def test_read_ip_from_guest_matching_ip_needs_no_corroboration(monkeypatch) -> None:
+    """When the guest confirms the hypervisor's own primary address, it is
+    accepted directly (a single read call, no probe)."""
+    from app.proxmox import ProxmoxResult
+    calls = []
+
+    def fake_run(argv, *, timeout=20):
+        calls.append(argv[-1])
+        return subprocess.CompletedProcess(
+            argv, returncode=0,
+            stdout=("---ip---\n2: eth0    inet 10.0.7.42/24 scope global eth0\n"
+                    "---hostname---\n10.0.7.42 \n"),
+            stderr="",
+        )
+
+    monkeypatch.setattr(servers, "_run", fake_run)
+    r = ProxmoxResult()
+    assert servers.read_ip_from_guest(
+        ip="10.0.7.42", admin_key_path="/keys/admin",
+        corroborating_ips={"10.0.7.42"}, result=r
+    ) == "10.0.7.42"
+    assert len(calls) == 1  # exactly one SSH call (the read); no probe
+    assert "Confirmed in-guest IP 10.0.7.42" in r.transcript
+
+
+def test_read_ip_from_guest_ssh_failure_returns_empty(monkeypatch) -> None:
+    from app.proxmox import ProxmoxResult
+    monkeypatch.setattr(
+        servers, "_run",
+        lambda argv, *, timeout=20: subprocess.CompletedProcess(
+            argv, returncode=255, stdout="", stderr="conn refused"
+        ),
+    )
+    r = ProxmoxResult()
+    assert servers.read_ip_from_guest(
+        ip="10.0.7.42", admin_key_path="/keys/admin",
+        corroborating_ips={"10.0.7.42"}, result=r
+    ) == ""
+    assert "keeping hypervisor-reported address" in r.transcript
+
+
+def test_list_lxc_ips_collects_validated_non_loopback(monkeypatch) -> None:
+    from app.proxmox import ProxmoxResult
+
+    def fake_request(method, url, *, headers, verify, json_body=None):
+        assert "/interfaces" in url
+        return (200, {"data": [
+            {"name": "lo", "inet": "127.0.0.1/8"},
+            {"name": "eth0", "inet": "10.0.7.42/24"},
+            {"name": "eth1", "inet": "10.10.50.5/24"},
+            {"name": "bad", "inet": "999.1.1.1/24"},   # rejected (out of range)
+            {"name": "noip"},                            # rejected (no inet)
+        ]})
+
+    monkeypatch.setattr(proxmox, "_http_request", fake_request)
+    r = ProxmoxResult()
+    got = proxmox.list_lxc_ips({"proxmox_url": "https://pve:8006",
+                                "proxmox_api_key": "k",
+                                "proxmox_token_name": "t@pam!x",
+                                "proxmox_verify_tls": False},
+                               "pve1", 120, result=r)
+    assert got == {"10.0.7.42", "10.10.50.5"}
+
+
+def test_list_lxc_ips_returns_empty_on_read_failure(monkeypatch) -> None:
+    from app.proxmox import ProxmoxResult
+
+    def boom(method, url, *, headers, verify, json_body=None):
+        return (500, {"errors": "nope"})
+
+    monkeypatch.setattr(proxmox, "_http_request", boom)
+    r = ProxmoxResult()
+    got = proxmox.list_lxc_ips({"proxmox_url": "https://pve:8006",
+                                "proxmox_api_key": "k",
+                                "proxmox_token_name": "t@pam!x",
+                                "proxmox_verify_tls": False},
+                               "pve1", 120, result=r)
+    assert got == set()
 
 
 def test_failed_clone_recorded_as_failed(admin, monkeypatch) -> None:

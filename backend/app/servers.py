@@ -483,6 +483,132 @@ def rotate_public_key(
     return "failed"
 
 
+# IPv4 addresses that are never a usable "real" guest address: loopback and
+# link-local. `ip ... scope global` already excludes these, but hostname -I
+# does not, so the parser filters them defensively. The filter is deliberately
+# minimal (it does not reject 0.0.0.0, multicast, broadcast, or CGNAT) because
+# it is not the security boundary: a discovered address is adopted only when the
+# hypervisor independently attributes it to the same guest (see
+# read_ip_from_guest / proxmox.list_lxc_ips), so a compromised guest cannot make
+# AppManager record or connect to an address the hypervisor does not see on the
+# guest's own interfaces.
+def _is_usable_ipv4(addr: str) -> bool:
+    if not _IP_RE.match(addr):
+        return False
+    octets = [int(o) for o in addr.split(".")]
+    if any(o > 255 for o in octets):
+        return False
+    if octets[0] == 127:  # loopback
+        return False
+    if octets[0] == 169 and octets[1] == 254:  # link-local
+        return False
+    return True
+
+
+def _pick_guest_ip(ip_output: str, hostname_output: str) -> str:
+    """Pick the guest's real IPv4 from remote command output.
+
+    ``ip_output`` is ``ip -4 -o addr show scope global`` (preferred: already
+    global-scope, ordered by interface index so the primary NIC comes first).
+    ``hostname_output`` is ``hostname -I`` (fallback: space-separated list,
+    may include IPv6 and link-local). The first usable IPv4 wins.
+    """
+    # `ip -o addr` lines look like:
+    #   2: eth0    inet 10.10.50.12/24 brd ... scope global eth0
+    for line in ip_output.splitlines():
+        parts = line.split()
+        if "inet" not in parts:
+            continue
+        idx = parts.index("inet")
+        # Guard against a malformed line where `inet` is the final token.
+        cidr = parts[idx + 1] if idx + 1 < len(parts) else ""
+        addr = cidr.split("/", 1)[0]
+        if _is_usable_ipv4(addr):
+            return addr
+    # Fallback: hostname -I is a space-separated list of all addresses.
+    for token in hostname_output.split():
+        if _is_usable_ipv4(token):
+            return token
+    return ""
+
+
+def read_ip_from_guest(
+    *,
+    ip: str,
+    admin_key_path: str,
+    corroborating_ips: set[str],
+    result: ProxmoxResult,
+) -> str:
+    """Read the guest's real in-guest IPv4 over SSH (via the admin key).
+
+    Connects as root using ``admin_key_path`` and asks the guest what address
+    it actually holds (``ip -4 -o addr show scope global``, falling back to
+    ``hostname -I``) rather than trusting the hypervisor's single reported
+    address. Returns the discovered IPv4, or ``""`` if the key is missing, the
+    read fails, or the report cannot be trusted -- in which case the caller
+    keeps the hypervisor-reported IP.
+
+    ``ip`` is the address used to reach the guest for this one read (the
+    hypervisor-reported IP). ``corroborating_ips`` is the set of addresses the
+    hypervisor independently attributes to this guest.
+
+    Security: a container's OS is effectively controlled by its owner (who can
+    be root inside it), so the guest can report any address. A discovered
+    address is therefore adopted ONLY when the hypervisor also attributes it to
+    this guest (it is in ``corroborating_ips``). This prevents a malicious guest
+    from steering AppManager's later root-SSH operations (key rotation, trusted
+    mesh) or the user's generated SSH config to an attacker-chosen IP. An
+    uncorroborated report is ignored and the hypervisor address is kept.
+    """
+    if not admin_key_path:
+        return ""
+    if not _IP_RE.match(ip):
+        return ""
+    # Best-effort, read-only: try `ip` first, then `hostname -I`, printing a
+    # tagged section for each so the two outputs are parsed independently.
+    remote = "sh -c " + shlex.quote(
+        "echo '---ip---'; "
+        "ip -4 -o addr show scope global 2>/dev/null || true; "
+        "echo '---hostname---'; "
+        "hostname -I 2>/dev/null || true"
+    )
+    proc = _run(_ssh_argv(admin_key_path, ip, remote))
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()[:200]
+        result.log(
+            f"WARNING: could not read in-guest IP (rc={proc.returncode}): "
+            f"{detail}; keeping hypervisor-reported address"
+        )
+        return ""
+    out = proc.stdout or ""
+    ip_section, _, rest = out.partition("---hostname---")
+    ip_section = ip_section.partition("---ip---")[2]
+    discovered = _pick_guest_ip(ip_section, rest)
+    if not discovered:
+        result.log(
+            "WARNING: in-guest IP read returned no usable address; keeping "
+            "hypervisor-reported address"
+        )
+        return ""
+    if discovered == ip:
+        result.log(f"Confirmed in-guest IP {discovered}")
+        return discovered
+    # The guest reports a different address than the hypervisor's primary one.
+    # Adopt it only if the hypervisor independently attributes it to this guest;
+    # otherwise the report is untrusted and the hypervisor address is kept.
+    if discovered in corroborating_ips:
+        result.log(
+            f"In-guest IP {discovered} differs from hypervisor-reported {ip} "
+            f"and is corroborated by the hypervisor; recording {discovered}"
+        )
+        return discovered
+    result.log(
+        f"In-guest IP {discovered} is not corroborated by the hypervisor "
+        f"(known: {sorted(corroborating_ips) or 'none'}); keeping {ip}"
+    )
+    return ""
+
+
 def create_server(
     *,
     provider_config: dict[str, Any],
@@ -581,12 +707,34 @@ def create_server(
         outcome["transcript"] = result.transcript
         return outcome
 
+    # Resolve the admin key once (registry path from the caller, else the
+    # template's legacy path column). It is used both to read the real
+    # in-guest IP and to install the owner's key.
+    if admin_key_path is None:
+        admin_key_path = (template.get("admin_ssh_key_path") or "").strip()
+    admin_key_path = (admin_key_path or "").strip()
+
+    # Ask the guest what address it actually holds (DHCP/network IP), reaching
+    # it at the hypervisor-reported address. The in-guest answer is only
+    # adopted when the hypervisor independently attributes it to this guest, so
+    # a compromised guest cannot steer later root-SSH operations to an
+    # attacker-chosen address. If the read is unavailable (no admin key) or
+    # fails, or the report is uncorroborated, the hypervisor IP is kept.
+    corroborating_ips = proxmox.list_lxc_ips(
+        provider_config, cloned["node"], new_vmid, result=result
+    )
+    corroborating_ips.add(ip)  # the hypervisor's primary report corroborates itself
+    discovered = read_ip_from_guest(
+        ip=ip,
+        admin_key_path=admin_key_path,
+        corroborating_ips=corroborating_ips,
+        result=result,
+    )
+    if discovered:
+        ip = discovered
+        outcome["ip_address"] = ip
+
     if install_pubkey:
-        # Prefer the registry-resolved path from the caller; fall back to the
-        # template's legacy path column.
-        if admin_key_path is None:
-            admin_key_path = (template.get("admin_ssh_key_path") or "").strip()
-        admin_key_path = (admin_key_path or "").strip()
         if not admin_key_path:
             result.log(
                 "WARNING: key installation requested but the template has "
