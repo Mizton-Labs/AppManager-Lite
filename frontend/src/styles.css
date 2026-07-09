@@ -440,26 +440,27 @@ textarea:focus,
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: var(--gap);
-  align-items: start;
+  /* Stretch every card to the row's tallest card (the Profile card at its
+   * natural size), so the three cards are one consistent size. */
+  align-items: stretch;
 }
 
-/* All three top-row cards share one fixed (static) size, matched to the
- * Profile card. Content that exceeds it (e.g. the SSH key rotation summary)
- * scrolls inside the card so the row stays perfectly aligned. */
+/* Content that exceeds the shared card height (e.g. the SSH key rotation
+ * summary) scrolls inside the card so the row stays perfectly aligned. */
 .account-row-top > .card {
-  height: 26rem;
+  min-height: 0;
   overflow: auto;
 }
 
-/* Stack the three cards on narrow viewports; drop the fixed height so a
- * stacked card is not artificially tall or clipped. */
+/* Stack the three cards on narrow viewports; let each size to its own
+ * content so a stacked card is not artificially tall or clipped. */
 @media (max-width: 900px) {
   .account-row-top {
     grid-template-columns: 1fr;
+    align-items: start;
   }
 
   .account-row-top > .card {
-    height: auto;
     overflow: visible;
   }
 }
