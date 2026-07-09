@@ -1069,6 +1069,17 @@ def _clone_and_persist_server(
         template.get("admin_ssh_key_id"),
         fallback_path=(template.get("admin_ssh_key_path") or "").strip(),
     )
+    # Only ensure/create the account with a bash login shell when os_users is
+    # confidently "the template's configured main OS user" - i.e. the template
+    # sets main_os_user (an admin-controlled, single-value setting) and the
+    # resolved os_users is exactly that. Never for a caller-supplied/free-form
+    # user list (e.g. self-service pubkey_users), which could otherwise let a
+    # non-admin request auto-create arbitrary OS accounts.
+    ensure_shell = (
+        servers.DEFAULT_ACCOUNT_SHELL
+        if template_main_user and os_users == [template_main_user]
+        else None
+    )
     outcome = servers.create_server(
         provider_config=provider_config,
         template=template,
@@ -1079,6 +1090,7 @@ def _clone_and_persist_server(
         admin_key_path=admin_key_path,
         enable_sudo=bool(template.get("enable_sudo", True)),
         owner_marker=f"AppManager-managed:{owner_uid}",
+        ensure_account_shell=ensure_shell,
     )
     # Persist which registry key was used, so rotation can reuse it.
     resources = outcome.get("resources") or {}

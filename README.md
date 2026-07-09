@@ -602,7 +602,14 @@ Each server template also carries provisioning options (both sudo and trusted
 access default on):
 
 - **Main user** — when set, the user's SSH key is installed only for that OS
-  account on their server (blank falls back to the user's derived ID).
+  account on their server (blank falls back to the user's derived ID). Because
+  this is an admin-configured, single-value setting, that account defaults to
+  a `/bin/bash` login shell: it is created with bash if the template image
+  doesn't already have it, or its shell is normalized to bash if it differs
+  (only when the bash binary is present on the server). This auto-create/
+  normalize behavior only ever applies to this configured main user — never to
+  extra OS usernames a caller lists explicitly when creating a server, so a
+  self-service request can't be used to conjure arbitrary accounts.
 - **Sudo access** — adds the main user to the server's sudo/wheel group.
 - **Trusted SSH access** — establishes a full SSH mesh across the user's
   servers that share the same main user: each server generates its own keypair

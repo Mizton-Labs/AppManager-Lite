@@ -27,6 +27,14 @@ _OS_USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 _SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,39}$")
 _IP_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
 
+# Login shells install_public_key is allowed to set/create an account with.
+# Never attacker/admin-free-text; always one of these literals.
+_ALLOWED_ACCOUNT_SHELLS = ("/bin/bash", "/bin/sh")
+# The shell a server's main OS user account should default to: created with
+# it when the account doesn't yet exist, and normalized to it otherwise (only
+# when the binary is present on the remote host).
+DEFAULT_ACCOUNT_SHELL = "/bin/bash"
+
 
 class ServerError(ValueError):
     """Locally detected validation problem (maps to a 400)."""
@@ -168,6 +176,7 @@ def install_public_key(
     result: ProxmoxResult,
     enable_sudo: bool = False,
     marker: str = "",
+    ensure_account_shell: str | None = None,
 ) -> bool:
     """Append ``public_key`` to authorized_keys for each OS user on the host.
 
@@ -179,10 +188,24 @@ def install_public_key(
     to the sudo/wheel group. When ``marker`` is set, the installed line's
     comment is rewritten to it (e.g. ``AppManager-managed:<user_id>``) so the
     key is clearly attributable to AppManager on the remote host.
+
+    ``ensure_account_shell``, when set to one of ``_ALLOWED_ACCOUNT_SHELLS``,
+    changes the default strict behavior (fail if the OS user doesn't exist):
+    the account is created (``useradd -m``) with that login shell if missing,
+    or its shell is normalized to it if it differs (only when the shell binary
+    is present on the remote host). Leave unset (the default) to preserve the
+    original "account must already exist" behavior, e.g. for the trusted mesh
+    which only ever targets accounts a prior call already ensured.
     """
     if not os_users:
         result.log("No OS users requested for key installation; skipping")
         return True
+    if (
+        ensure_account_shell is not None
+        and ensure_account_shell not in _ALLOWED_ACCOUNT_SHELLS
+    ):
+        result.fail(f"unsupported account shell {ensure_account_shell!r}")
+        return False
     stamped = sshkeys.stamp_public_key(public_key, marker) if marker else (
         public_key.strip()
     )
@@ -211,6 +234,43 @@ def install_public_key(
             if enable_sudo
             else ""
         )
+        # Ensure the account exists (creating it with the requested login
+        # shell) or normalize an existing account's shell, only when a shell
+        # was requested; otherwise the account must already exist (unchanged
+        # strict behavior).
+        shell_warning = (
+            f"warning: shell {ensure_account_shell} not present on this host; "
+            "shell left as-is"
+        )
+        if ensure_account_shell is not None:
+            quoted_shell = shlex.quote(ensure_account_shell)
+            quoted_warning = shlex.quote(shell_warning)
+            ensure_step = (
+                f"h=$(getent passwd {quoted_user} | cut -d: -f6); "
+                'if [ -z "$h" ]; then '
+                f"  if [ -x {quoted_shell} ]; then "
+                f"    useradd -m -s {quoted_shell} {quoted_user}; "
+                "  else "
+                f"    useradd -m {quoted_user}; "
+                f"    echo {quoted_warning}; "
+                "  fi; "
+                f"  h=$(getent passwd {quoted_user} | cut -d: -f6); "
+                "else "
+                f"  if [ -x {quoted_shell} ]; then "
+                f"    cur=$(getent passwd {quoted_user} | cut -d: -f7); "
+                f'    [ "$cur" = {quoted_shell} ] || '
+                f"      usermod -s {quoted_shell} {quoted_user}; "
+                "  else "
+                f"    echo {quoted_warning}; "
+                "  fi; "
+                "fi; "
+                '[ -n "$h" ] || { echo "no such user"; exit 1; }; '
+            )
+        else:
+            ensure_step = (
+                f"h=$(getent passwd {quoted_user} | cut -d: -f6); "
+                '[ -n "$h" ] || { echo "no such user"; exit 1; }; '
+            )
         # Rewrite authorized_keys atomically: build the deduped content (minus
         # any existing line for this blob) plus the canonical stamped line in a
         # temp file, then rename over the original. A mid-script death can never
@@ -219,9 +279,8 @@ def install_public_key(
             "sh -c "
             + shlex.quote(
                 "set -e; "
-                f"h=$(getent passwd {quoted_user} | cut -d: -f6); "
-                '[ -n "$h" ] || { echo "no such user"; exit 1; }; '
-                'mkdir -p "$h/.ssh"; chmod 700 "$h/.ssh"; '
+                + ensure_step
+                + 'mkdir -p "$h/.ssh"; chmod 700 "$h/.ssh"; '
                 'f="$h/.ssh/authorized_keys"; touch "$f"; t="$f.appmgr.tmp"; '
                 f"{{ grep -vF {quoted_blob} \"$f\" || [ $? -eq 1 ]; }} > \"$t\"; "
                 f"printf '%s\\n' {quoted_key} >> \"$t\"; "
@@ -236,6 +295,10 @@ def install_public_key(
             msg = f"Installed public key for OS user '{os_user}'"
             if enable_sudo:
                 msg += " (sudo access enabled)"
+            if ensure_account_shell is not None and shell_warning in (
+                proc.stdout or ""
+            ):
+                msg += f"; {shell_warning}"
             result.log(msg)
         else:
             detail = (proc.stderr or proc.stdout or "").strip()[:200]
@@ -431,6 +494,7 @@ def create_server(
     admin_key_path: str | None = None,
     enable_sudo: bool = False,
     owner_marker: str = "",
+    ensure_account_shell: str | None = None,
 ) -> dict[str, Any]:
     """Clone a template into a new user server.
 
@@ -438,6 +502,13 @@ def create_server(
     LXC guests are started and their IP read back; VM guests are cloned only
     (the operator configures them in Proxmox and enters the IP manually).
     Never raises for remote failures - the transcript carries the details.
+
+    ``ensure_account_shell``, when set, is forwarded to ``install_public_key``
+    so the target OS account is created/normalized with that login shell.
+    Callers must only pass this when ``os_users`` is confidently "the server's
+    main OS user" (e.g. a template-configured ``main_os_user``) — never for a
+    caller-supplied/free-form user list, since that would let a non-admin
+    self-service request auto-create arbitrary OS accounts.
     """
     result = ProxmoxResult()
     outcome: dict[str, Any] = {
@@ -534,6 +605,7 @@ def create_server(
             result=result,
             enable_sudo=enable_sudo,
             marker=owner_marker or "AppManager-managed",
+            ensure_account_shell=ensure_account_shell,
         ):
             outcome["transcript"] = result.transcript
             return outcome

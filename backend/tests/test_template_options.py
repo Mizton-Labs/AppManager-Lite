@@ -192,7 +192,55 @@ def test_no_sudo_step_when_disabled(admin, monkeypatch) -> None:
     _mk_server(client, csrf, uid, template["id"], "box")
     install_cmds = [c for c in ssh.commands if "authorized_keys" in c[-1]]
     assert install_cmds
-    assert all("usermod" not in c[-1] for c in install_cmds)
+    # No sudo/wheel group assignment (shell normalization is independent of
+    # enable_sudo and may still issue its own usermod -s call).
+    assert all("usermod -aG sudo" not in c[-1] for c in install_cmds)
+    assert all("usermod -aG wheel" not in c[-1] for c in install_cmds)
+
+
+def test_main_os_user_account_defaults_to_bash(admin, monkeypatch) -> None:
+    """A template-configured main_os_user gets its account ensured with bash."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    ssh = _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf, name="MainUserBash",
+                             main_os_user="cdt-coder")
+    created = _create_member(client, csrf)
+    uid = created["user"]["id"]
+    _mk_server(client, csrf, uid, template["id"], "box")
+    install_cmds = [c for c in ssh.commands if "authorized_keys" in c[-1]]
+    assert install_cmds
+    assert all("useradd -m -s /bin/bash cdt-coder" in c[-1] for c in install_cmds)
+    assert all("usermod -s /bin/bash cdt-coder" in c[-1] for c in install_cmds)
+
+
+def test_free_form_pubkey_users_never_auto_creates_accounts(admin, monkeypatch) -> None:
+    """Without a configured main_os_user, caller-supplied pubkey_users must
+    never trigger account auto-creation/shell normalization - only a
+    template-configured main user is trusted enough for that (issue found in
+    security review: free text must not let a non-admin self-service request
+    auto-create arbitrary OS accounts)."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    ssh = _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf, name="NoMainUser")
+    created = _create_member(client, csrf)
+    uid = created["user"]["id"]
+    r = client.post(
+        f"/api/users/{uid}/servers",
+        json={"template_id": template["id"], "name": "box2",
+              "install_pubkey": True, "pubkey_users": "arbitrary-name"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 201, r.text
+    install_cmds = [c for c in ssh.commands if "authorized_keys" in c[-1]]
+    assert install_cmds
+    for c in install_cmds:
+        assert "useradd" not in c[-1]
+        assert "usermod -s" not in c[-1]
+        assert '"no such user"; exit 1' in c[-1]
 
 
 # ---------------------------------------------------------------------------

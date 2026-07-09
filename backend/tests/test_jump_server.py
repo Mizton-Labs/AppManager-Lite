@@ -576,6 +576,81 @@ def test_install_public_key_stamps_and_dedupes(monkeypatch) -> None:
     assert 'cat "$f.tmp" > "$f"' not in remote
 
 
+def test_install_public_key_ensures_bash_account(monkeypatch) -> None:
+    """ensure_account_shell creates the account with bash if it's missing, or
+    normalizes an existing account's shell to bash otherwise."""
+    ssh = _FakeSsh(monkeypatch, stdout="")
+    from app.proxmox import ProxmoxResult
+    r = ProxmoxResult()
+    ok = servers.install_public_key(
+        ip="10.0.0.5", admin_key_path="/k", os_users=["cdt-coder"],
+        public_key="ssh-ed25519 AAAABBBB owner@host", result=r,
+        marker="AppManager-managed:owner",
+        ensure_account_shell=servers.DEFAULT_ACCOUNT_SHELL,
+    )
+    assert ok
+    remote = ssh.commands[0][-1]
+    # Create-if-missing with bash, guarded by the shell binary existing.
+    assert "useradd -m -s /bin/bash cdt-coder" in remote
+    # Fallback creation when the requested shell binary is absent.
+    assert "useradd -m cdt-coder" in remote
+    # Normalize an existing account's shell only when it differs.
+    assert "usermod -s /bin/bash cdt-coder" in remote
+    assert 'cur" = /bin/bash' in remote or "cur\" = /bin/bash" in remote
+
+
+def test_install_public_key_default_does_not_ensure_account(monkeypatch) -> None:
+    """Without ensure_account_shell, missing accounts still fail (unchanged
+    strict behavior) - e.g. the trusted mesh, which only targets accounts a
+    prior create_server call already ensured."""
+    ssh = _FakeSsh(monkeypatch, stdout="")
+    from app.proxmox import ProxmoxResult
+    r = ProxmoxResult()
+    servers.install_public_key(
+        ip="10.0.0.5", admin_key_path="/k", os_users=["coder"],
+        public_key="ssh-ed25519 AAAABBBB x", result=r,
+        marker="AppManager-trusted:owner",
+    )
+    remote = ssh.commands[0][-1]
+    assert "useradd" not in remote
+    assert "usermod -s" not in remote
+    assert '"no such user"; exit 1' in remote
+
+
+def test_install_public_key_surfaces_shell_fallback_warning(monkeypatch) -> None:
+    """When the requested shell binary is absent remotely, the fallback is
+    visible in the transcript rather than silently succeeding."""
+    warning = (
+        f"warning: shell {servers.DEFAULT_ACCOUNT_SHELL} not present on this "
+        "host; shell left as-is"
+    )
+    ssh = _FakeSsh(monkeypatch, stdout=warning)
+    from app.proxmox import ProxmoxResult
+    r = ProxmoxResult()
+    ok = servers.install_public_key(
+        ip="10.0.0.5", admin_key_path="/k", os_users=["coder"],
+        public_key="ssh-ed25519 AAAABBBB x", result=r,
+        ensure_account_shell=servers.DEFAULT_ACCOUNT_SHELL,
+    )
+    assert ok
+    assert warning in r.transcript
+
+
+def test_install_public_key_rejects_unallowed_shell(monkeypatch) -> None:
+    ssh = _FakeSsh(monkeypatch)
+    from app.proxmox import ProxmoxResult
+    r = ProxmoxResult()
+    ok = servers.install_public_key(
+        ip="10.0.0.5", admin_key_path="/k", os_users=["coder"],
+        public_key="ssh-ed25519 AAAABBBB x", result=r,
+        ensure_account_shell="/bin/zsh; rm -rf /",
+    )
+    assert not ok
+    assert r.status == "failed"
+    # Rejected before any SSH call was made.
+    assert ssh.commands == []
+
+
 def test_stamp_public_key_neutralizes_hostile_marker() -> None:
     """A hostile marker cannot break out of the trailing comment field."""
     from app import sshkeys
