@@ -166,6 +166,11 @@ CREATE TABLE IF NOT EXISTS user_servers (
     status         TEXT    NOT NULL DEFAULT 'created'
                        CHECK (status IN ('created', 'reference', 'failed')),
     last_log       TEXT    NOT NULL DEFAULT '',
+    -- Deferred deletion (issue_015-r4 F1): ISO timestamp of a pending deletion
+    -- request (empty = not pending), and the last destroy-failure detail
+    -- (empty = none; non-empty marks an admin-recoverable failed destroy).
+    deletion_requested_at TEXT NOT NULL DEFAULT '',
+    deletion_error TEXT NOT NULL DEFAULT '',
     created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
     updated_at     TEXT    NOT NULL DEFAULT (datetime('now')),
     UNIQUE(user_id, name)
@@ -242,6 +247,12 @@ def connect() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
+    # Wait (rather than immediately raising SQLITE_BUSY) when another writer
+    # holds the lock. WAL allows one writer + concurrent readers; the lazy
+    # deletion sweep (issue_015-r4 F1) can hold a write transaction across
+    # network I/O, widening the contention window, so give writers a few
+    # seconds to acquire the lock instead of failing the request outright.
+    conn.execute("PRAGMA busy_timeout = 5000")
     _restrict_db_permissions(settings.db_path)
     return conn
 
@@ -685,4 +696,20 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
             "Ready-to-use SSH client config for all your servers, generated "
             "from your account at download time.",
         ),
+    )
+
+    # Deferred server deletion (issue_015-r4 F1). A deletion request enters a
+    # 24h grace window during which it can be cancelled; a lazy sweep then
+    # destroys the guest. deletion_requested_at holds the ISO timestamp of the
+    # request (empty = not pending). deletion_error holds the last destroy
+    # failure detail (empty = none); a non-empty value marks a server that
+    # failed to destroy - hidden from the owner but kept in the admin list for
+    # recovery. Additive columns only; the status CHECK is intentionally
+    # unchanged (no table rebuild).
+    _add_column(
+        conn, "user_servers", "deletion_requested_at",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    _add_column(
+        conn, "user_servers", "deletion_error", "TEXT NOT NULL DEFAULT ''"
     )

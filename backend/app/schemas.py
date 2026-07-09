@@ -1260,6 +1260,15 @@ class UserServerOut(BaseModel):
     admin_modified: bool = False
     status: str = "created"
     last_log: str = ""
+    # Deferred deletion (issue_015-r4 F1). deletion_requested_at is the ISO
+    # timestamp of a pending deletion (empty = none). deletion_pending is a
+    # convenience flag. deletion_failed marks a server whose destroy failed
+    # (admin-only rows). deletion_error carries the failure detail and is only
+    # populated in administrator responses.
+    deletion_requested_at: str = ""
+    deletion_pending: bool = False
+    deletion_failed: bool = False
+    deletion_error: str = ""
     created_at: str = ""
 
 

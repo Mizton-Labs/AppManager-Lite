@@ -105,6 +105,28 @@ def _verify_master_key() -> None:
         raise
 
 
+def _sweep_pending_server_deletions() -> None:
+    """Run the deferred-deletion sweep once at startup (issue_015-r4 F1).
+
+    There is no background scheduler; deletions are also swept lazily on each
+    server-list request. Doing one pass at startup ensures guests whose grace
+    window elapsed while the app was down are cleaned up promptly. Best-effort:
+    never blocks startup.
+    """
+    from .db import get_connection
+    from .routers.provisioning import expire_pending_server_deletions
+
+    try:
+        with get_connection() as conn:
+            actioned = expire_pending_server_deletions(conn)
+        if actioned:
+            logger.info(
+                "Startup deletion sweep destroyed %d server(s)", actioned
+            )
+    except Exception:  # noqa: BLE001 - startup must not fail on the sweep
+        logger.exception("Startup deletion sweep failed")
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
@@ -118,6 +140,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     init_db()
     logger.info("Database ready at %s", settings.db_path)
     _verify_master_key()
+    _sweep_pending_server_deletions()
     _system_event(
         "startup",
         detail=f"auth={settings.enable_auth} dev={settings.dev_mode}",
