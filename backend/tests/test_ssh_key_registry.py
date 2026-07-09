@@ -116,6 +116,239 @@ def test_ssh_key_crud_path_and_stored(admin) -> None:
     assert client.get("/api/settings/ssh-keys").status_code == 200
 
 
+def test_update_ssh_key_rename_and_path(admin) -> None:
+    client, csrf, _ = admin
+    key = client.post(
+        "/api/settings/ssh-keys",
+        json={"name": "old name", "kind": "path", "path": "/data/keys/a"},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    r = client.patch(
+        f"/api/settings/ssh-keys/{key['id']}",
+        json={"name": "new name", "path": "/data/keys/b"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == "new name"
+    assert r.json()["path"] == "/data/keys/b"
+    assert r.json()["kind"] == "path"
+
+
+def test_update_ssh_key_replace_stored_key(admin) -> None:
+    client, csrf, _ = admin
+    key = client.post(
+        "/api/settings/ssh-keys",
+        json={"name": "sk", "kind": "stored", "private_key": _PRIV},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    old_fp = key["fingerprint"]
+    new_priv, _new_pub = sshkeys.generate_keypair("new@example.com")
+    r = client.patch(
+        f"/api/settings/ssh-keys/{key['id']}",
+        json={"private_key": new_priv},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["fingerprint"] != old_fp
+    assert body["fingerprint"].startswith("SHA256:")
+    assert body["has_private_key"] is True
+    assert "BEGIN OPENSSH" not in r.text
+    from app.db import get_connection
+    with get_connection() as conn:
+        enc = conn.execute(
+            "SELECT encrypted_private_key FROM ssh_keys WHERE id=?",
+            (key["id"],),
+        ).fetchone()["encrypted_private_key"]
+    assert keystore.decrypt(enc).strip() == new_priv.strip()
+
+
+def test_update_ssh_key_keeps_stored_key_when_blank(admin) -> None:
+    client, csrf, _ = admin
+    key = client.post(
+        "/api/settings/ssh-keys",
+        json={"name": "keep", "kind": "stored", "private_key": _PRIV},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    r = client.patch(
+        f"/api/settings/ssh-keys/{key['id']}",
+        json={"name": "renamed"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == "renamed"
+    assert r.json()["has_private_key"] is True
+
+
+def test_update_ssh_key_switch_stored_to_path_clears_secret(admin) -> None:
+    client, csrf, _ = admin
+    from app.db import get_connection
+    from app import servers
+    key = client.post(
+        "/api/settings/ssh-keys",
+        json={"name": "switch", "kind": "stored", "private_key": _PRIV},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    with get_connection() as conn:
+        mat = servers.resolve_ssh_key(conn, key["id"])
+    import os
+    assert os.path.exists(mat)
+    r = client.patch(
+        f"/api/settings/ssh-keys/{key['id']}",
+        json={"kind": "path", "path": "/data/keys/switched"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["kind"] == "path"
+    assert r.json()["has_private_key"] is False
+    assert r.json()["path"] == "/data/keys/switched"
+    assert not os.path.exists(mat)
+
+
+def test_update_ssh_key_switch_path_to_stored_requires_key(admin) -> None:
+    client, csrf, _ = admin
+    key = client.post(
+        "/api/settings/ssh-keys",
+        json={"name": "p2s", "kind": "path", "path": "/data/keys/x"},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    r = client.patch(
+        f"/api/settings/ssh-keys/{key['id']}",
+        json={"kind": "stored"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 400
+
+
+def test_update_ssh_key_switch_path_to_stored_with_key(admin) -> None:
+    client, csrf, _ = admin
+    key = client.post(
+        "/api/settings/ssh-keys",
+        json={"name": "p2s2", "kind": "path", "path": "/data/keys/x"},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    r = client.patch(
+        f"/api/settings/ssh-keys/{key['id']}",
+        json={"kind": "stored", "private_key": _PRIV},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["kind"] == "stored"
+    assert body["has_private_key"] is True
+    assert body["path"] == ""
+    assert body["public_key"].startswith("ssh-ed25519 ")
+    assert "BEGIN OPENSSH" not in r.text
+
+
+def test_update_ssh_key_empty_path_rejected(admin) -> None:
+    """An empty path is rejected (mirrors create-time validation)."""
+    client, csrf, _ = admin
+    key = client.post(
+        "/api/settings/ssh-keys",
+        json={"name": "ep", "kind": "path", "path": "/data/keys/x"},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    r = client.patch(
+        f"/api/settings/ssh-keys/{key['id']}",
+        json={"path": ""},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 400
+    # Also when switching stored -> path without a path.
+    sk = client.post(
+        "/api/settings/ssh-keys",
+        json={"name": "ep2", "kind": "stored", "private_key": _PRIV},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    r2 = client.patch(
+        f"/api/settings/ssh-keys/{sk['id']}",
+        json={"kind": "path", "path": ""},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r2.status_code == 400
+
+
+def test_update_ssh_key_requires_admin(admin) -> None:
+    client, csrf, _ = admin
+    key = client.post(
+        "/api/settings/ssh-keys",
+        json={"name": "adminonly", "kind": "path", "path": "/data/keys/a"},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    created = client.post(
+        "/api/users",
+        json={"username": "keypatch@example.com", "role": "user", "teams": [],
+              "apps_server": "a.example.com"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login",
+            json={"username": "keypatch@example.com",
+                  "password": created.json()["password"]},
+        )
+        mc = login.json()["csrf_token"]
+        assert member.patch(
+            f"/api/settings/ssh-keys/{key['id']}",
+            json={"name": "hacked"},
+            headers={"X-CSRF-Token": mc},
+        ).status_code == 403
+
+
+def test_update_ssh_key_duplicate_name_conflict(admin) -> None:
+    client, csrf, _ = admin
+    client.post(
+        "/api/settings/ssh-keys",
+        json={"name": "taken", "kind": "path", "path": "/data/keys/a"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    other = client.post(
+        "/api/settings/ssh-keys",
+        json={"name": "other", "kind": "path", "path": "/data/keys/b"},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    r = client.patch(
+        f"/api/settings/ssh-keys/{other['id']}",
+        json={"name": "taken"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 409
+
+
+def test_update_ssh_key_missing_404(admin) -> None:
+    client, csrf, _ = admin
+    r = client.patch(
+        "/api/settings/ssh-keys/99999",
+        json={"name": "nope"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 404
+
+
+def test_update_ssh_key_allowed_while_referenced(admin) -> None:
+    """Editing (unlike deleting) is permitted while the key is in use."""
+    client, csrf, _ = admin
+    key = client.post(
+        "/api/settings/ssh-keys",
+        json={"name": "refd", "kind": "path", "path": "/data/keys/r"},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    client.post(
+        "/api/settings/server-templates",
+        json={"vmid": 9100, "name": "RT", "kind": "lxc",
+              "admin_ssh_key_id": key["id"]},
+        headers={"X-CSRF-Token": csrf},
+    )
+    r = client.patch(
+        f"/api/settings/ssh-keys/{key['id']}",
+        json={"name": "refd-renamed", "path": "/data/keys/r2"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == "refd-renamed"
+
+
 def test_stored_key_persisted_encrypted(admin) -> None:
     client, csrf, _ = admin
     client.post(

@@ -251,6 +251,7 @@
       { "method": "POST", "path": "/api/settings/jump-server/account-mode", "auth": "admin", "csrf": true, "summary": "Switch the jump account model (per_user/shared); requires acknowledgment, re-syncs all users, and reverts on any failure." },
       { "method": "GET", "path": "/api/settings/ssh-keys", "auth": "admin", "csrf": false, "summary": "List registered SSH keys (registry; no private material returned)." },
       { "method": "POST", "path": "/api/settings/ssh-keys", "auth": "admin", "csrf": true, "summary": "Register an SSH key: a key file path (kind=path) or a pasted private key stored encrypted (kind=stored, write-only)." },
+      { "method": "PATCH", "path": "/api/settings/ssh-keys/{key_id}", "auth": "admin", "csrf": true, "summary": "Edit a registered SSH key (name, path, kind switch, or replace the stored key; allowed while referenced)." },
       { "method": "DELETE", "path": "/api/settings/ssh-keys/{key_id}", "auth": "admin", "csrf": true, "summary": "Delete a registered SSH key (409 if still referenced)." },
       { "method": "GET", "path": "/api/settings/server-templates", "auth": "admin", "csrf": false, "summary": "List registered server templates." },
       { "method": "POST", "path": "/api/settings/server-templates", "auth": "admin", "csrf": true, "summary": "Register a server template (vmid, name, lxc|vm, registry admin key, optional main OS user, sudo and trusted-access flags)." },

@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { api, ApiError } from "../api";
-import type { CreateSshKeyInput, SshKey } from "../types";
+import type { CreateSshKeyInput, SshKey, UpdateSshKeyInput } from "../types";
 
 /**
  * Settings -> Remote Access (administrators only).
@@ -169,6 +169,7 @@ function KeyRow(props: { sshKey: SshKey; onChanged: () => void | Promise<void> }
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
 
   async function remove() {
     setBusy(true);
@@ -192,6 +193,18 @@ function KeyRow(props: { sshKey: SshKey; onChanged: () => void | Promise<void> }
           </span>
         </div>
         <div className="row-actions">
+          {!editing && (
+            <button
+              type="button"
+              className="btn ghost"
+              onClick={() => {
+                setEditing(true);
+                setConfirming(false);
+              }}
+            >
+              Edit
+            </button>
+          )}
           {confirming ? (
             <button
               type="button"
@@ -222,11 +235,143 @@ function KeyRow(props: { sshKey: SshKey; onChanged: () => void | Promise<void> }
           {sshKey.public_key ? ` · ${sshKey.public_key.split(" ")[0]}` : ""}
         </p>
       )}
+      {editing && (
+        <EditKeyForm
+          sshKey={sshKey}
+          onCancel={() => setEditing(false)}
+          onSaved={async () => {
+            setEditing(false);
+            await props.onChanged();
+          }}
+        />
+      )}
       {error && (
         <p className="alert error" role="alert">
           {error}
         </p>
       )}
     </article>
+  );
+}
+
+function EditKeyForm(props: {
+  sshKey: SshKey;
+  onCancel: () => void;
+  onSaved: () => void | Promise<void>;
+}) {
+  const { sshKey } = props;
+  const [name, setName] = useState(sshKey.name);
+  const [kind, setKind] = useState<"path" | "stored">(sshKey.kind);
+  const [path, setPath] = useState(sshKey.path);
+  const [privateKey, setPrivateKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function onSubmit(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const input: UpdateSshKeyInput = { name: name.trim(), kind };
+      if (kind === "path") {
+        input.path = path.trim();
+      } else if (privateKey.trim()) {
+        // Only send a new private key when one was entered.
+        input.private_key = privateKey;
+      }
+      await api.updateSshKey(sshKey.id, input);
+      await props.onSaved();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Unable to save the key.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="create-form field-group" onSubmit={onSubmit}>
+      {error && (
+        <p className="alert error" role="alert">
+          {error}
+        </p>
+      )}
+      <label className="field">
+        <span>Name</span>
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          maxLength={60}
+          required
+        />
+      </label>
+      <fieldset className="field">
+        <legend>Key source</legend>
+        <label className="checkbox-field">
+          <input
+            type="radio"
+            name={`edit-kind-${sshKey.id}`}
+            checked={kind === "path"}
+            onChange={() => setKind("path")}
+          />
+          <span>Reference a key file on the server (path)</span>
+        </label>
+        <label className="checkbox-field">
+          <input
+            type="radio"
+            name={`edit-kind-${sshKey.id}`}
+            checked={kind === "stored"}
+            onChange={() => setKind("stored")}
+          />
+          <span>Paste a private key (stored encrypted)</span>
+        </label>
+      </fieldset>
+      {kind === "path" ? (
+        <label className="field">
+          <span>Key file path (absolute)</span>
+          <input
+            value={path}
+            onChange={(e) => setPath(e.target.value)}
+            placeholder="/data/keys/id_ed25519"
+          />
+        </label>
+      ) : (
+        <label className="field">
+          <span>
+            {sshKey.has_private_key
+              ? "Replace private key (leave blank to keep the current one)"
+              : "Private key (unencrypted OpenSSH, no passphrase)"}
+          </span>
+          <textarea
+            value={privateKey}
+            onChange={(e) => setPrivateKey(e.target.value)}
+            rows={6}
+            placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;..."
+          />
+        </label>
+      )}
+      <div className="row-actions">
+        <button
+          type="submit"
+          className="btn primary"
+          disabled={
+            busy ||
+            !name.trim() ||
+            (kind === "path"
+              ? !path.trim()
+              : !sshKey.has_private_key && !privateKey.trim())
+          }
+        >
+          {busy ? "Saving..." : "Save changes"}
+        </button>
+        <button
+          type="button"
+          className="btn ghost"
+          onClick={props.onCancel}
+          disabled={busy}
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
   );
 }
