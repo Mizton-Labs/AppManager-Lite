@@ -284,6 +284,40 @@ export interface CreateUserServerInput {
   pubkey_users?: string;
 }
 
+/** A user's servers, for the Servers overview (issue_015-r5 F2). */
+export interface OwnerServers {
+  user_id: number;
+  username: string;
+  derived_user_id: string;
+  servers: UserServer[];
+}
+
+export interface ServersOverview {
+  is_admin: boolean;
+  owners: OwnerServers[];
+}
+
+/** One historical usage sample for a server's sparklines. */
+export interface ServerStatsPoint {
+  time: number;
+  cpu_pct: number;
+  mem: number;
+  maxmem: number;
+  disk: number;
+  maxdisk: number;
+  netin: number;
+  netout: number;
+}
+
+export interface ServerStats {
+  available: boolean;
+  detail: string;
+  timeframe: string;
+  points: ServerStatsPoint[];
+}
+
+export type StatsTimeframe = "hour" | "day" | "week";
+
 export interface UpdateUserServerInput {
   ip_address?: string;
   cpus?: number;

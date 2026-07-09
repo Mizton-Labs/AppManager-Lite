@@ -1845,6 +1845,25 @@ def server_name_exists(conn: sqlite3.Connection, name: str) -> bool:
     return row is not None
 
 
+def list_all_servers(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Every server across all users, each annotated with its owner's username.
+
+    Used by the admin server overview; the caller derives the owner id from the
+    username as needed.
+    """
+    rows = conn.execute(
+        "SELECT s.*, u.username AS owner_username "
+        "FROM user_servers s JOIN users u ON u.id = s.user_id "
+        "ORDER BY u.username, s.name, s.id"
+    ).fetchall()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        server = _row_to_user_server(r)
+        server["owner_username"] = r["owner_username"]
+        out.append(server)
+    return out
+
+
 def get_user_server(
     conn: sqlite3.Connection, user_id: int, server_id: int
 ) -> dict[str, Any] | None:

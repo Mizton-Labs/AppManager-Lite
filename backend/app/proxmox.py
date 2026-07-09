@@ -664,3 +664,55 @@ def set_lxc_resources(
                     return False
             result.log(f"Grew rootfs by {grow}G")
     return True
+
+
+# Timeframes the Proxmox RRD API accepts for guest usage graphs.
+RRD_TIMEFRAMES = ("hour", "day", "week", "month", "year")
+
+
+def get_guest_rrddata(
+    config: dict[str, Any],
+    node: str,
+    vmid: int,
+    kind: str,
+    *,
+    timeframe: str = "hour",
+    result: ProxmoxResult,
+) -> list[dict[str, float]] | None:
+    """Read historical CPU/memory/disk/network usage samples for a guest.
+
+    Wraps Proxmox ``/nodes/{node}/{lxc|qemu}/{vmid}/rrddata`` (AVERAGE
+    consolidation). ``timeframe`` must be one of :data:`RRD_TIMEFRAMES`.
+    Returns a list of normalized samples ordered by time; each has:
+    ``time`` (epoch seconds), ``cpu`` (0-1 fraction), ``mem``/``maxmem``,
+    ``disk``/``maxdisk`` (bytes), ``netin``/``netout`` (bytes/s). Missing
+    fields in a sample default to 0.0. Returns ``None`` on error.
+    """
+    if timeframe not in RRD_TIMEFRAMES:
+        result.fail(f"invalid rrd timeframe {timeframe!r}")
+        return None
+    data = _call(
+        config,
+        "GET",
+        f"/nodes/{quote(node, safe='')}/{_guest_path(kind)}/{vmid}/rrddata"
+        f"?timeframe={quote(timeframe, safe='')}&cf=AVERAGE",
+        result=result,
+    )
+    if result.status != "ok":
+        return None
+    fields = ("cpu", "mem", "maxmem", "disk", "maxdisk", "netin", "netout")
+    samples: list[dict[str, float]] = []
+    for point in data or []:
+        if not isinstance(point, dict):
+            continue
+        sample: dict[str, float] = {"time": float(point.get("time", 0) or 0)}
+        for key in fields:
+            try:
+                sample[key] = float(point.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                sample[key] = 0.0
+        samples.append(sample)
+    result.log(
+        f"Guest {vmid} rrddata ({timeframe}): {len(samples)} sample(s)"
+    )
+    return samples

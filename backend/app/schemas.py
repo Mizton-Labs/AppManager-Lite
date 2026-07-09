@@ -1283,6 +1283,53 @@ class CreateUserServerRequest(BaseModel):
     pubkey_users: str = Field(default="", max_length=512)
 
 
+class OwnerServersOut(BaseModel):
+    """A user's servers, for the admin/self server overview (issue_015-r5 F2)."""
+
+    user_id: int
+    username: str
+    derived_user_id: str = ""
+    servers: list[UserServerOut] = Field(default_factory=list)
+
+
+class ServersOverviewOut(BaseModel):
+    """All servers the caller may see, grouped by owner.
+
+    Administrators see every user's servers; a non-admin sees only their own
+    (a single group). ``is_admin`` lets the UI adapt copy/columns.
+    """
+
+    is_admin: bool = False
+    owners: list[OwnerServersOut] = Field(default_factory=list)
+
+
+class ServerStatsPointOut(BaseModel):
+    """One historical sample for a server's usage sparklines."""
+
+    time: int = 0
+    # CPU as a percentage 0-100 (Proxmox reports a 0-1 fraction).
+    cpu_pct: float = 0.0
+    mem: float = 0.0
+    maxmem: float = 0.0
+    disk: float = 0.0
+    maxdisk: float = 0.0
+    netin: float = 0.0
+    netout: float = 0.0
+
+
+class ServerStatsOut(BaseModel):
+    """Historical usage for one server over a timeframe (Proxmox rrddata).
+
+    ``available`` is false when stats cannot be read (no guest/vmid, provider
+    not configured, or the read failed); ``detail`` explains why.
+    """
+
+    available: bool = False
+    detail: str = ""
+    timeframe: str = "hour"
+    points: list[ServerStatsPointOut] = Field(default_factory=list)
+
+
 class UpdateUserServerRequest(BaseModel):
     """Manual IP entry (VMs) and resource changes (LXC)."""
 
