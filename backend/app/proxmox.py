@@ -371,6 +371,118 @@ def start_guest(
     )
 
 
+_STOP_BUDGET_SECONDS = 60.0
+_DESTROY_BUDGET_SECONDS = 120.0
+
+
+def _guest_status(
+    config: dict[str, Any], node: str, vmid: int, kind: str, *,
+    result: ProxmoxResult,
+) -> str | None:
+    """Current run-state of a guest ('running'/'stopped'/...), or None on error."""
+    data = _call(
+        config, "GET",
+        f"/nodes/{quote(node, safe='')}/{_guest_path(kind)}/{vmid}/status/current",
+        result=result,
+    )
+    if result.status != "ok":
+        return None
+    return str((data or {}).get("status", "")) or None
+
+
+def _guest_exists(config: dict[str, Any], vmid: int) -> bool:
+    """True when a guest with ``vmid`` is present cluster-wide.
+
+    Uses a transient result so a not-found does not poison the caller's
+    transcript (find_guest marks its result failed when absent).
+    """
+    probe = ProxmoxResult()
+    data = _call(config, "GET", "/cluster/resources?type=vm", result=probe)
+    if probe.status != "ok":
+        # Can't tell; assume it may still exist so the caller does not
+        # mistakenly treat an API hiccup as "already gone".
+        return True
+    return any(
+        isinstance(item, dict) and item.get("vmid") == vmid
+        for item in data or []
+    )
+
+
+def stop_guest(
+    config: dict[str, Any],
+    node: str,
+    vmid: int,
+    kind: str,
+    *,
+    result: ProxmoxResult,
+) -> bool:
+    """Force-stop a guest; a already-stopped (or absent) guest is a success.
+
+    Uses ``status/stop`` (immediate power-off) rather than a graceful shutdown
+    because this is only ever called on the deletion path, where the guest is
+    about to be destroyed.
+    """
+    if not _guest_exists(config, vmid):
+        result.log(f"guest {vmid} is already gone; nothing to stop")
+        return True
+    state = _guest_status(config, node, vmid, kind, result=result)
+    if result.status != "ok":
+        return False
+    if state == "stopped":
+        result.log(f"guest {vmid} already stopped")
+        return True
+    upid = _call(
+        config,
+        "POST",
+        f"/nodes/{quote(node, safe='')}/{_guest_path(kind)}/{vmid}/status/stop",
+        result=result,
+        json_body={},
+    )
+    if result.status != "ok":
+        return False
+    return _wait_task(
+        config, node, upid, result=result,
+        budget=_STOP_BUDGET_SECONDS, label="stop",
+    )
+
+
+def destroy_guest(
+    config: dict[str, Any],
+    node: str,
+    vmid: int,
+    kind: str,
+    *,
+    result: ProxmoxResult,
+) -> bool:
+    """Destroy a guest and its disks; an already-absent guest is a success.
+
+    Idempotent: if the guest is not present on the cluster (already destroyed),
+    returns True without an API call. Otherwise issues a DELETE with disk purge
+    and waits for the task to finish.
+    """
+    if not _guest_exists(config, vmid):
+        result.log(f"guest {vmid} is already gone; nothing to destroy")
+        return True
+    # purge=1 removes the guest from all related configs (HA, replication,
+    # backup jobs) so no dangling references remain. We deliberately do NOT
+    # pass destroy-unreferenced-disks: that would also reap volumes keyed to
+    # this VMID that are not in the current config (e.g. a disk an operator
+    # detached but intentionally retained), risking silent data loss on an
+    # automatic grace-expiry destroy. Only the guest's referenced disks go.
+    upid = _call(
+        config,
+        "DELETE",
+        f"/nodes/{quote(node, safe='')}/{_guest_path(kind)}/{vmid}?purge=1",
+        result=result,
+    )
+    if result.status != "ok":
+        return False
+    return _wait_task(
+        config, node, upid, result=result,
+        budget=_DESTROY_BUDGET_SECONDS, label="destroy",
+    )
+
+
 def get_lxc_ip(
     config: dict[str, Any],
     node: str,

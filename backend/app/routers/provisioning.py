@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -882,8 +884,22 @@ def _require_self_or_admin(actor: dict[str, Any], user_id: int) -> bool:
     )
 
 
-def _server_out(server: dict[str, Any]) -> UserServerOut:
-    return UserServerOut(**server)
+def _server_out(
+    server: dict[str, Any], *, include_error: bool = False
+) -> UserServerOut:
+    """Serialize a server row, deriving the deferred-deletion flags.
+
+    ``include_error`` controls whether the destroy-failure detail is exposed:
+    only administrators (who own the recovery flow) see it; owners never do.
+    """
+    requested_at = server.get("deletion_requested_at", "") or ""
+    error = server.get("deletion_error", "") or ""
+    data = dict(server)
+    data["deletion_requested_at"] = requested_at
+    data["deletion_pending"] = bool(requested_at)
+    data["deletion_failed"] = bool(error)
+    data["deletion_error"] = error if include_error else ""
+    return UserServerOut(**data)
 
 
 def _check_resource_quota(
@@ -911,16 +927,198 @@ def _check_resource_quota(
             )
 
 
+# Deferred-deletion grace window: a requested deletion can be cancelled for
+# this long before the sweep destroys the guest (issue_015-r4 F1).
+_DELETION_GRACE_SECONDS = 24 * 60 * 60
+_TS_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+# The lazy sweep runs on the request path (and at startup). To bound worst-case
+# request latency and avoid a backlog of due deletions compounding within one
+# request, at most this many guests are destroyed per sweep call; the rest
+# settle on the next trigger. Kept at 1 so a single list request never blocks on
+# more than one stop+destroy round-trip (each bounded by the Proxmox task
+# budgets); a backlog drains across successive requests/startup. A single-flight
+# lock ensures concurrent list requests do not each launch a blocking sweep.
+_SWEEP_MAX_PER_CALL = 1
+_sweep_lock = threading.Lock()
+
+
+def _utcnow_str() -> str:
+    """Current UTC time in the same textual format SQLite's datetime('now')."""
+    return datetime.now(timezone.utc).strftime(_TS_FORMAT)
+
+
+def _parse_ts(value: str) -> datetime | None:
+    """Parse a stored timestamp as UTC; None when unparseable/empty."""
+    value = (value or "").strip()
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, _TS_FORMAT).replace(tzinfo=timezone.utc)
+    except ValueError:
+        # Tolerate fractional seconds or an ISO 'T' separator just in case.
+        try:
+            return datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+
+
+def _deletion_due(requested_at: str, *, now: datetime | None = None) -> bool:
+    """True when a deletion request has passed the grace window."""
+    ts = _parse_ts(requested_at)
+    if ts is None:
+        return False
+    now = now or datetime.now(timezone.utc)
+    return (now - ts).total_seconds() >= _DELETION_GRACE_SECONDS
+
+
+def _destroy_and_settle(
+    conn: sqlite3.Connection, row: dict[str, Any]
+) -> None:
+    """Destroy one server's guest and settle its record.
+
+    On success the record is removed. On failure the record is kept and marked
+    with ``deletion_error`` (moving it into the admin-only recovery list) and
+    the destroy transcript is appended to ``last_log``. Never raises.
+    """
+    settings_row = repository.get_settings_row(conn)
+    if not _provider_configured(settings_row):
+        # Can't destroy without a provider; record the reason and keep the row
+        # so an admin can act once the provider is configured.
+        repository.update_user_server(
+            conn, row["user_id"], row["id"],
+            deletion_error="The LXC/VM provider is not configured; "
+            "cannot destroy the guest.",
+        )
+        return
+    outcome = servers.destroy_server(
+        provider_config=_provider_config(settings_row),
+        node=row.get("node", ""),
+        vmid=row.get("vmid"),
+        kind=row.get("kind", "lxc"),
+    )
+    transcript = outcome.get("transcript", "")
+    if outcome.get("status") == "ok":
+        repository.delete_user_server(conn, row["user_id"], row["id"])
+        logger.info(
+            "Deferred deletion destroyed server id=%s (user=%s, vmid=%s)",
+            row["id"], row["user_id"], row.get("vmid"),
+        )
+        return
+    # Failed: keep the row, record the error, append the transcript.
+    merged_log = (row.get("last_log", "") +
+                  "\n\n--- deletion (destroy failed) ---\n" +
+                  transcript).strip()
+    repository.update_user_server(
+        conn, row["user_id"], row["id"],
+        deletion_error=(transcript.splitlines()[-1] if transcript else
+                        "destroy failed"),
+        last_log=merged_log,
+    )
+    logger.warning(
+        "Deferred deletion FAILED for server id=%s (user=%s, vmid=%s); "
+        "kept in admin list for recovery",
+        row["id"], row["user_id"], row.get("vmid"),
+    )
+
+
+def expire_pending_server_deletions(conn: sqlite3.Connection) -> int:
+    """Destroy guests whose deletion grace window has elapsed (lazy sweep).
+
+    Called opportunistically (app startup and on each server-list request),
+    mirroring the sessions.purge_expired precedent - there is no background
+    scheduler. Returns the number of servers actioned. Best-effort and
+    self-contained: a failure on one server is recorded and never blocks the
+    others or the triggering request.
+
+    Bounded and single-flight: at most ``_SWEEP_MAX_PER_CALL`` guests are
+    destroyed per call, and if another sweep is already running this call
+    returns immediately (0) instead of piling on duplicate blocking work.
+    """
+    if not _sweep_lock.acquire(blocking=False):
+        # Another request/startup is already sweeping; don't duplicate the
+        # (blocking, network-bound) work or hold up this request.
+        return 0
+    try:
+        return _run_deletion_sweep(conn)
+    finally:
+        _sweep_lock.release()
+
+
+def _run_deletion_sweep(conn: sqlite3.Connection) -> int:
+    actioned = 0
+    try:
+        pending = repository.list_servers_pending_deletion(conn)
+    except Exception:  # noqa: BLE001 - a sweep must never break the caller
+        logger.exception("Could not list servers pending deletion")
+        return 0
+    now = datetime.now(timezone.utc)
+    for row in pending:
+        if actioned >= _SWEEP_MAX_PER_CALL:
+            # Defer the remaining due rows to the next trigger to bound the
+            # latency this one request/startup pass can incur.
+            break
+        # Skip rows already marked failed: they await admin action, not a
+        # re-destroy on every list call (avoids hammering a broken provider).
+        if row.get("deletion_error"):
+            continue
+        requested_at = row.get("deletion_requested_at", "")
+        if _parse_ts(requested_at) is None:
+            # A non-empty but unparseable timestamp would otherwise leave the
+            # server "pending" forever and invisible to admins. Surface it as a
+            # recoverable error rather than silently never destroying it.
+            try:
+                repository.update_user_server(
+                    conn, row["user_id"], row["id"],
+                    deletion_error=(
+                        "Deletion timestamp is unreadable; cannot determine the "
+                        "grace window. Cancel and re-request, or force-remove."
+                    ),
+                )
+                actioned += 1
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Could not flag malformed deletion timestamp for id=%s",
+                    row["id"],
+                )
+            continue
+        if not _deletion_due(requested_at, now=now):
+            continue
+        try:
+            _destroy_and_settle(conn, row)
+            actioned += 1
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Unexpected error settling deletion for server id=%s", row["id"]
+            )
+    return actioned
+
+
 @router.get("/users/{user_id}/servers", response_model=list[UserServerOut])
 def list_user_servers(
     user_id: int,
     actor: dict[str, Any] = Depends(get_current_user),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> list[UserServerOut]:
-    _require_self_or_admin(actor, user_id)
+    is_admin = _require_self_or_admin(actor, user_id)
     if repository.get_user_by_id(conn, user_id) is None:
         raise HTTPException(status_code=404, detail="User not found")
-    return [_server_out(s) for s in repository.list_user_servers(conn, user_id)]
+    # Lazy deferred-deletion sweep (no background scheduler): destroy any guest
+    # whose 24h grace window has elapsed before returning the list, so the
+    # caller sees an up-to-date view. Best-effort; never blocks the response.
+    expire_pending_server_deletions(conn)
+    rows = repository.list_user_servers(conn, user_id)
+    if is_admin:
+        # Admins see everything, including servers whose destroy failed, with
+        # the failure detail for recovery.
+        return [_server_out(s, include_error=True) for s in rows]
+    # Owners never see failed-destroy rows (those are the admin's to resolve)
+    # nor the error detail.
+    return [
+        _server_out(s)
+        for s in rows
+        if not (s.get("deletion_error") or "")
+    ]
 
 
 @router.get("/users/{user_id}/servers/usage", response_model=ServerUsageOut)
@@ -1532,15 +1730,23 @@ def update_user_server(
 
 
 @router.delete(
-    "/users/{user_id}/servers/{server_id}", response_model=MessageOut
+    "/users/{user_id}/servers/{server_id}", response_model=UserServerOut
 )
-def delete_user_server(
+def request_server_deletion(
     user_id: int,
     server_id: int,
     actor: dict[str, Any] = Depends(get_current_user),
     __: None = Depends(verify_csrf),
     conn: sqlite3.Connection = Depends(get_db),
-) -> MessageOut:
+) -> UserServerOut:
+    """Request deletion of a server (deferred; 24h grace, then auto-destroy).
+
+    The caller has already been warned this is permanent and irreversible. The
+    server enters a "deletion pending" state for 24 hours, during which it can
+    be cancelled; after the window elapses a sweep stops and destroys the guest
+    and removes the record. Owners (self-service) and admins may request their
+    own; force-removal (below) is a separate admin-only action.
+    """
     is_admin = _require_self_or_admin(actor, user_id)
     server = repository.get_user_server(conn, user_id, server_id)
     if server is None:
@@ -1548,22 +1754,150 @@ def delete_user_server(
     if not is_admin and not actor.get("self_service"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only self-service users may remove their server records",
+            detail="Only self-service users may delete their servers",
         )
-    repository.delete_user_server(conn, user_id, server_id)
+    if server.get("deletion_error"):
+        # A failed-destroy record is the admin's to resolve via force-remove.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This server's automatic destruction failed; an administrator "
+                "must resolve it."
+            ),
+        )
+    if server.get("deletion_requested_at"):
+        # Idempotent: already scheduled.
+        return _server_out(server, include_error=is_admin)
+    updated = repository.update_user_server(
+        conn, user_id, server_id, deletion_requested_at=_utcnow_str()
+    )
+    assert updated is not None
     audit.record(
         conn,
         category=audit.CATEGORY_USER,
-        action="server_delete",
+        action="server_delete_request",
         actor=actor,
         target_type="user_server",
         target_id=server_id,
         target_name=server["name"],
-        detail="record removed; the guest itself is not touched",
+        detail="deletion scheduled (24h grace before the guest is destroyed)",
     )
-    return MessageOut(
-        detail=(
-            "Server record removed. The LXC/VM itself was not deleted; "
-            "manage it in Proxmox."
+    logger.info(
+        "Server deletion requested by user=%r for server id=%s (user=%s)",
+        actor.get("username"), server_id, user_id,
+    )
+    return _server_out(updated, include_error=is_admin)
+
+
+@router.post(
+    "/users/{user_id}/servers/{server_id}/cancel-deletion",
+    response_model=UserServerOut,
+)
+def cancel_server_deletion(
+    user_id: int,
+    server_id: int,
+    actor: dict[str, Any] = Depends(get_current_user),
+    __: None = Depends(verify_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> UserServerOut:
+    """Cancel a pending deletion before the grace window elapses."""
+    is_admin = _require_self_or_admin(actor, user_id)
+    server = repository.get_user_server(conn, user_id, server_id)
+    if server is None:
+        raise HTTPException(status_code=404, detail="Server not found")
+    if not is_admin and not actor.get("self_service"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only self-service users may manage their servers",
         )
+    if server.get("deletion_error"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This server already failed to destroy and cannot be "
+                "un-scheduled; an administrator must resolve it."
+            ),
+        )
+    if not server.get("deletion_requested_at"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This server is not scheduled for deletion.",
+        )
+    updated = repository.update_user_server(
+        conn, user_id, server_id, deletion_requested_at=""
     )
+    assert updated is not None
+    audit.record(
+        conn,
+        category=audit.CATEGORY_USER,
+        action="server_delete_cancel",
+        actor=actor,
+        target_type="user_server",
+        target_id=server_id,
+        target_name=server["name"],
+        detail="pending deletion cancelled",
+    )
+    return _server_out(updated, include_error=is_admin)
+
+
+@router.post(
+    "/users/{user_id}/servers/{server_id}/force-remove",
+    response_model=MessageOut,
+)
+def force_remove_server(
+    user_id: int,
+    server_id: int,
+    actor: dict[str, Any] = Depends(require_admin),
+    __: None = Depends(verify_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> MessageOut:
+    """Administrator-only: remove a server record, even if its destroy failed.
+
+    A best-effort destroy is attempted first, but the record is removed
+    regardless of the outcome - the administrator is expected to have verified
+    the guest's state directly in Proxmox. Intended to clear records left in
+    the admin list after an automatic destruction failed.
+    """
+    server = repository.get_user_server(conn, user_id, server_id)
+    if server is None:
+        raise HTTPException(status_code=404, detail="Server not found")
+    settings_row = repository.get_settings_row(conn)
+    destroy_status = "skipped"
+    if _provider_configured(settings_row) and server.get("vmid") is not None:
+        outcome = servers.destroy_server(
+            provider_config=_provider_config(settings_row),
+            node=server.get("node", ""),
+            vmid=server.get("vmid"),
+            kind=server.get("kind", "lxc"),
+        )
+        destroy_status = outcome.get("status", "failed")
+    repository.delete_user_server(conn, user_id, server_id)
+    # Record enough to reconcile an orphaned guest: when destroy did not
+    # confirm, the guest may still be running with the owner's key installed.
+    audit.record(
+        conn,
+        category=audit.CATEGORY_USER,
+        action="server_force_remove",
+        actor=actor,
+        target_type="user_server",
+        target_id=server_id,
+        target_name=server["name"],
+        detail=(
+            f"record force-removed by admin (destroy={destroy_status}; "
+            f"vmid={server.get('vmid')} node={server.get('node') or '?'} "
+            f"ip={server.get('ip_address') or '?'})"
+            + ("" if destroy_status == "ok"
+               else " -- guest NOT confirmed destroyed; verify/clean up in "
+               "Proxmox (owner key may still be installed)")
+        ),
+    )
+    logger.warning(
+        "Server id=%s (user=%s) force-removed by admin=%r (destroy=%s)",
+        server_id, user_id, actor.get("username"), destroy_status,
+    )
+    note = (
+        " The guest was destroyed."
+        if destroy_status == "ok"
+        else " The guest was NOT confirmed destroyed; verify it in Proxmox."
+    )
+    return MessageOut(detail="Server record removed." + note)

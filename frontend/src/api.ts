@@ -302,10 +302,25 @@ export const api = {
       body: input,
     }),
 
+  /** Request deferred deletion (24h grace); returns the updated server. */
   deleteUserServer: (userId: number, serverId: number) =>
-    request<{ detail: string }>(`users/${userId}/servers/${serverId}`, {
+    request<UserServer>(`users/${userId}/servers/${serverId}`, {
       method: "DELETE",
     }),
+
+  /** Cancel a pending deferred deletion; returns the updated server. */
+  cancelServerDeletion: (userId: number, serverId: number) =>
+    request<UserServer>(
+      `users/${userId}/servers/${serverId}/cancel-deletion`,
+      { method: "POST" },
+    ),
+
+  /** Admin-only: force-remove a server record (even if its destroy failed). */
+  forceRemoveServer: (userId: number, serverId: number) =>
+    request<{ detail: string }>(
+      `users/${userId}/servers/${serverId}/force-remove`,
+      { method: "POST" },
+    ),
 
   listAccountServerTemplates: () =>
     request<ServerTemplateOption[]>("account/server-templates"),

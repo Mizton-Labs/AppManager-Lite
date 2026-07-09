@@ -268,6 +268,12 @@ export interface UserServer {
   admin_modified: boolean;
   status: "created" | "reference" | "failed";
   last_log: string;
+  // Deferred deletion (issue_015-r4 F1).
+  deletion_requested_at: string;
+  deletion_pending: boolean;
+  deletion_failed: boolean;
+  /** Only populated in administrator responses. */
+  deletion_error: string;
   created_at: string;
 }
 

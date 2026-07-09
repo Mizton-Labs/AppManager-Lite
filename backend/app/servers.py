@@ -609,6 +609,49 @@ def read_ip_from_guest(
     return ""
 
 
+def destroy_server(
+    *,
+    provider_config: dict[str, Any],
+    node: str,
+    vmid: int | None,
+    kind: str,
+) -> dict[str, Any]:
+    """Stop and destroy a guest for the deferred-deletion path.
+
+    Returns ``{status, transcript}``. ``status`` is ``"ok"`` when the guest is
+    gone (destroyed now, or already absent), otherwise ``"failed"`` with the
+    failure recorded in the transcript. Records with no ``vmid`` (references or
+    never-cloned failures) have nothing to destroy and succeed immediately.
+    Never raises - the transcript carries the details for the caller to persist.
+    """
+    result = ProxmoxResult()
+    if vmid is None:
+        result.log("No guest was ever provisioned; nothing to destroy")
+        return {"status": "ok", "transcript": result.transcript}
+    result.log(f"Destroying {kind} guest {vmid} on node {node or '?'}")
+    if not node:
+        # Without a node we cannot address the guest; try to locate it.
+        found = proxmox.find_guest(provider_config, vmid, result=ProxmoxResult())
+        if found is not None:
+            node = found["node"]
+            kind = found["kind"]
+        else:
+            result.log(
+                f"guest {vmid} was not found on the cluster; treating as "
+                "already destroyed"
+            )
+            return {"status": "ok", "transcript": result.transcript}
+    # Force-stop first (a running guest cannot be destroyed), then destroy.
+    if not proxmox.stop_guest(provider_config, node, vmid, kind, result=result):
+        return {"status": "failed", "transcript": result.transcript}
+    if not proxmox.destroy_guest(
+        provider_config, node, vmid, kind, result=result
+    ):
+        return {"status": "failed", "transcript": result.transcript}
+    result.log(f"Guest {vmid} destroyed")
+    return {"status": "ok", "transcript": result.transcript}
+
+
 def create_server(
     *,
     provider_config: dict[str, Any],

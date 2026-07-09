@@ -117,6 +117,7 @@ export function UserServersPanel(props: {
               key={server.id}
               server={server}
               canDelete={props.canDelete}
+              isAdmin={props.isAdmin ?? false}
               onChanged={refresh}
             />
           ))}
@@ -394,6 +395,7 @@ function AddServerForm(props: {
 function ServerCard(props: {
   server: UserServer;
   canDelete: boolean;
+  isAdmin: boolean;
   onChanged: () => void | Promise<void>;
 }) {
   const { server } = props;
@@ -402,6 +404,7 @@ function ServerCard(props: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [confirmingForce, setConfirmingForce] = useState(false);
 
   const needsIp = server.kind === "vm" && !server.ip_address &&
     server.status !== "failed";
@@ -423,33 +426,74 @@ function ServerCard(props: {
     }
   }
 
-  async function remove() {
+  async function scheduleDeletion() {
     setBusy(true);
     setError(null);
     try {
       await api.deleteUserServer(server.user_id, server.id);
+      setConfirmingDelete(false);
       await props.onChanged();
     } catch (err) {
       setError(
-        err instanceof ApiError ? err.message : "Unable to remove the record.",
+        err instanceof ApiError ? err.message : "Unable to schedule deletion.",
       );
+    } finally {
       setBusy(false);
     }
   }
 
+  async function cancelDeletion() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.cancelServerDeletion(server.user_id, server.id);
+      await props.onChanged();
+    } catch (err) {
+      setError(
+        err instanceof ApiError ? err.message : "Unable to cancel deletion.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function forceRemove() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.forceRemoveServer(server.user_id, server.id);
+      setConfirmingForce(false);
+      await props.onChanged();
+    } catch (err) {
+      setError(
+        err instanceof ApiError ? err.message : "Unable to force-remove.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const cardClass = server.deletion_failed
+    ? "server-card deletion-failed"
+    : server.deletion_pending
+      ? "server-card deletion-pending"
+      : server.status === "failed"
+        ? "server-card failed"
+        : "server-card";
+
   return (
-    <article
-      className={
-        server.status === "failed" ? "server-card failed" : "server-card"
-      }
-    >
+    <article className={cardClass}>
       <div className="server-card-head">
         <span className="server-name">
           {server.name}
           {server.ip_address ? ` - ${server.ip_address}` : ""}
         </span>
         <span className="role-badge">{server.kind.toUpperCase()}</span>
-        {server.status === "failed" ? (
+        {server.deletion_failed ? (
+          <span className="status-badge rejected">deletion failed</span>
+        ) : server.deletion_pending ? (
+          <span className="status-badge warn">deletion pending</span>
+        ) : server.status === "failed" ? (
           <span className="status-badge warn">failed</span>
         ) : server.status === "reference" ? (
           <span className="status-badge ok">reference</span>
@@ -469,6 +513,27 @@ function ServerCard(props: {
           {error}
         </p>
       )}
+
+      {server.deletion_failed && props.isAdmin && (
+        <p className="alert error" role="alert">
+          Automatic destruction of this server failed. Check the guest directly
+          in Proxmox, then force-remove this record.
+          {server.deletion_error && (
+            <>
+              {" "}
+              <span className="muted">({server.deletion_error})</span>
+            </>
+          )}
+        </p>
+      )}
+
+      {server.deletion_pending && !server.deletion_failed && (
+        <p className="alert warn" role="status">
+          Scheduled for deletion — {deletionCountdown(server.deletion_requested_at)}.
+          This is permanent; cancel below to keep the server.
+        </p>
+      )}
+
       {needsIp && (
         <div className="row-actions">
           <input
@@ -488,6 +553,7 @@ function ServerCard(props: {
           </button>
         </div>
       )}
+
       <div className="row-actions">
         {server.last_log && (
           <button
@@ -499,27 +565,110 @@ function ServerCard(props: {
             {showLog ? "Hide log" : "View log"}
           </button>
         )}
-        {props.canDelete &&
-          (confirmingDelete ? (
-            <button
-              type="button"
-              className="btn danger"
-              onClick={remove}
-              disabled={busy}
-            >
-              Confirm remove record
-            </button>
+
+        {/* Pending (not failed): allow cancelling the scheduled deletion. */}
+        {server.deletion_pending && !server.deletion_failed && (
+          <button
+            type="button"
+            className="btn"
+            onClick={cancelDeletion}
+            disabled={busy}
+          >
+            Cancel deletion
+          </button>
+        )}
+
+        {/* Admin recovery for a failed destroy: force-remove the record. */}
+        {server.deletion_failed && props.isAdmin && (
+          confirmingForce ? (
+            <>
+              <button
+                type="button"
+                className="btn danger"
+                onClick={forceRemove}
+                disabled={busy}
+              >
+                Confirm force remove
+              </button>
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => setConfirmingForce(false)}
+                disabled={busy}
+              >
+                Keep
+              </button>
+            </>
           ) : (
             <button
               type="button"
-              className="btn ghost"
+              className="btn danger"
+              onClick={() => setConfirmingForce(true)}
+            >
+              Force remove
+            </button>
+          )
+        )}
+
+        {/* Normal delete entry point: schedule a deferred deletion. Hidden once
+            pending/failed (those have their own actions above). */}
+        {props.canDelete &&
+          !server.deletion_pending &&
+          !server.deletion_failed &&
+          (confirmingDelete ? (
+            <>
+              <button
+                type="button"
+                className="btn danger"
+                onClick={scheduleDeletion}
+                disabled={busy}
+              >
+                Yes, schedule deletion
+              </button>
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => setConfirmingDelete(false)}
+                disabled={busy}
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              className="btn danger"
               onClick={() => setConfirmingDelete(true)}
             >
-              Remove
+              Delete
             </button>
           ))}
       </div>
+
+      {confirmingDelete && !server.deletion_pending && (
+        <p className="alert warn" role="alert">
+          This permanently deletes the server. It enters a 24-hour grace period,
+          then the LXC/VM is destroyed and cannot be recovered. You can cancel
+          during the grace period.
+        </p>
+      )}
+
       {showLog && <pre className="push-log">{server.last_log}</pre>}
     </article>
   );
+}
+
+/** Human "time left" until a pending deletion is destroyed (24h from request). */
+function deletionCountdown(requestedAt: string): string {
+  const requested = Date.parse(requestedAt.replace(" ", "T") + "Z");
+  if (Number.isNaN(requested)) return "within 24 hours";
+  const destroyAt = requested + 24 * 60 * 60 * 1000;
+  const msLeft = destroyAt - Date.now();
+  if (msLeft <= 0) return "destroying shortly";
+  const hours = Math.floor(msLeft / (60 * 60 * 1000));
+  if (hours >= 1) {
+    return `auto-destroys in about ${hours} hour${hours === 1 ? "" : "s"}`;
+  }
+  const minutes = Math.max(1, Math.floor(msLeft / (60 * 1000)));
+  return `auto-destroys in about ${minutes} minute${minutes === 1 ? "" : "s"}`;
 }

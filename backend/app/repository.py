@@ -1816,6 +1816,8 @@ def _row_to_user_server(row: sqlite3.Row) -> dict[str, Any]:
         "admin_ssh_key_id": row["admin_ssh_key_id"],
         "status": row["status"],
         "last_log": row["last_log"],
+        "deletion_requested_at": row["deletion_requested_at"],
+        "deletion_error": row["deletion_error"],
         "created_at": row["created_at"],
     }
 
@@ -1939,6 +1941,8 @@ def update_user_server(
     admin_modified: bool | None = None,
     status: str | None = None,
     last_log: str | None = None,
+    deletion_requested_at: str | None = None,
+    deletion_error: str | None = None,
 ) -> dict[str, Any] | None:
     if get_user_server(conn, user_id, server_id) is None:
         return None
@@ -1957,6 +1961,10 @@ def update_user_server(
         columns["status"] = status
     if last_log is not None:
         columns["last_log"] = last_log
+    if deletion_requested_at is not None:
+        columns["deletion_requested_at"] = deletion_requested_at
+    if deletion_error is not None:
+        columns["deletion_error"] = deletion_error
     if columns:
         assignments = ", ".join(f"{col} = ?" for col in columns)
         conn.execute(
@@ -1975,3 +1983,20 @@ def delete_user_server(
         (server_id, user_id),
     )
     return cur.rowcount > 0
+
+
+def list_servers_pending_deletion(
+    conn: sqlite3.Connection,
+) -> list[dict[str, Any]]:
+    """All servers with an outstanding deletion request, across every user.
+
+    Used by the deferred-deletion sweep. Rows already marked with a
+    ``deletion_error`` are still returned so a retry can clear or re-record
+    the error; the sweep decides whether the grace window has elapsed.
+    """
+    rows = conn.execute(
+        "SELECT * FROM user_servers "
+        "WHERE deletion_requested_at IS NOT NULL AND deletion_requested_at <> '' "
+        "ORDER BY deletion_requested_at, id"
+    ).fetchall()
+    return [_row_to_user_server(r) for r in rows]

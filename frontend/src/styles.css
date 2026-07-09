@@ -1018,6 +1018,17 @@ textarea:focus,
   border-color: var(--warn);
 }
 
+/* Deferred deletion (issue_015-r4 F1). */
+.server-card.deletion-pending {
+  border-color: var(--warn);
+  background: rgba(245, 158, 11, 0.05);
+}
+
+.server-card.deletion-failed {
+  border-color: var(--brand-primary);
+  background: rgba(221, 29, 33, 0.06);
+}
+
 .server-card-head {
   display: flex;
   align-items: center;

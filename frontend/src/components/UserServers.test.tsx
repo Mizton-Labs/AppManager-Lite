@@ -22,6 +22,10 @@ function makeServer(overrides: Partial<UserServer> = {}): UserServer {
     admin_modified: false,
     status: "created",
     last_log: "[t] Server created successfully",
+    deletion_requested_at: "",
+    deletion_pending: false,
+    deletion_failed: false,
+    deletion_error: "",
     created_at: "2026-07-08 00:00:00",
     ...overrides,
   };
@@ -67,6 +71,24 @@ function stubServers(
       servers = [...servers, created];
       return json(created, 201);
     }
+    if (/\/api\/users\/7\/servers\/\d+\/cancel-deletion$/.test(url) &&
+        method === "POST") {
+      servers = servers.map((s) =>
+        url.includes(`/${s.id}/cancel-deletion`)
+          ? { ...s, deletion_pending: false, deletion_requested_at: "" }
+          : s,
+      );
+      return json(
+        servers.find((s) => url.includes(`/${s.id}/cancel-deletion`)),
+      );
+    }
+    if (/\/api\/users\/7\/servers\/\d+\/force-remove$/.test(url) &&
+        method === "POST") {
+      servers = servers.filter(
+        (s) => !url.includes(`/${s.id}/force-remove`),
+      );
+      return json({ detail: "Server record removed. The guest was destroyed." });
+    }
     if (/\/api\/users\/7\/servers\/\d+$/.test(url) && method === "PATCH") {
       const body = JSON.parse(init?.body as string);
       servers = servers.map((s) =>
@@ -75,8 +97,17 @@ function stubServers(
       return json(servers.find((s) => url.endsWith(`/${s.id}`)));
     }
     if (/\/api\/users\/7\/servers\/\d+$/.test(url) && method === "DELETE") {
-      servers = servers.filter((s) => !url.endsWith(`/${s.id}`));
-      return json({ detail: "Server record removed." });
+      // Deferred deletion: the server is marked pending, not removed.
+      servers = servers.map((s) =>
+        url.endsWith(`/${s.id}`)
+          ? {
+              ...s,
+              deletion_pending: true,
+              deletion_requested_at: "2026-07-08 00:00:00",
+            }
+          : s,
+      );
+      return json(servers.find((s) => url.endsWith(`/${s.id}`)));
     }
     return json({ detail: `unexpected ${method} ${url}` }, 500);
   });
@@ -174,16 +205,80 @@ describe("UserServersPanel", () => {
     expect(screen.getByText(/clone: task failed/i)).toBeInTheDocument();
   });
 
-  it("removes a server record after confirmation", async () => {
+  it("schedules a deferred deletion after confirmation", async () => {
     stubServers([makeServer()]);
     render(<UserServersPanel userId={7} canCreate={false} canDelete />);
 
     await screen.findByText("coder box - 10.0.7.42");
-    await userEvent.click(screen.getByRole("button", { name: /^remove$/i }));
+    await userEvent.click(screen.getByRole("button", { name: /^delete$/i }));
+    // Confirmation warns about the permanent 24h-grace deletion.
+    expect(
+      screen.getByText(/enters a 24-hour grace period/i),
+    ).toBeInTheDocument();
     await userEvent.click(
-      screen.getByRole("button", { name: /confirm remove record/i }),
+      screen.getByRole("button", { name: /yes, schedule deletion/i }),
+    );
+    // The server stays listed, now marked pending with a cancel action.
+    expect(await screen.findByText(/deletion pending/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /cancel deletion/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("cancels a pending deletion", async () => {
+    stubServers([
+      makeServer({
+        deletion_pending: true,
+        deletion_requested_at: "2999-01-01 00:00:00",
+      }),
+    ]);
+    render(<UserServersPanel userId={7} canCreate={false} canDelete />);
+
+    expect(await screen.findByText(/deletion pending/i)).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: /cancel deletion/i }),
+    );
+    // After cancelling, the pending badge is gone and Delete is available.
+    expect(await screen.findByRole("button", { name: /^delete$/i })).toBeInTheDocument();
+    expect(screen.queryByText(/deletion pending/i)).toBeNull();
+  });
+
+  it("shows the destroy error and force-remove only to admins", async () => {
+    stubServers([
+      makeServer({
+        deletion_pending: true,
+        deletion_failed: true,
+        deletion_requested_at: "2026-07-08 00:00:00",
+        deletion_error: "destroy: task failed (lock)",
+      }),
+    ]);
+    render(<UserServersPanel userId={7} canCreate={false} canDelete isAdmin />);
+
+    expect(await screen.findByText(/deletion failed/i)).toBeInTheDocument();
+    expect(screen.getByText(/destroy: task failed \(lock\)/i)).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: /^force remove$/i }),
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: /confirm force remove/i }),
     );
     expect(await screen.findByText(/no servers/i)).toBeInTheDocument();
+  });
+
+  it("hides force-remove and the error from non-admins", async () => {
+    // A failed-destroy row would not normally be sent to a non-admin, but the
+    // UI must also gate the admin-only affordances defensively.
+    stubServers([
+      makeServer({
+        deletion_pending: true,
+        deletion_failed: true,
+        deletion_requested_at: "2026-07-08 00:00:00",
+        deletion_error: "",
+      }),
+    ]);
+    render(<UserServersPanel userId={7} canCreate={false} canDelete />);
+    await screen.findByText(/deletion failed/i);
+    expect(screen.queryByRole("button", { name: /force remove/i })).toBeNull();
   });
 
   it("shows resource quota bars in the create form", async () => {

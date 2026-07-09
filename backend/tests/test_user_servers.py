@@ -32,7 +32,7 @@ class _FakeProxmox:
 
     def __init__(self, monkeypatch, *, template_resources=None,
                  clone_ok=True, start_ok=True, ip="10.0.7.42",
-                 extra_iface_ips=None):
+                 extra_iface_ips=None, destroy_ok=True, live_vmids=None):
         self.calls: list[str] = []
         self.template_resources = template_resources or {
             "cores": 2, "memory": 4096, "rootfs": "local:9001/x,size=20G",
@@ -44,6 +44,12 @@ class _FakeProxmox:
         # (beyond the primary ``ip``). Used to exercise F2 corroboration: an
         # in-guest report is only adopted if it appears in the hypervisor view.
         self.extra_iface_ips = list(extra_iface_ips or [])
+        # Deferred-deletion (F1) destroy controls. When ``live_vmids`` is set,
+        # those vmids appear in /cluster/resources so stop+destroy actually run
+        # (otherwise a guest is treated as already-gone). ``destroy_ok`` decides
+        # whether the destroy task succeeds.
+        self.destroy_ok = destroy_ok
+        self.live_vmids = set(live_vmids or [])
         monkeypatch.setattr(proxmox, "_http_request", self)
         monkeypatch.setattr(proxmox, "_sleep", lambda s: None)
 
@@ -52,13 +58,25 @@ class _FakeProxmox:
         if "/version" in url:
             return _VERSION_OK
         if "/cluster/resources" in url:
-            return _resources_payload([_TEMPLATE_ENTRY])
+            entries = [_TEMPLATE_ENTRY]
+            for vmid in sorted(self.live_vmids):
+                entries.append({
+                    "vmid": vmid, "name": f"guest-{vmid}", "type": "lxc",
+                    "template": 0, "node": "pve1",
+                })
+            return _resources_payload(entries)
         if "/cluster/nextid" in url:
             return (200, {"data": "120"})
         if "/clone" in url:
             return (200, {"data": "UPID:pve1:0001:clone:"})
+        if "/status/current" in url:
+            return (200, {"data": {"status": "running"}})
         if "/status/start" in url:
             return (200, {"data": "UPID:pve1:0002:start:"})
+        if "/status/stop" in url:
+            return (200, {"data": "UPID:pve1:0004:stop:"})
+        if method == "DELETE" and ("/lxc/" in url or "/qemu/" in url):
+            return (200, {"data": "UPID:pve1:0005:destroy:"})
         if "/tasks/" in url:
             if "clone" in url and not self.clone_ok:
                 return (200, {"data": {"status": "stopped",
@@ -66,6 +84,9 @@ class _FakeProxmox:
             if "start" in url and not self.start_ok:
                 return (200, {"data": {"status": "stopped",
                                        "exitstatus": "start error"}})
+            if "destroy" in url and not self.destroy_ok:
+                return (200, {"data": {"status": "stopped",
+                                       "exitstatus": "destroy error"}})
             return (200, {"data": {"status": "stopped", "exitstatus": "OK"}})
         if "/interfaces" in url:
             if not self.ip:
@@ -543,6 +564,221 @@ def test_list_lxc_ips_returns_empty_on_read_failure(monkeypatch) -> None:
     assert got == set()
 
 
+def _proxmox_cfg() -> dict:
+    return {"proxmox_url": "https://pve:8006", "proxmox_api_key": "k",
+            "proxmox_token_name": "t@pam!x", "proxmox_verify_tls": False}
+
+
+def test_destroy_guest_absent_is_success(monkeypatch) -> None:
+    """Destroying an already-absent guest is a no-op success (idempotent)."""
+    from app.proxmox import ProxmoxResult
+    calls = []
+
+    def fake(method, url, *, headers, verify, json_body=None):
+        calls.append(f"{method} {url}")
+        if "/cluster/resources" in url:
+            return (200, {"data": []})  # guest 120 not present
+        raise AssertionError(f"unexpected {method} {url}")
+
+    monkeypatch.setattr(proxmox, "_http_request", fake)
+    monkeypatch.setattr(proxmox, "_sleep", lambda s: None)
+    r = ProxmoxResult()
+    assert proxmox.destroy_guest(_proxmox_cfg(), "pve1", 120, "lxc", result=r)
+    # No DELETE was issued for an already-gone guest.
+    assert not any(c.startswith("DELETE ") for c in calls)
+
+
+def test_stop_guest_absent_is_success(monkeypatch) -> None:
+    from app.proxmox import ProxmoxResult
+
+    def fake(method, url, *, headers, verify, json_body=None):
+        if "/cluster/resources" in url:
+            return (200, {"data": []})
+        raise AssertionError(f"unexpected {method} {url}")
+
+    monkeypatch.setattr(proxmox, "_http_request", fake)
+    monkeypatch.setattr(proxmox, "_sleep", lambda s: None)
+    r = ProxmoxResult()
+    assert proxmox.stop_guest(_proxmox_cfg(), "pve1", 120, "lxc", result=r)
+
+
+def test_stop_guest_already_stopped_skips_stop(monkeypatch) -> None:
+    from app.proxmox import ProxmoxResult
+    calls = []
+
+    def fake(method, url, *, headers, verify, json_body=None):
+        calls.append(f"{method} {url}")
+        if "/cluster/resources" in url:
+            return (200, {"data": [{"vmid": 120, "type": "lxc",
+                                    "node": "pve1", "name": "g"}]})
+        if "/status/current" in url:
+            return (200, {"data": {"status": "stopped"}})
+        raise AssertionError(f"unexpected {method} {url}")
+
+    monkeypatch.setattr(proxmox, "_http_request", fake)
+    monkeypatch.setattr(proxmox, "_sleep", lambda s: None)
+    r = ProxmoxResult()
+    assert proxmox.stop_guest(_proxmox_cfg(), "pve1", 120, "lxc", result=r)
+    assert not any("/status/stop" in c for c in calls)
+
+
+def test_destroy_server_no_vmid_is_success() -> None:
+    from app import servers as s
+    out = s.destroy_server(
+        provider_config=_proxmox_cfg(), node="", vmid=None, kind="lxc"
+    )
+    assert out["status"] == "ok"
+
+
+def test_destroy_guest_uses_purge_only_and_quotes_node(monkeypatch) -> None:
+    """destroy_guest must NOT reap unreferenced disks and must quote the node."""
+    from app.proxmox import ProxmoxResult
+    seen = []
+
+    def fake(method, url, *, headers, verify, json_body=None):
+        seen.append(f"{method} {url}")
+        if "/cluster/resources" in url:
+            return (200, {"data": [{"vmid": 120, "type": "lxc",
+                                    "node": "pve/odd", "name": "g"}]})
+        if method == "DELETE":
+            return (200, {"data": "UPID:x:1:d:"})
+        if "/tasks/" in url:
+            return (200, {"data": {"status": "stopped", "exitstatus": "OK"}})
+        raise AssertionError(f"unexpected {method} {url}")
+
+    monkeypatch.setattr(proxmox, "_http_request", fake)
+    monkeypatch.setattr(proxmox, "_sleep", lambda s: None)
+    r = ProxmoxResult()
+    assert proxmox.destroy_guest(_proxmox_cfg(), "pve/odd", 120, "lxc", result=r)
+    delete = [c for c in seen if c.startswith("DELETE ")][0]
+    assert "purge=1" in delete
+    assert "destroy-unreferenced-disks" not in delete
+    # The node with a '/' is percent-encoded, not left to split the path.
+    assert "pve%2Fodd" in delete
+    assert "/nodes/pve/odd/" not in delete
+
+
+def test_deferred_deletion_sweep_is_capped(admin, monkeypatch) -> None:
+    """At most _SWEEP_MAX_PER_CALL guests are destroyed per sweep call; a
+    backlog drains across successive list requests."""
+    from app.routers import provisioning
+    client, csrf, _ = admin
+    live = {201, 202, 203, 204, 205}
+    _FakeProxmox(monkeypatch, live_vmids=live)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    created = _create_member(client, csrf)
+    user_id = created["user"]["id"]
+
+    # Insert 5 servers with vmids, all scheduled and past grace.
+    from app.db import get_connection
+    from app import repository
+    for vmid in sorted(live):
+        with get_connection() as conn:
+            srv = repository.create_user_server(
+                conn, user_id=user_id, name=f"s{vmid}", kind="lxc",
+                status="created", vmid=vmid, node="pve1",
+            )
+        client.delete(
+            f"/api/users/{user_id}/servers/{srv['id']}",
+            headers={"X-CSRF-Token": csrf},
+        )
+        _backdate_deletion(user_id, srv["id"], hours=25)
+
+    cap = provisioning._SWEEP_MAX_PER_CALL
+    total = len(live)
+    # The first list request sweeps at most `cap`; the rest remain pending.
+    remaining = client.get(f"/api/users/{user_id}/servers").json()
+    assert len(remaining) == total - cap
+    assert all(s["deletion_pending"] for s in remaining)
+    # The backlog drains over successive list requests (each sweeps ≤ cap).
+    guard = 0
+    while client.get(f"/api/users/{user_id}/servers").json():
+        guard += 1
+        assert guard <= total + 2, "sweep failed to drain the backlog"
+    # More than one pass was required (proving the per-call cap took effect).
+    assert total > cap and guard >= 1
+
+
+def test_malformed_deletion_timestamp_flagged_for_admin(admin, monkeypatch) -> None:
+    """A corrupt deletion timestamp is surfaced as an admin error, never left
+    silently pending forever."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch, live_vmids={120})
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    created = _create_member(client, csrf)
+    user_id = created["user"]["id"]
+    server = _create_server_for(client, csrf, user_id, template["id"])
+    client.delete(
+        f"/api/users/{user_id}/servers/{server['id']}",
+        headers={"X-CSRF-Token": csrf},
+    )
+    # Corrupt the timestamp directly.
+    from app.db import get_connection
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE user_servers SET deletion_requested_at = 'not-a-date' "
+            "WHERE id = ?",
+            (server["id"],),
+        )
+    admin_view = client.get(f"/api/users/{user_id}/servers").json()
+    assert len(admin_view) == 1
+    assert admin_view[0]["deletion_failed"] is True
+    assert "unreadable" in admin_view[0]["deletion_error"].lower()
+
+
+def test_sweep_provider_unconfigured_records_error(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch, live_vmids={120})
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    created = _create_member(client, csrf)
+    user_id = created["user"]["id"]
+    server = _create_server_for(client, csrf, user_id, template["id"])
+    client.delete(
+        f"/api/users/{user_id}/servers/{server['id']}",
+        headers={"X-CSRF-Token": csrf},
+    )
+    _backdate_deletion(user_id, server["id"], hours=25)
+    # Unconfigure the provider so the sweep cannot destroy.
+    client.patch(
+        "/api/settings/provisioning",
+        json={"proxmox_url": "", "proxmox_token_name": "", "proxmox_api_key": ""},
+        headers={"X-CSRF-Token": csrf},
+    )
+    admin_view = client.get(f"/api/users/{user_id}/servers").json()
+    assert len(admin_view) == 1
+    assert admin_view[0]["deletion_failed"] is True
+    assert "not configured" in admin_view[0]["deletion_error"].lower()
+
+
+def test_cancel_after_grace_before_sweep(admin, monkeypatch) -> None:
+    """Cancelling wins if it beats the sweep, even once past the grace window."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch, live_vmids={120})
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    created = _create_member(client, csrf)
+    user_id = created["user"]["id"]
+    server = _create_server_for(client, csrf, user_id, template["id"])
+    client.delete(
+        f"/api/users/{user_id}/servers/{server['id']}",
+        headers={"X-CSRF-Token": csrf},
+    )
+    _backdate_deletion(user_id, server["id"], hours=25)
+    # Cancel directly (no list call in between, so no sweep has run).
+    cancel = client.post(
+        f"/api/users/{user_id}/servers/{server['id']}/cancel-deletion",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert cancel.status_code == 200
+    assert cancel.json()["deletion_pending"] is False
+
+
 def test_failed_clone_recorded_as_failed(admin, monkeypatch) -> None:
     client, csrf, _ = admin
     _FakeProxmox(monkeypatch, clone_ok=False)
@@ -936,7 +1172,8 @@ def test_self_service_resource_change_policy_and_quota(
     assert "grown" in shrink.json()["detail"]
 
 
-def test_delete_server_record_only(admin, monkeypatch) -> None:
+def test_delete_requests_deferred_deletion(admin, monkeypatch) -> None:
+    """DELETE schedules a deferred deletion (24h grace); it does not remove."""
     client, csrf, _ = admin
     _FakeProxmox(monkeypatch)
     _FakeSsh(monkeypatch)
@@ -950,9 +1187,233 @@ def test_delete_server_record_only(admin, monkeypatch) -> None:
         f"/api/users/{user_id}/servers/{server['id']}",
         headers={"X-CSRF-Token": csrf},
     )
-    assert resp.status_code == 200
-    assert "not deleted" in resp.json()["detail"]
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["deletion_pending"] is True
+    assert body["deletion_requested_at"] != ""
+    # The server is still listed (pending), not removed.
+    listed = client.get(f"/api/users/{user_id}/servers").json()
+    assert len(listed) == 1
+    assert listed[0]["deletion_pending"] is True
+
+
+def _backdate_deletion(user_id: int, server_id: int, hours: float) -> None:
+    """Move a server's deletion request timestamp into the past."""
+    from datetime import datetime, timedelta, timezone
+    from app.db import get_connection
+
+    when = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE user_servers SET deletion_requested_at = ? "
+            "WHERE id = ? AND user_id = ?",
+            (when, server_id, user_id),
+        )
+
+
+def test_deferred_deletion_destroys_after_grace(admin, monkeypatch) -> None:
+    """After 24h the lazy sweep stops+destroys the guest and removes the row."""
+    client, csrf, _ = admin
+    fake = _FakeProxmox(monkeypatch, live_vmids={120})
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    created = _create_member(client, csrf)
+    user_id = created["user"]["id"]
+    server = _create_server_for(client, csrf, user_id, template["id"])
+
+    # Schedule, then backdate past the 24h window.
+    client.delete(
+        f"/api/users/{user_id}/servers/{server['id']}",
+        headers={"X-CSRF-Token": csrf},
+    )
+    _backdate_deletion(user_id, server["id"], hours=25)
+
+    # A list request triggers the sweep: the guest is destroyed and removed.
+    listed = client.get(f"/api/users/{user_id}/servers").json()
+    assert listed == []
+    # stop + destroy were actually issued against the live guest.
+    assert any("/status/stop" in c for c in fake.calls)
+    assert any(c.startswith("DELETE ") and "/lxc/120" in c for c in fake.calls)
+
+
+def test_deferred_deletion_not_destroyed_before_grace(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    fake = _FakeProxmox(monkeypatch, live_vmids={120})
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    created = _create_member(client, csrf)
+    user_id = created["user"]["id"]
+    server = _create_server_for(client, csrf, user_id, template["id"])
+    client.delete(
+        f"/api/users/{user_id}/servers/{server['id']}",
+        headers={"X-CSRF-Token": csrf},
+    )
+    _backdate_deletion(user_id, server["id"], hours=1)  # still within grace
+
+    listed = client.get(f"/api/users/{user_id}/servers").json()
+    assert len(listed) == 1
+    assert listed[0]["deletion_pending"] is True
+    assert not any("/status/stop" in c for c in fake.calls)
+
+
+def test_cancel_deletion_before_grace(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch, live_vmids={120})
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    created = _create_member(client, csrf)
+    user_id = created["user"]["id"]
+    server = _create_server_for(client, csrf, user_id, template["id"])
+    client.delete(
+        f"/api/users/{user_id}/servers/{server['id']}",
+        headers={"X-CSRF-Token": csrf},
+    )
+    cancel = client.post(
+        f"/api/users/{user_id}/servers/{server['id']}/cancel-deletion",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert cancel.status_code == 200, cancel.text
+    assert cancel.json()["deletion_pending"] is False
+    # A cancelled deletion leaves the server active and unscheduled.
+    listed = client.get(f"/api/users/{user_id}/servers").json()
+    assert len(listed) == 1
+    assert listed[0]["deletion_pending"] is False
+
+
+def test_cancel_deletion_when_not_pending_conflicts(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    created = _create_member(client, csrf)
+    user_id = created["user"]["id"]
+    server = _create_server_for(client, csrf, user_id, template["id"])
+    resp = client.post(
+        f"/api/users/{user_id}/servers/{server['id']}/cancel-deletion",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 409
+
+
+def test_failed_destroy_kept_for_admin_hidden_from_user(admin, monkeypatch) -> None:
+    """A destroy failure keeps the row in the admin list (with error) but
+    hides it from the owner."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch, live_vmids={120}, destroy_ok=False)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    # Configure trusted access off to keep the member creation simple.
+    client.patch(
+        "/api/settings/provisioning",
+        json={"provisioning_self_service": True},
+        headers={"X-CSRF-Token": csrf},
+    )
+    created = _create_member(client, csrf, self_service=True)
+    user_id = created["user"]["id"]
+    server = _create_server_for(client, csrf, user_id, template["id"])
+    client.delete(
+        f"/api/users/{user_id}/servers/{server['id']}",
+        headers={"X-CSRF-Token": csrf},
+    )
+    _backdate_deletion(user_id, server["id"], hours=25)
+
+    # Sweep runs on list; destroy fails -> row kept, marked failed.
+    member, member_csrf = _login(
+        client.app, "srvuser@example.com", created["password"]
+    )
+    # Owner no longer sees the failed-destroy server.
+    owner_view = member.get(f"/api/users/{user_id}/servers").json()
+    assert owner_view == []
+    # Admin still sees it, flagged failed, with the error detail.
+    admin_view = client.get(f"/api/users/{user_id}/servers").json()
+    assert len(admin_view) == 1
+    assert admin_view[0]["deletion_failed"] is True
+    assert admin_view[0]["deletion_error"] != ""
+
+
+def test_admin_force_remove_after_failed_destroy(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch, live_vmids={120}, destroy_ok=False)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    created = _create_member(client, csrf)
+    user_id = created["user"]["id"]
+    server = _create_server_for(client, csrf, user_id, template["id"])
+    client.delete(
+        f"/api/users/{user_id}/servers/{server['id']}",
+        headers={"X-CSRF-Token": csrf},
+    )
+    _backdate_deletion(user_id, server["id"], hours=25)
+    client.get(f"/api/users/{user_id}/servers")  # trigger failed sweep
+
+    force = client.post(
+        f"/api/users/{user_id}/servers/{server['id']}/force-remove",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert force.status_code == 200, force.text
+    assert "removed" in force.json()["detail"].lower()
     assert client.get(f"/api/users/{user_id}/servers").json() == []
+
+
+def test_force_remove_requires_admin(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    client.patch(
+        "/api/settings/provisioning",
+        json={"provisioning_self_service": True},
+        headers={"X-CSRF-Token": csrf},
+    )
+    created = _create_member(client, csrf, self_service=True)
+    user_id = created["user"]["id"]
+    server = _create_server_for(client, csrf, user_id, template["id"])
+    member, member_csrf = _login(
+        client.app, "srvuser@example.com", created["password"]
+    )
+    resp = member.post(
+        f"/api/users/{user_id}/servers/{server['id']}/force-remove",
+        headers={"X-CSRF-Token": member_csrf},
+    )
+    assert resp.status_code == 403
+
+
+def test_deferred_deletion_no_vmid_row_honors_grace(admin, monkeypatch) -> None:
+    """A record with no vmid (never cloned) still waits the grace window, then
+    is removed with no Proxmox destroy call."""
+    client, csrf, _ = admin
+    fake = _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    created = _create_member(client, csrf)
+    user_id = created["user"]["id"]
+    # A reference-style record with no vmid, inserted directly.
+    from app.db import get_connection
+    from app import repository
+    with get_connection() as conn:
+        ref = repository.create_user_server(
+            conn, user_id=user_id, name="ref", kind="lxc", status="reference",
+        )
+    client.delete(
+        f"/api/users/{user_id}/servers/{ref['id']}",
+        headers={"X-CSRF-Token": csrf},
+    )
+    _backdate_deletion(user_id, ref["id"], hours=25)
+    fake.calls.clear()
+    listed = client.get(f"/api/users/{user_id}/servers").json()
+    assert listed == []
+    # No stop/destroy was attempted for a record that never had a guest.
+    assert not any("/status/stop" in c for c in fake.calls)
+    assert not any(c.startswith("DELETE ") for c in fake.calls)
 
 
 def test_duplicate_server_name_rejected(admin, monkeypatch) -> None:
