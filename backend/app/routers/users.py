@@ -285,9 +285,12 @@ def delete_user(
             detail="You cannot delete your own account",
         )
     _guard_last_admin(conn, target, removing=True)
-    # Capture the OS username + public key before the row is deleted so the
-    # jump-server account's key can be revoked afterwards.
-    _jump_os_user = jumpserver.os_user_for(target)
+    # Capture the target jump account + public key before the row is deleted so
+    # the jump-server account's key can be revoked afterwards. In shared mode
+    # the key lives in the shared jumper account; in per-user mode it lives in
+    # the user's own account.
+    _jump_cfg = jumpserver.load_config(conn)
+    _jump_os_user = jumpserver.target_account(_jump_cfg, target)
     _jump_key = repository.get_user_ssh_key(conn, user_id) or {}
     _jump_pubkey = _jump_key.get("public_key", "")
     repository.delete_user(

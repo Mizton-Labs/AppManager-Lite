@@ -813,7 +813,7 @@ def render_builtin_ssh_config(
         parts.append(
             "Host jumpserver\n"
             f"    Hostname {bundle_host}\n"
-            f"    User {jump.get('user', '') or user_id}\n"
+            f"    User {jump.get('jump_user', '') or user_id}\n"
             f"    Port {bundle_port}\n"
             "    IdentityFile ~/.ssh/id_ed25519\n"
         )
@@ -1465,6 +1465,9 @@ _PROVISIONING_COLUMNS = (
     "jump_user",
     "jump_port",
     "jump_ssh_key_id",
+    "jump_management_user",
+    "jump_account_mode",
+    "jump_jumper_user",
     "jump_bundle_override",
     "jump_bundle_host",
     "jump_bundle_port",

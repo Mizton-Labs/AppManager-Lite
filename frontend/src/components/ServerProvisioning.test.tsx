@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ServerProvisioning } from "./ServerProvisioning";
 import type { ProvisioningSettings } from "../types";
@@ -25,6 +25,9 @@ const defaults: ProvisioningSettings = {
   jump_user: "",
   jump_port: 22,
   jump_ssh_key_id: null,
+  jump_management_user: "root",
+  jump_account_mode: "per_user",
+  jump_jumper_user: "",
   jump_bundle_override: false,
   jump_bundle_host: "",
   jump_bundle_port: 22,
@@ -74,6 +77,33 @@ function stubProvisioning(initial: Partial<ProvisioningSettings> = {}) {
     }
     if (url.endsWith("/api/settings/jump-server/sync")) {
       return json({
+        results: [
+          { username: "a@example.com", status: "onboarded", detail: "" },
+        ],
+      });
+    }
+    if (url.endsWith("/api/settings/jump-server/account-mode")) {
+      const body = JSON.parse(init?.body as string);
+      // Simulate a failing sync (revert) when the special marker name is used.
+      if (body.jumper_user === "FAIL") {
+        return json({
+          account_mode: "per_user",
+          reverted: true,
+          detail: "Re-sync failed; reverted. a@example.com: boom",
+          results: [
+            { username: "a@example.com", status: "failed", detail: "boom" },
+          ],
+        });
+      }
+      store = {
+        ...store,
+        jump_account_mode: body.account_mode,
+        jump_jumper_user: body.jumper_user ?? store.jump_jumper_user,
+      };
+      return json({
+        account_mode: body.account_mode,
+        reverted: false,
+        detail: "",
         results: [
           { username: "a@example.com", status: "onboarded", detail: "" },
         ],
@@ -402,5 +432,73 @@ describe("ServerProvisioning", () => {
     expect(
       screen.queryByText(/existing users must be re-synced/i),
     ).toBeNull();
+  });
+
+  it("confirms and applies a jump account-model switch to shared", async () => {
+    const fetchMock = stubProvisioning({
+      jump_enabled: true,
+      jump_host: "10.0.0.9",
+      jump_management_user: "root",
+      jump_account_mode: "per_user",
+      jump_ssh_key_id: 3,
+    });
+    render(<ServerProvisioning />);
+    await openTab(/Jump Server/i);
+    await screen.findByRole("heading", { name: /jump server/i });
+
+    // Selecting the shared radio opens the confirmation modal.
+    await userEvent.click(
+      screen.getByRole("radio", { name: /share one hardened account/i }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.type(
+      within(dialog).getByLabelText(/shared jump account name/i),
+      "cdt-jumper",
+    );
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: /acknowledge & re-sync/i }),
+    );
+
+    const call = fetchMock.mock.calls.find(([u]) =>
+      String(u).endsWith("/api/settings/jump-server/account-mode"),
+    );
+    expect(JSON.parse((call![1] as RequestInit).body as string)).toMatchObject({
+      account_mode: "shared",
+      jumper_user: "cdt-jumper",
+      acknowledge_sync: true,
+    });
+    // The modal closes and the sync summary is shown.
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).toBeNull(),
+    );
+    expect(await screen.findByText(/sync summary/i)).toBeInTheDocument();
+  });
+
+  it("surfaces the error when an account-model switch is reverted", async () => {
+    stubProvisioning({
+      jump_enabled: true,
+      jump_host: "10.0.0.9",
+      jump_management_user: "root",
+      jump_account_mode: "per_user",
+      jump_ssh_key_id: 3,
+    });
+    render(<ServerProvisioning />);
+    await openTab(/Jump Server/i);
+    await screen.findByRole("heading", { name: /jump server/i });
+
+    await userEvent.click(
+      screen.getByRole("radio", { name: /share one hardened account/i }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    // The special "FAIL" name makes the stubbed sync fail and revert.
+    await userEvent.type(
+      within(dialog).getByLabelText(/shared jump account name/i),
+      "FAIL",
+    );
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: /acknowledge & re-sync/i }),
+    );
+
+    expect(await screen.findByText(/reverted/i)).toBeInTheDocument();
   });
 });

@@ -560,6 +560,20 @@ Server**, and **Server Templates**.
   create, delete, or login) and audited. Changing the jump server's connection
   settings (host, user, port, or key) prompts a reminder to re-run **Sync users
   to jump server**, since existing accounts would otherwise no longer match.
+  AppManager connects to the bastion as the **management user** (default
+  `root`), which must be privileged enough to create accounts and write keys.
+  The **jump account model** decides where users' keys live: **per-user**
+  (default) gives each user their own account (named by their derived user ID),
+  while **shared** installs every user's key into one shared account. In both
+  models the accounts are **hardened** for jump-only use — created with a
+  `nologin` shell and each key line prefixed with `restrict,port-forwarding`, so
+  they can only be used as a `ProxyJump` hop (no shell, TTY, agent, or X11).
+  Note that hardening does not restrict *where* a shared-account user may
+  TCP-forward, so **`shared` mode is best for a single tenant or trusted cohort**
+  — prefer `per_user` for multi-tenant setups.
+  Switching the account model re-syncs every user, so the UI requires the
+  administrator to acknowledge the re-sync first; if any user fails to sync the
+  change is reverted automatically and the error is reported.
   By default the generated SSH config bundle addresses the bastion at the same
   management host/port. If the bastion is managed over one interface but users
   connect over another (e.g. private vs. public), turn off **Use jumpserver
