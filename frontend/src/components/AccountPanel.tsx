@@ -354,7 +354,7 @@ function BundleDownloadCard() {
 
   return (
     <section className="card">
-      <h2>SSH Configuration File</h2>
+      <h2>Bundle Downloads</h2>
       <p className="muted">
         Download a personal SSH configuration file. Templates with field
         mappings are filled in from your account details; templates without

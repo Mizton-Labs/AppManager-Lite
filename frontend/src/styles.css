@@ -443,10 +443,24 @@ textarea:focus,
   align-items: start;
 }
 
-/* Stack the three cards on narrow viewports. */
+/* All three top-row cards share one fixed (static) size, matched to the
+ * Profile card. Content that exceeds it (e.g. the SSH key rotation summary)
+ * scrolls inside the card so the row stays perfectly aligned. */
+.account-row-top > .card {
+  height: 26rem;
+  overflow: auto;
+}
+
+/* Stack the three cards on narrow viewports; drop the fixed height so a
+ * stacked card is not artificially tall or clipped. */
 @media (max-width: 900px) {
   .account-row-top {
     grid-template-columns: 1fr;
+  }
+
+  .account-row-top > .card {
+    height: auto;
+    overflow: visible;
   }
 }
 
