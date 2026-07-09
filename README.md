@@ -285,7 +285,7 @@ verification summary (updated / skipped / failed, with reasons) is shown and
 appended to each server's log.
 
 Each bundle template can carry an optional **description** (set in the bundle
-add/edit card). The Account page's **SSH Configuration File** card downloads a
+add/edit card). The Account page's **Bundle Downloads** card downloads a
 personal SSH config and shows the selected bundle's description. Templates with
 field mappings are rendered from account details;
 mapping sources include the username, the derived **user ID**, apps server

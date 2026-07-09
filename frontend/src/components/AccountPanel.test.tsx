@@ -103,7 +103,7 @@ describe("AccountPanel", () => {
     expect(screen.getByText("Profile")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /my servers/i })).toBeInTheDocument();
     expect(
-      screen.getByRole("heading", { name: /ssh configuration file/i }),
+      screen.getByRole("heading", { name: /bundle downloads/i }),
     ).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /^ssh key$/i })).toBeInTheDocument();
     expect(
@@ -124,7 +124,7 @@ describe("AccountPanel", () => {
 
     expect(await screen.findByText("Shell profile")).toBeInTheDocument();
     expect(
-      screen.getByRole("heading", { name: /ssh configuration file/i }),
+      screen.getByRole("heading", { name: /bundle downloads/i }),
     ).toBeInTheDocument();
     // The selected bundle's description is shown under the dropdown.
     expect(await screen.findByText("Handy shell config")).toBeInTheDocument();
