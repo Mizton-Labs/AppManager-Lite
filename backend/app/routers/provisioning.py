@@ -756,6 +756,9 @@ def _clone_and_persist_server(
     """
     user_id = int(target["id"])
     key = repository.get_user_ssh_key(conn, user_id)
+    owner_uid = target.get("user_id") or repository.derive_user_id(
+        target.get("username", "") or ""
+    )
     admin_key_path = servers.resolve_ssh_key(
         conn,
         template.get("admin_ssh_key_id"),
@@ -770,6 +773,7 @@ def _clone_and_persist_server(
         os_users=os_users,
         admin_key_path=admin_key_path,
         enable_sudo=bool(template.get("enable_sudo", True)),
+        owner_marker=f"AppManager-managed:{owner_uid}",
     )
     # Persist which registry key was used, so rotation can reuse it.
     resources = outcome.get("resources") or {}

@@ -332,3 +332,72 @@ def test_enabling_jump_requires_full_config(admin) -> None:
     )
     assert r.status_code == 400
     assert "requires" in r.json()["detail"].lower()
+
+
+def test_onboard_stamps_key_with_appmanager_marker(monkeypatch) -> None:
+    """The onboarded authorized_keys line carries the AppManager marker."""
+    ssh = _FakeSsh(monkeypatch)
+    from app.proxmox import ProxmoxResult
+    cfg = jumpserver.JumpConfig(True, "h", "root", "/k")
+    r = ProxmoxResult()
+    ok = jumpserver.onboard_user(
+        cfg, os_user="alice",
+        public_key="ssh-ed25519 AAAAC3Nz alice@laptop", result=r,
+    )
+    assert ok
+    remote = ssh.commands[0][-1]
+    # The stamped comment replaces the original one, keyed by the OS user.
+    assert "AppManager-managed:alice" in remote
+    assert "alice@laptop" not in remote
+    # Idempotent install: existing lines for this blob are removed then the
+    # canonical line is appended (blob-based dedupe).
+    assert "grep -vF" in remote
+    assert "AAAAC3Nz" in remote
+
+
+def test_install_public_key_stamps_and_dedupes(monkeypatch) -> None:
+    ssh = _FakeSsh(monkeypatch, stdout="")
+    from app.proxmox import ProxmoxResult
+    r = ProxmoxResult()
+    ok = servers.install_public_key(
+        ip="10.0.0.5", admin_key_path="/k", os_users=["coder"],
+        public_key="ssh-ed25519 AAAABBBB coder@old", result=r,
+        marker="AppManager-managed:coder",
+    )
+    assert ok
+    remote = ssh.commands[0][-1]
+    assert "AppManager-managed:coder" in remote
+    assert "coder@old" not in remote
+    assert "grep -vF" in remote  # removes any prior copy of this blob first
+    # The rewrite is atomic (temp file then rename), never truncating the live
+    # authorized_keys in place.
+    assert "mv " in remote
+    assert 'cat "$f.tmp" > "$f"' not in remote
+
+
+def test_stamp_public_key_neutralizes_hostile_marker() -> None:
+    """A hostile marker cannot break out of the trailing comment field."""
+    from app import sshkeys
+
+    hostile = 'x ssh-rsa AAAAINJECT command="rm -rf /"'
+    line = sshkeys.stamp_public_key("ssh-ed25519 AAAAC3Nz good@host", hostile)
+    # Exactly three whitespace-separated fields: type, blob, single comment.
+    assert len(line.split()) == 3
+    # No shell metacharacters or spaces survive in the comment token.
+    comment = line.split()[2]
+    assert all(c not in comment for c in ' ;|&$`"\'()=')
+
+
+def test_stamp_public_key_helper() -> None:
+    from app import sshkeys
+
+    stamped = sshkeys.stamp_public_key(
+        "ssh-ed25519 AAAAC3Nz somebody@host", "AppManager-managed:jane"
+    )
+    assert stamped == "ssh-ed25519 AAAAC3Nz AppManager-managed:jane"
+    # A key with no comment gains one.
+    assert sshkeys.stamp_public_key(
+        "ssh-ed25519 AAAAC3Nz", "AppManager-trusted:jane"
+    ) == "ssh-ed25519 AAAAC3Nz AppManager-trusted:jane"
+    # Malformed input is returned stripped, unchanged.
+    assert sshkeys.stamp_public_key("garbage", "m") == "garbage"

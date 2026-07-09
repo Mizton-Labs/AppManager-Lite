@@ -248,6 +248,8 @@ def test_reconcile_trusted_mesh_unit(monkeypatch) -> None:
                 if "authorized_keys" in c[-1] and "AAAAMESHKEY" in c[-1]]
     assert len(keygen) == 2
     assert len(installs) == 2
+    # Mesh keys are stamped as AppManager-managed trusted keys.
+    assert all("AppManager-trusted:coder" in c[-1] for c in installs)
 
 
 def test_trusted_mesh_noop_single_server(monkeypatch) -> None:

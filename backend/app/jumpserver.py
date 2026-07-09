@@ -15,7 +15,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any
 
-from . import repository, servers
+from . import repository, servers, sshkeys
 from .proxmox import ProxmoxResult
 
 _SSH_TIMEOUT = 25
@@ -86,17 +86,38 @@ def onboard_user(
     if not public_key.strip():
         result.fail("user has no SSH public key")
         return False
+    # Stamp the installed line so it is clearly attributable to AppManager on
+    # the bastion (offboarding still matches by the key blob, so the comment is
+    # irrelevant to removal).
+    stamped = sshkeys.stamp_public_key(
+        public_key, f"AppManager-managed:{os_user}"
+    )
+    try:
+        blob = stamped.split()[1]
+    except IndexError:
+        result.fail("user public key has an unexpected format")
+        return False
+    if not servers._KEY_BLOB_RE.match(blob):
+        result.fail("user public key blob has an unexpected format")
+        return False
     qu = shlex.quote(os_user)
-    qk = shlex.quote(public_key.strip())
+    qk = shlex.quote(stamped)
+    qb = shlex.quote(blob)
+    # Create the account if missing, then rewrite authorized_keys atomically:
+    # build the deduped content (minus any existing line for this blob) plus the
+    # canonical stamped line in a temp file and rename it over the original, so
+    # a mid-script death can never leave the file truncated (locking the user
+    # out). ``grep -vF`` exits 1 when it selects nothing - tolerated.
     remote = "sh -c " + shlex.quote(
         "set -e; "
         f"id -u {qu} >/dev/null 2>&1 || useradd -m -s /bin/bash {qu}; "
         f"h=$(getent passwd {qu} | cut -d: -f6); "
         '[ -n "$h" ] || { echo no-home; exit 1; }; '
         'mkdir -p "$h/.ssh"; chmod 700 "$h/.ssh"; '
-        f"grep -qxF {qk} \"$h/.ssh/authorized_keys\" 2>/dev/null || "
-        f"printf '%s\\n' {qk} >> \"$h/.ssh/authorized_keys\"; "
-        'chmod 600 "$h/.ssh/authorized_keys"; '
+        'f="$h/.ssh/authorized_keys"; touch "$f"; t="$f.appmgr.tmp"; '
+        f"{{ grep -vF {qb} \"$f\" || [ $? -eq 1 ]; }} > \"$t\"; "
+        f"printf '%s\\n' {qk} >> \"$t\"; "
+        'chmod 600 "$t"; mv "$t" "$f"; '
         f'chown -R {qu}: "$h/.ssh"; echo onboarded'
     )
     proc = _run_remote(config, remote)
