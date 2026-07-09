@@ -1770,3 +1770,155 @@ textarea:focus,
 .team-icon-picker.compact .team-icon-grid {
   grid-template-columns: repeat(auto-fill, minmax(60px, 1fr));
 }
+
+/* ---------------------------------------------------------------------------
+   Servers section + usage sparklines (issue_015-r5 F2)
+   --------------------------------------------------------------------------- */
+.servers-view .view-head {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.servers-view .view-head h2 {
+  margin: 0;
+}
+
+.timeframe-select {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+}
+
+.overview-owners {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  margin-top: 1rem;
+}
+
+.overview-owner-head {
+  margin: 0 0 0.6rem;
+  font-size: 0.95rem;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.3rem;
+}
+
+.overview-owner-count {
+  font-weight: normal;
+  font-size: 0.8rem;
+}
+
+.overview-server-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.overview-server {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  background: var(--bg);
+}
+
+.overview-server-info {
+  min-width: 12rem;
+  flex: 1 1 12rem;
+}
+
+.overview-server-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.overview-server-meta {
+  margin: 0.2rem 0 0;
+  font-size: 0.78rem;
+}
+
+/* The four compact charts, side by side; wraps on narrow screens. */
+.stats-cards {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(96px, 1fr));
+  gap: 0.5rem;
+  flex: 2 1 26rem;
+}
+
+.stats-note {
+  flex: 2 1 26rem;
+  margin: 0;
+  font-size: 0.78rem;
+  align-self: center;
+}
+
+.sparkline {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.sparkline-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.3rem;
+  font-size: 0.68rem;
+}
+
+.sparkline-label {
+  color: #94a3b8;
+}
+
+.sparkline-value {
+  font-variant-numeric: tabular-nums;
+  color: #cbd5e1;
+  white-space: nowrap;
+}
+
+.sparkline-svg {
+  width: 100%;
+  height: 34px;
+  display: block;
+}
+
+.spark-line {
+  fill: none;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.spark-area {
+  stroke: none;
+  opacity: 0.18;
+}
+
+.spark-line.spark-ok {
+  stroke: #22c55e;
+}
+.spark-area.spark-ok {
+  fill: #22c55e;
+}
+.spark-line.spark-warn {
+  stroke: #f59e0b;
+}
+.spark-area.spark-warn {
+  fill: #f59e0b;
+}
+.spark-line.spark-full {
+  stroke: #ef4444;
+}
+.spark-area.spark-full {
+  fill: #ef4444;
+}
+

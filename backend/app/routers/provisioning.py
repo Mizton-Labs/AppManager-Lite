@@ -38,8 +38,12 @@ from ..schemas import (
     MessageOut,
     ProviderTemplatesOut,
     ProvisioningSettingsOut,
+    OwnerServersOut,
     ResourceUsageOut,
     ServerAccessOut,
+    ServersOverviewOut,
+    ServerStatsOut,
+    ServerStatsPointOut,
     ServerTemplateOptionOut,
     ServerTemplateOut,
     ServerUsageOut,
@@ -1170,6 +1174,113 @@ def get_user_server_usage(
             limit=int(row.get("provisioning_max_disk_gb", 200)),
         ),
     )
+
+
+@router.get("/servers/overview", response_model=ServersOverviewOut)
+def servers_overview(
+    actor: dict[str, Any] = Depends(get_current_user),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> ServersOverviewOut:
+    """All servers the caller may see, grouped by owner (issue_015-r5 F2).
+
+    Administrators see every user's servers (with destroy-failure detail);
+    a non-admin sees only their own group. The lazy deferred-deletion sweep is
+    run first so the view is current.
+    """
+    is_admin = actor.get("role") == "admin"
+    expire_pending_server_deletions(conn)
+    groups: dict[int, OwnerServersOut] = {}
+
+    def _group(uid: int, username: str) -> OwnerServersOut:
+        if uid not in groups:
+            groups[uid] = OwnerServersOut(
+                user_id=uid,
+                username=username,
+                derived_user_id=repository.derive_user_id(username or ""),
+            )
+        return groups[uid]
+
+    if is_admin:
+        for srv in repository.list_all_servers(conn):
+            grp = _group(srv["user_id"], srv.get("owner_username", ""))
+            grp.servers.append(_server_out(srv, include_error=True))
+    else:
+        username = actor.get("username", "")
+        grp = _group(actor["id"], username)
+        for srv in repository.list_user_servers(conn, actor["id"]):
+            grp.servers.append(_server_out(srv))
+    owners = sorted(groups.values(), key=lambda g: g.username.lower())
+    return ServersOverviewOut(is_admin=is_admin, owners=owners)
+
+
+@router.get(
+    "/users/{user_id}/servers/{server_id}/stats",
+    response_model=ServerStatsOut,
+)
+def get_user_server_stats(
+    user_id: int,
+    server_id: int,
+    timeframe: str = "hour",
+    actor: dict[str, Any] = Depends(get_current_user),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> ServerStatsOut:
+    """Historical CPU/memory/disk/network usage for a server (Proxmox rrddata).
+
+    Self-or-admin. Read-only. Returns ``available=false`` with a reason when the
+    server has no guest yet, the provider is unconfigured, the timeframe is
+    invalid, or the read fails - the caller renders an empty chart rather than
+    erroring.
+    """
+    _require_self_or_admin(actor, user_id)
+    server = repository.get_user_server(conn, user_id, server_id)
+    if server is None:
+        raise HTTPException(status_code=404, detail="Server not found")
+    if timeframe not in proxmox.RRD_TIMEFRAMES:
+        return ServerStatsOut(
+            available=False, detail="Invalid timeframe.", timeframe="hour"
+        )
+    if server.get("vmid") is None:
+        return ServerStatsOut(
+            available=False,
+            detail="This server has no running guest to report stats for.",
+            timeframe=timeframe,
+        )
+    row = repository.get_settings_row(conn)
+    if not _provider_configured(row):
+        return ServerStatsOut(
+            available=False,
+            detail="The LXC/VM provider is not configured.",
+            timeframe=timeframe,
+        )
+    result = proxmox.ProxmoxResult()
+    samples = proxmox.get_guest_rrddata(
+        _provider_config(row),
+        server.get("node", ""),
+        server["vmid"],
+        server.get("kind", "lxc"),
+        timeframe=timeframe,
+        result=result,
+    )
+    if samples is None:
+        return ServerStatsOut(
+            available=False,
+            detail="Could not read usage statistics from the provider.",
+            timeframe=timeframe,
+        )
+    points = [
+        ServerStatsPointOut(
+            time=int(s["time"]),
+            cpu_pct=round(s["cpu"] * 100, 2),
+            mem=s["mem"],
+            maxmem=s["maxmem"],
+            disk=s["disk"],
+            maxdisk=s["maxdisk"],
+            netin=s["netin"],
+            netout=s["netout"],
+        )
+        for s in samples
+    ]
+    return ServerStatsOut(available=True, timeframe=timeframe, points=points)
 
 
 @router.post(

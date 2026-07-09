@@ -23,6 +23,8 @@ import type {
   ProviderTemplates,
   ProvisioningSettings,
   ServerAccess,
+  ServersOverview,
+  ServerStats,
   ServerTemplate,
   ServerTemplateOption,
   ServerUsage,
@@ -285,6 +287,15 @@ export const api = {
   /** Per-user provisioning usage vs. limits (create-form quota bars). */
   getUserServerUsage: (userId: number) =>
     request<ServerUsage>(`users/${userId}/servers/usage`),
+
+  /** All servers the caller may see, grouped by owner (Servers view). */
+  getServersOverview: () => request<ServersOverview>("servers/overview"),
+
+  /** Historical usage stats for one server (Proxmox rrddata). */
+  getServerStats: (userId: number, serverId: number, timeframe: string) =>
+    request<ServerStats>(
+      `users/${userId}/servers/${serverId}/stats?timeframe=${encodeURIComponent(timeframe)}`,
+    ),
 
   createUserServer: (userId: number, input: CreateUserServerInput) =>
     request<UserServer>(`users/${userId}/servers`, {

@@ -98,6 +98,14 @@ class _FakeProxmox:
             for i, extra in enumerate(self.extra_iface_ips, start=1):
                 ifaces.append({"name": f"eth{i}", "inet": f"{extra}/24"})
             return (200, {"data": ifaces})
+        if "/rrddata" in url:
+            # Two synthetic samples for the stats endpoint (F2).
+            return (200, {"data": [
+                {"time": 1000, "cpu": 0.25, "mem": 1024, "maxmem": 4096,
+                 "disk": 500, "maxdisk": 2000, "netin": 10, "netout": 20},
+                {"time": 1060, "cpu": 0.5, "mem": 2048, "maxmem": 4096,
+                 "disk": 600, "maxdisk": 2000, "netin": 30, "netout": 40},
+            ]})
         if "/config" in url and (json_body is None):
             return (200, {"data": self.template_resources})
         if "/config" in url or "/resize" in url:
@@ -1882,3 +1890,259 @@ def test_non_self_service_owner_cannot_delete(admin, monkeypatch) -> None:
         headers={"X-CSRF-Token": member_csrf},
     )
     assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Server overview + stats (issue_015-r5 F2)
+# ---------------------------------------------------------------------------
+
+
+def test_servers_overview_admin_sees_all_grouped_by_owner(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    u1 = _create_member(client, csrf, username="morris@example.com")
+    u2 = _create_member(client, csrf, username="nadia@example.com")
+    _create_server_for(client, csrf, u1["user"]["id"], template["id"], name="a")
+    _create_server_for(client, csrf, u2["user"]["id"], template["id"], name="b")
+
+    resp = client.get("/api/servers/overview")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["is_admin"] is True
+    owners = {o["username"]: o for o in body["owners"]}
+    # Both the admin (no servers) and the two members appear.
+    assert "morris@example.com" in owners and "nadia@example.com" in owners
+    assert owners["morris@example.com"]["derived_user_id"] == "morris"
+    assert len(owners["morris@example.com"]["servers"]) == 1
+    assert len(owners["nadia@example.com"]["servers"]) == 1
+
+
+def test_servers_overview_user_sees_only_their_own(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    client.patch(
+        "/api/settings/provisioning",
+        json={"provisioning_self_service": True},
+        headers={"X-CSRF-Token": csrf},
+    )
+    u1 = _create_member(
+        client, csrf, username="morris@example.com", self_service=True
+    )
+    u2 = _create_member(client, csrf, username="nadia@example.com")
+    _create_server_for(client, csrf, u1["user"]["id"], template["id"], name="a")
+    _create_server_for(client, csrf, u2["user"]["id"], template["id"], name="b")
+
+    member, _ = _login(client.app, "morris@example.com", u1["password"])
+    resp = member.get("/api/servers/overview")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["is_admin"] is False
+    # Exactly one owner group (the caller), with only their own server.
+    assert len(body["owners"]) == 1
+    assert body["owners"][0]["username"] == "morris@example.com"
+    assert len(body["owners"][0]["servers"]) == 1
+
+
+def test_servers_overview_requires_auth(admin) -> None:
+    client, _, _ = admin
+    anon = TestClient(client.app)
+    assert anon.get("/api/servers/overview").status_code == 401
+
+
+def test_server_stats_returns_normalized_points(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    created = _create_member(client, csrf)
+    user_id = created["user"]["id"]
+    server = _create_server_for(client, csrf, user_id, template["id"])
+
+    resp = client.get(
+        f"/api/users/{user_id}/servers/{server['id']}/stats?timeframe=day"
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["available"] is True
+    assert body["timeframe"] == "day"
+    assert len(body["points"]) == 2
+    # cpu 0.25 -> 25.0 percent; other fields pass through.
+    assert body["points"][0]["cpu_pct"] == 25.0
+    assert body["points"][1]["cpu_pct"] == 50.0
+    assert body["points"][0]["maxmem"] == 4096
+
+
+def test_server_stats_invalid_timeframe(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    created = _create_member(client, csrf)
+    user_id = created["user"]["id"]
+    server = _create_server_for(client, csrf, user_id, template["id"])
+    resp = client.get(
+        f"/api/users/{user_id}/servers/{server['id']}/stats?timeframe=decade"
+    )
+    assert resp.status_code == 200
+    assert resp.json()["available"] is False
+    assert "timeframe" in resp.json()["detail"].lower()
+
+
+def test_server_stats_no_vmid_unavailable(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    created = _create_member(client, csrf)
+    user_id = created["user"]["id"]
+    # A reference record with no vmid.
+    from app.db import get_connection
+    from app import repository
+    with get_connection() as conn:
+        ref = repository.create_user_server(
+            conn, user_id=user_id, name="ref", kind="lxc", status="reference",
+        )
+    resp = client.get(f"/api/users/{user_id}/servers/{ref['id']}/stats")
+    assert resp.status_code == 200
+    assert resp.json()["available"] is False
+    assert "no running guest" in resp.json()["detail"].lower()
+
+
+def test_server_stats_authorization(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    client.patch(
+        "/api/settings/provisioning",
+        json={"provisioning_self_service": True},
+        headers={"X-CSRF-Token": csrf},
+    )
+    owner = _create_member(
+        client, csrf, username="morris@example.com", self_service=True
+    )
+    other = _create_member(client, csrf, username="nadia@example.com")
+    server = _create_server_for(
+        client, csrf, owner["user"]["id"], template["id"]
+    )
+    member, _ = _login(client.app, "morris@example.com", owner["password"])
+    # Owner can read their own stats.
+    assert member.get(
+        f"/api/users/{owner['user']['id']}/servers/{server['id']}/stats"
+    ).status_code == 200
+    # But not another user's server stats (403 before any lookup).
+    assert member.get(
+        f"/api/users/{other['user']['id']}/servers/999/stats"
+    ).status_code == 403
+
+
+def test_get_guest_rrddata_rejects_bad_timeframe(monkeypatch) -> None:
+    from app.proxmox import ProxmoxResult
+    calls = []
+    monkeypatch.setattr(
+        proxmox, "_http_request",
+        lambda *a, **k: calls.append(a) or (200, {"data": []}),
+    )
+    r = ProxmoxResult()
+    out = proxmox.get_guest_rrddata(
+        {"proxmox_url": "https://pve:8006", "proxmox_api_key": "k",
+         "proxmox_token_name": "t@pam!x", "proxmox_verify_tls": False},
+        "pve1", 120, "lxc", timeframe="decade", result=r,
+    )
+    assert out is None
+    assert calls == []  # never calls the API for a bad timeframe
+    assert r.status == "failed"
+
+
+def test_server_stats_provider_unconfigured(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    created = _create_member(client, csrf)
+    user_id = created["user"]["id"]
+    server = _create_server_for(client, csrf, user_id, template["id"])
+    # Unconfigure the provider after the server exists.
+    client.patch(
+        "/api/settings/provisioning",
+        json={"proxmox_url": "", "proxmox_token_name": "", "proxmox_api_key": ""},
+        headers={"X-CSRF-Token": csrf},
+    )
+    resp = client.get(
+        f"/api/users/{user_id}/servers/{server['id']}/stats"
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["available"] is False
+    assert "not configured" in body["detail"].lower()
+
+
+def test_server_stats_read_failure_unavailable(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+
+    class _RrdFailProxmox(_FakeProxmox):
+        def __call__(self, method, url, *, headers, verify, json_body=None):
+            if "/rrddata" in url:
+                return (500, {"errors": "boom"})
+            return super().__call__(method, url, headers=headers,
+                                    verify=verify, json_body=json_body)
+
+    _RrdFailProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    created = _create_member(client, csrf)
+    user_id = created["user"]["id"]
+    server = _create_server_for(client, csrf, user_id, template["id"])
+    resp = client.get(
+        f"/api/users/{user_id}/servers/{server['id']}/stats"
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["available"] is False
+    assert "could not read" in body["detail"].lower()
+
+
+def test_server_stats_admin_reads_other_users(admin, monkeypatch) -> None:
+    """An admin may read any user's server stats."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    member = _create_member(client, csrf, username="morris@example.com")
+    server = _create_server_for(
+        client, csrf, member["user"]["id"], template["id"]
+    )
+    resp = client.get(
+        f"/api/users/{member['user']['id']}/servers/{server['id']}/stats"
+    )
+    assert resp.status_code == 200
+    assert resp.json()["available"] is True
+
+
+def test_overview_never_leaks_admin_key_fields(admin, monkeypatch) -> None:
+    """The overview response must not expose the template admin SSH key."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)  # admin_ssh_key_path=/home/svc/...
+    member = _create_member(client, csrf)
+    _create_server_for(client, csrf, member["user"]["id"], template["id"])
+    resp = client.get("/api/servers/overview")
+    assert resp.status_code == 200
+    text = resp.text
+    assert "admin_ssh_key_path" not in text
+    assert "admin_ssh_key_id" not in text
+    assert "/home/svc/.ssh/id_ed25519" not in text
