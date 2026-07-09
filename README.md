@@ -282,7 +282,9 @@ Regenerating also **rotates the key on the user's servers**: the old public
 key is removed from `authorized_keys` (root and every `/home` user) and the
 new one installed, using each server's admin SSH key; a per-server
 verification summary (updated / skipped / failed, with reasons) is shown and
-appended to each server's log.
+appended to each server's log. When a jump server is configured, the key is
+rotated there too, on the account for the configured account model (the shared
+jumper account in shared mode, otherwise the user's own account).
 
 Each bundle template can carry an optional **description** (set in the bundle
 add/edit card). The Account page's **Bundle Downloads** card downloads a
@@ -555,7 +557,10 @@ Server**, and **Server Templates**.
   a host, **SSH port** (default 22), management user, and registry SSH key,
   creating a user provisions an OS account on the jump server with their public
   key installed, deleting a user removes that key, and regenerating a key
-  rotates it there too. A **Sync users to jump server** action backfills
+  rotates it there too — always on the account for the configured jump account
+  model (the shared jumper account in **shared** mode, the user's own account
+  in **per-user** mode), keyed to the owner for provenance. A **Sync users to
+  jump server** action backfills
   existing users. All jump operations are best-effort (they never block user
   create, delete, or login) and audited. Changing the jump server's connection
   settings (host, user, port, or key) prompts a reminder to re-run **Sync users
@@ -645,7 +650,10 @@ request servers.
 
 Creating a server picks a registered template and a name, then AppManager
 clones it in Proxmox (full clone, next free VMID) and — for **LXC** — starts
-the container and reads its IP address back automatically. A **VM** is cloned
+the container and records its IP address. The address is read from **inside the
+container** over SSH (the DHCP/network address the guest actually holds), and
+adopted only when Proxmox independently attributes the same address to that
+guest; otherwise the hypervisor-reported address is kept. A **VM** is cloned
 only: the operator is guided to configure it in Proxmox and enter its IP
 manually on the server card. An optional toggle installs the owner's SSH
 public key on the new server for a comma-separated list of OS users (default:
@@ -658,6 +666,12 @@ errored (IP discovery, key installation), the record stays `created` — with
 the error in its log — because the guest exists, consumes capacity, and
 counts against quotas.
 
+When creating a server, the form shows small **resource-usage bars** just above
+the template picker — the user's committed servers, CPUs, memory, and disk
+against their per-user limits, coloured green/amber/red as a limit is
+approached. Administrators (who are exempt from per-user quotas) see a short
+"limits are not enforced" note instead.
+
 Quotas apply to non-administrator creators: the per-user server count and the
 summed CPU/memory/disk of quota-counted servers are checked against the
 provisioning policy (template resources are read from Proxmox before cloning).
@@ -666,8 +680,20 @@ Servers created or resource-modified by an administrator are flagged
 does not consume the user's own limits. Resource changes (CPU, memory, and
 grow-only disk) are applied to LXC servers via the Proxmox API; self-service
 users may change resources only when the policy allows it and within their
-remaining quota. Removing a server card deletes only the AppManager record —
-the LXC/VM itself is never touched.
+remaining quota.
+
+Deleting a server is **deferred and reversible for 24 hours**. After an
+explicit "this is permanent" confirmation, the server enters a **deletion
+pending** state with a countdown and a **Cancel deletion** action; owners and
+administrators can cancel any time during the grace window. Once the window
+elapses, a sweep force-stops and **destroys the LXC/VM** in Proxmox (the guest
+and its referenced disks; intentionally-retained detached volumes are left
+alone) and removes the record. The sweep has no background scheduler — it runs
+at startup and opportunistically on server-list requests, bounded so it never
+holds up a request. If the automatic destroy fails, the server is removed from
+the owner's list but kept in the **administrator's** list with a red error
+notice and the full log; the administrator (who can check Proxmox directly) can
+then **force-remove** the record even when the destroy could not be confirmed.
 
 ## Home
 

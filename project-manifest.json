@@ -220,7 +220,7 @@
       { "method": "POST", "path": "/api/account/password", "auth": "user", "csrf": true, "summary": "Change the signed-in user's own password." },
       { "method": "GET", "path": "/api/account/ssh-key", "auth": "user", "csrf": false, "summary": "The signed-in user's SSH public key, derived user-id, and generation time (never the private key)." },
       { "method": "GET", "path": "/api/account/ssh-key/download", "auth": "user", "csrf": false, "summary": "Download the signed-in user's own SSH key; requires part=private|public. Private downloads are audited (metadata only)." },
-      { "method": "POST", "path": "/api/account/ssh-key/regenerate", "auth": "user", "csrf": true, "summary": "Replace the signed-in user's SSH keypair and rotate it on their servers (remove old public key, install new); returns a per-server summary (audited, no key material)." },
+      { "method": "POST", "path": "/api/account/ssh-key/regenerate", "auth": "user", "csrf": true, "summary": "Replace the signed-in user's SSH keypair and rotate it on their servers (remove old public key, install new), and on the jump server using the account for the configured jump account model (the shared jumper account in shared mode, the user's own account otherwise); returns a per-server summary (audited, no key material)." },
       { "method": "GET", "path": "/api/teams", "auth": "user", "csrf": false, "summary": "List teams (name, order, icon) for any signed-in user." },
       { "method": "GET", "path": "/api/users", "auth": "admin", "csrf": false, "summary": "List users." },
       { "method": "POST", "path": "/api/users", "auth": "admin", "csrf": true, "summary": "Create a user (returns a generated password and per-template auto-provisioning results)." },
@@ -261,10 +261,13 @@
       { "method": "PATCH", "path": "/api/settings/bundle-templates/{template_id}/enabled", "auth": "admin", "csrf": true, "summary": "Enable or disable a bundle template; disabled templates are hidden from account downloads." },
       { "method": "GET", "path": "/api/account/server-templates", "auth": "user", "csrf": false, "summary": "User-facing server-template options (id, name, kind only)." },
       { "method": "GET", "path": "/api/account/server-access", "auth": "user", "csrf": false, "summary": "Whether the caller may create servers for their own account, with a reason when not." },
-      { "method": "GET", "path": "/api/users/{user_id}/servers", "auth": "admin-or-self", "csrf": false, "summary": "List a user's servers." },
-      { "method": "POST", "path": "/api/users/{user_id}/servers", "auth": "admin-or-self", "csrf": true, "summary": "Create a server from a template: clone (full), start + IP discovery for LXC, optional SSH public-key installation; VMs are cloned only and get a manual IP. Quotas apply to non-admin creators." },
+      { "method": "GET", "path": "/api/users/{user_id}/servers", "auth": "admin-or-self", "csrf": false, "summary": "List a user's servers. Also runs the lazy deferred-deletion sweep (bounded, single-flight). Admins see servers whose destroy failed (with the error); owners do not." },
+      { "method": "GET", "path": "/api/users/{user_id}/servers/usage", "auth": "admin-or-self", "csrf": false, "summary": "Per-user provisioning usage vs. limits (servers, CPUs, memory, disk) for the create-form quota bars; administrators are reported as unlimited." },
+      { "method": "POST", "path": "/api/users/{user_id}/servers", "auth": "admin-or-self", "csrf": true, "summary": "Create a server from a template: clone (full), start + IP discovery for LXC (the container's real in-guest IP is read over SSH and recorded when the hypervisor corroborates it, else the hypervisor IP is kept), optional SSH public-key installation; VMs are cloned only and get a manual IP. Quotas apply to non-admin creators." },
       { "method": "PATCH", "path": "/api/users/{user_id}/servers/{server_id}", "auth": "admin-or-self", "csrf": true, "summary": "Set a VM's IP address manually, or change LXC resources (admin always, exempting the server from quotas; self-service users when allowed by policy, within quota)." },
-      { "method": "DELETE", "path": "/api/users/{user_id}/servers/{server_id}", "auth": "admin-or-self", "csrf": true, "summary": "Remove the server record (the LXC/VM itself is not touched)." }
+      { "method": "DELETE", "path": "/api/users/{user_id}/servers/{server_id}", "auth": "admin-or-self", "csrf": true, "summary": "Schedule deferred deletion: the server enters a 24-hour grace period, then a sweep stops and destroys the LXC/VM and removes the record (idempotent if already pending)." },
+      { "method": "POST", "path": "/api/users/{user_id}/servers/{server_id}/cancel-deletion", "auth": "admin-or-self", "csrf": true, "summary": "Cancel a pending deferred deletion before the grace window elapses." },
+      { "method": "POST", "path": "/api/users/{user_id}/servers/{server_id}/force-remove", "auth": "admin", "csrf": true, "summary": "Administrator-only: remove the server record even if its automatic destroy failed (a best-effort destroy is attempted first; the admin verifies the guest in Proxmox)." }
     ]
   },
   "dataModel": {
@@ -343,8 +346,8 @@
       },
       {
         "name": "user_servers",
-        "description": "Per-user provisioned or referenced LXC/VM servers with resource accounting (admin_modified rows are exempt from user quotas) and a secret-free creation transcript.",
-        "columns": ["id", "user_id", "name", "hostname", "template_id", "template_name", "vmid", "node", "kind", "ip_address", "cpus", "memory_gb", "disk_gb", "admin_modified", "admin_ssh_key_path", "admin_ssh_key_id", "status", "last_log", "created_at", "updated_at"],
+        "description": "Per-user provisioned or referenced LXC/VM servers with resource accounting (admin_modified rows are exempt from user quotas) and a secret-free creation transcript. Supports deferred deletion: deletion_requested_at marks a pending deletion (24-hour grace before the guest is destroyed) and deletion_error records a destroy failure (admin-only recovery).",
+        "columns": ["id", "user_id", "name", "hostname", "template_id", "template_name", "vmid", "node", "kind", "ip_address", "cpus", "memory_gb", "disk_gb", "admin_modified", "admin_ssh_key_path", "admin_ssh_key_id", "status", "last_log", "deletion_requested_at", "deletion_error", "created_at", "updated_at"],
         "primaryKey": ["id"],
         "foreignKeys": ["user_id -> users.id (cascade)", "template_id -> server_templates.id (set null)"]
       },
