@@ -178,3 +178,37 @@ def test_legacy_team_preserved_and_not_reseeded(legacy_db: Path) -> None:
     # preserved as-is and no canonical defaults are inserted.
     assert names == ["Threat Intel"]
     assert rows[0]["icon"] == ""
+
+
+def test_jump_management_split_columns_and_migration(legacy_db: Path) -> None:
+    """The jump management/mode columns are added and jump_user is preserved."""
+    from app import db
+
+    db.init_db()
+    with db.get_connection() as conn:
+        scols = {r["name"] for r in conn.execute("PRAGMA table_info(settings)")}
+        assert {
+            "jump_management_user",
+            "jump_account_mode",
+            "jump_jumper_user",
+        } <= scols
+        # Defaults: management user root, per-user account mode.
+        row = conn.execute(
+            "SELECT jump_management_user, jump_account_mode FROM settings "
+            "WHERE id = 1"
+        ).fetchone()
+        assert row["jump_management_user"] == "root"
+        assert row["jump_account_mode"] == "per_user"
+
+        # Simulate a pre-split configured jump user, then re-migrate: it should
+        # be copied into the new shared jumper-user column (idempotently).
+        conn.execute(
+            "UPDATE settings SET jump_user = 'cdt-jumper', jump_jumper_user = '' "
+            "WHERE id = 1"
+        )
+        conn.commit()
+        db._migrate_schema(conn)
+        got = conn.execute(
+            "SELECT jump_jumper_user FROM settings WHERE id = 1"
+        ).fetchone()["jump_jumper_user"]
+        assert got == "cdt-jumper"

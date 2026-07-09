@@ -12,16 +12,18 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from .. import audit, repository, security, sessions
+from .. import audit, jumpserver, repository, security, sessions
 from ..deps import get_current_user, get_db, require_admin, verify_csrf
 from ..schemas import (
     CreateUserRequest,
     GeneratedPasswordOut,
     MessageOut,
+    ProvisionResultOut,
     TeamOut,
     UpdateUserRequest,
     UserOut,
 )
+from .provisioning import provision_default_servers
 
 router = APIRouter(tags=["users"])
 
@@ -32,6 +34,7 @@ def _user_out(user: dict[str, Any]) -> UserOut:
     return UserOut(
         id=user["id"],
         username=user["username"],
+        user_id=user["user_id"],
         role=user["role"],
         is_active=user["is_active"],
         must_change_password=user["must_change_password"],
@@ -120,6 +123,7 @@ def create_user(
         user["self_service"],
         actor.get("username"),
     )
+    jump_status, jump_detail = jumpserver.sync_user(conn, user)
     audit.record(
         conn,
         category=audit.CATEGORY_USER,
@@ -130,9 +134,27 @@ def create_user(
         target_name=user["username"],
         detail=f"role={user['role']} teams={payload.teams} "
         f"self_service={user['self_service']} apps_server={user['apps_server']!r} "
-        f"apps_server_ip={user['apps_server_ip']!r}",
+        f"apps_server_ip={user['apps_server_ip']!r} jump={jump_status}",
     )
-    return GeneratedPasswordOut(user=_user_out(user), password=password)
+    if jump_status == "failed":
+        logger.warning(
+            "Jump-server onboarding failed for %r: %s",
+            user["username"],
+            jump_detail,
+        )
+    # Auto-provision one server per selected template (best-effort; a failure
+    # never blocks user creation). The admin UI pre-selects every template.
+    provisioning_results = provision_default_servers(
+        conn,
+        actor=actor,
+        target=user,
+        template_ids=payload.provision_templates,
+    )
+    return GeneratedPasswordOut(
+        user=_user_out(user),
+        password=password,
+        provisioning=[ProvisionResultOut(**r) for r in provisioning_results],
+    )
 
 
 @router.patch("/users/{user_id}", response_model=UserOut)
@@ -263,12 +285,29 @@ def delete_user(
             detail="You cannot delete your own account",
         )
     _guard_last_admin(conn, target, removing=True)
+    # Capture the target jump account + public key before the row is deleted so
+    # the jump-server account's key can be revoked afterwards. In shared mode
+    # the key lives in the shared jumper account; in per-user mode it lives in
+    # the user's own account.
+    _jump_cfg = jumpserver.load_config(conn)
+    _jump_os_user = jumpserver.target_account(_jump_cfg, target)
+    _jump_key = repository.get_user_ssh_key(conn, user_id) or {}
+    _jump_pubkey = _jump_key.get("public_key", "")
     repository.delete_user(
         conn,
         user_id,
         delete_apps=delete_apps,
         transfer_to_user_id=None if delete_apps else admin.get("id"),
     )
+    jump_status, jump_detail = jumpserver.remove_user(
+        conn, os_user=_jump_os_user, public_key=_jump_pubkey
+    )
+    if jump_status == "failed":
+        logger.warning(
+            "Jump-server offboarding failed for %r: %s",
+            target["username"],
+            jump_detail,
+        )
     logger.warning(
         "User deleted id=%s username=%r by=%r",
         user_id,
@@ -283,6 +322,7 @@ def delete_user(
         target_type="user",
         target_id=user_id,
         target_name=target["username"],
+        detail=f"jump={jump_status}",
     )
     detail = (
         "User deleted; applications deleted"

@@ -28,6 +28,23 @@ function stubSettings(
       if (method === "PATCH") brandingStore = { ...brandingStore, ...body };
       return { ok: true, status: 200, json: async () => brandingStore } as Response;
     }
+    if (/\/api\/settings\/ssh-keys\b/.test(url)) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => [
+          {
+            id: 5,
+            name: "proxy key",
+            kind: "path",
+            path: "/data/keys/proxy_ed25519",
+            public_key: "",
+            fingerprint: "",
+            has_private_key: false,
+          },
+        ],
+      } as Response;
+    }
     // Default: reverse-proxy.
     if (method === "PATCH") proxyStore = { ...proxyStore, ...body };
     return { ok: true, status: 200, json: async () => proxyStore } as Response;
@@ -41,6 +58,7 @@ const SAMPLE: ReverseProxySettings = {
   nginx_user: "deploy",
   nginx_conf_path: "/etc/nginx/conf.d/apps.conf",
   ssh_key_path: "/data/keys/proxy_ed25519",
+  reverse_proxy_ssh_key_id: 5,
   appmanager_proxy_host: "appmanager",
   appmanager_proxy_port: "8000",
   alias_template: "location /ALIAS/ { proxy_pass http://APPS_SERVER:APPS_PORT/; }",
@@ -50,17 +68,22 @@ const SAMPLE: ReverseProxySettings = {
 
 afterEach(() => vi.unstubAllGlobals());
 
+/** Click a Settings sub-tab by its visible label. */
+async function openTab(label: RegExp) {
+  await userEvent.click(await screen.findByRole("button", { name: label }));
+}
+
 describe("GeneralSettings", () => {
   it("loads and shows the reverse-proxy fields", async () => {
     stubSettings(SAMPLE);
     render(<GeneralSettings />);
+    await openTab(/Reverse Proxy/i);
 
     expect(
       await screen.findByDisplayValue("proxy.example.com"),
     ).toBeInTheDocument();
-    expect(
-      screen.getByDisplayValue("/data/keys/proxy_ed25519"),
-    ).toBeInTheDocument();
+    // The SSH key is now selected from the registry dropdown by name.
+    expect(await screen.findByRole("option", { name: /proxy key/i })).toBeInTheDocument();
     // The SSH user field is shown and loaded.
     expect(screen.getByDisplayValue("deploy")).toBeInTheDocument();
     expect(screen.getByDisplayValue("appmanager")).toBeInTheDocument();
@@ -71,9 +94,20 @@ describe("GeneralSettings", () => {
     expect(screen.getByText(/location = \/api\/auth\/proxy-check/)).toBeInTheDocument();
   });
 
+  it("lands on the Reverse Proxy sub-tab on first run", async () => {
+    stubSettings(SAMPLE);
+    render(<GeneralSettings firstRun />);
+
+    // Reverse-proxy setup fields are visible without any extra clicks.
+    expect(
+      await screen.findByDisplayValue("proxy.example.com"),
+    ).toBeInTheDocument();
+  });
+
   it("keeps the alias template collapsed by default", async () => {
     stubSettings(SAMPLE);
     render(<GeneralSettings />);
+    await openTab(/Reverse Proxy/i);
 
     await screen.findByDisplayValue("proxy.example.com");
     // The template textarea is not rendered until expanded.
@@ -88,6 +122,7 @@ describe("GeneralSettings", () => {
   it("saves updated settings including the SSH user", async () => {
     const fetchMock = stubSettings(SAMPLE);
     render(<GeneralSettings />);
+    await openTab(/Reverse Proxy/i);
 
     const hostInput = await screen.findByDisplayValue("proxy.example.com");
     await userEvent.clear(hostInput);
@@ -119,6 +154,7 @@ describe("GeneralSettings", () => {
       configured: false,
     });
     render(<GeneralSettings />);
+    await openTab(/Collaborators/i);
 
     // The existing collaborator loads.
     const list = await screen.findByRole("list", { name: "Collaborators" });

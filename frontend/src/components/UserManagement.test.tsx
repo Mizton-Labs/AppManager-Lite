@@ -17,8 +17,14 @@ function stubUsers() {
 
     if (method === "GET" && url.endsWith("/api/users")) {
       return json([
-        makeUser({ id: 1, username: "admin", role: "admin" }),
-        makeUser({ id: 2, username: "analyst", role: "user" }),
+        makeUser({ id: 1, username: "admin", role: "admin", user_id: "admin" }),
+        makeUser({ id: 2, username: "analyst", role: "user", user_id: "analyst" }),
+        makeUser({
+          id: 3,
+          username: "analyst.one@example.com",
+          role: "user",
+          user_id: "analyst-one",
+        }),
       ]);
     }
     if (method === "GET" && url.endsWith("/api/teams")) {
@@ -26,6 +32,20 @@ function stubUsers() {
     }
     if (method === "GET" && url.endsWith("/api/settings/bundle-templates")) {
       return json([]);
+    }
+    if (method === "GET" && /\/api\/users\/\d+\/servers$/.test(url)) {
+      return json([]);
+    }
+    if (method === "GET" && url.endsWith("/api/account/server-templates")) {
+      return json([]);
+    }
+    if (method === "GET" && url.endsWith("/api/settings/server-templates")) {
+      return json([
+        { id: 7, vmid: 9001, name: "Debian Coder", kind: "lxc",
+          admin_ssh_key_path: "", admin_ssh_key_id: null,
+          main_os_user: "coder", enable_sudo: true,
+          enable_trusted_access: true },
+      ]);
     }
     if (method === "POST" && url.endsWith("/api/settings/bundle-templates")) {
       const body = JSON.parse(init?.body as string);
@@ -35,6 +55,10 @@ function stubUsers() {
       return json({
         user: makeUser({ id: 2, username: "newbie@example.com", role: "user" }),
         password: "Generated-Pass-123",
+        provisioning: [
+          { template_id: 7, template_name: "Debian Coder",
+            status: "created", detail: "vmid=101 ip=10.0.0.5" },
+        ],
       });
     }
     if (method === "DELETE" && url.includes("/api/users/")) {
@@ -60,6 +84,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
   delete (document as unknown as { execCommand?: unknown }).execCommand;
 });
+
+/** Click a User Management sub-tab by its visible label. */
+async function openTab(label: RegExp) {
+  await userEvent.click(await screen.findByRole("button", { name: label }));
+}
 
 describe("UserManagement credential copy", () => {
   it("copies the generated password via the Clipboard API", async () => {
@@ -96,7 +125,9 @@ describe("UserManagement credential copy", () => {
     const fetchMock = stubUsers();
     render(<UserManagement currentUser={makeUser({ id: 1, role: "admin" })} />);
 
-    const analystCard = (await screen.findByText("analyst")).closest("article");
+    const analystCard = (
+      await screen.findByText("analyst", { selector: ".user-name" })
+    ).closest("article");
     expect(analystCard).not.toBeNull();
     await userEvent.click(
       within(analystCard!).getByRole("button", { name: /^edit$/i }),
@@ -116,6 +147,7 @@ describe("UserManagement credential copy", () => {
   it("creates a bundle template", async () => {
     const fetchMock = stubUsers();
     render(<UserManagement currentUser={makeUser({ id: 1, role: "admin" })} />);
+    await openTab(/Bundle Templates/i);
 
     await screen.findByRole("heading", { name: /bundle templates/i });
     await userEvent.type(screen.getByLabelText(/template name/i), "Shell profile");
@@ -155,12 +187,57 @@ describe("UserManagement credential copy", () => {
     });
   });
 
+  it("provisions every server template by default and shows the summary", async () => {
+    const fetchMock = stubUsers();
+    render(<UserManagement currentUser={makeUser({ id: 99, role: "admin" })} />);
+
+    await screen.findByRole("heading", { name: /create user/i });
+    // The template toggle is pre-selected (default ON).
+    const toggle = await screen.findByLabelText(/Debian Coder \(LXC\)/i);
+    expect(toggle).toBeChecked();
+
+    await userEvent.type(
+      screen.getByLabelText(/username/i),
+      "newbie@example.com",
+    );
+    await userEvent.type(
+      screen.getByLabelText(/apps server hostname/i),
+      "apps.example.com",
+    );
+    await userEvent.click(screen.getByRole("button", { name: /^create user$/i }));
+
+    const createCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).endsWith("/api/users") && (init?.method ?? "GET") === "POST",
+    );
+    expect(
+      JSON.parse((createCall![1] as RequestInit).body as string),
+    ).toMatchObject({ provision_templates: [7] });
+
+    // The credential banner reports the per-template provisioning outcome.
+    expect(await screen.findByText(/server provisioning/i)).toBeInTheDocument();
+    expect(screen.getByText(/vmid=101 ip=10\.0\.0\.5/)).toBeInTheDocument();
+  });
+
   it("offers explicit host and IP bundle mapping values", async () => {
     stubUsers();
     render(<UserManagement currentUser={makeUser({ id: 1, role: "admin" })} />);
+    await openTab(/Bundle Templates/i);
 
     await screen.findByRole("heading", { name: /bundle templates/i });
     expect(screen.getByRole("option", { name: /apps server host$/i })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: /apps server ip/i })).toBeInTheDocument();
+  });
+
+  it("shows the derived user id below each username", async () => {
+    stubUsers();
+    render(<UserManagement currentUser={makeUser({ id: 1, role: "admin" })} />);
+
+    const userCards = await screen.findAllByRole("article");
+    const analystCard = userCards.find((card) =>
+      within(card).queryByText("analyst.one@example.com"),
+    );
+    expect(analystCard).toBeDefined();
+    expect(within(analystCard!).getByText("analyst-one")).toBeInTheDocument();
   });
 });

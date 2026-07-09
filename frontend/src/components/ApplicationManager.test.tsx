@@ -272,6 +272,7 @@ describe("ApplicationManager", () => {
         currentUser={{
           id: 2,
           username: "member@example.com",
+          user_id: "member",
           role: "user",
           is_active: true,
           must_change_password: false,

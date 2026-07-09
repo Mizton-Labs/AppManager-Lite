@@ -265,7 +265,48 @@ same area with every application (and its creator), a tab for user management, a
 (application name and logo) and reverse-proxy configuration.
 
 When an administrator creates a user, the username must be an **email address**;
-it is the user's sign-in name. Administrators can also set the user's **apps server**
+it is the user's sign-in name. Each user also gets a derived **user ID** — the
+email's local part, lowercased, with dots and underscores replaced by dashes
+(restricted to letters, digits, and dashes; e.g. `john.doe@example.com` →
+`john-doe`) — shown beneath the email in User Management and on the Account
+page. Because the user ID names per-user resources, creating a user whose
+derived ID collides with an existing user's is rejected.
+
+Every user account carries its own **Ed25519 SSH keypair**, generated at user
+creation (existing accounts are backfilled automatically on startup). From the
+**Account** page a user can view their public key, download the private or
+public key, and regenerate the keypair after an explicit confirmation
+(regeneration and private-key downloads are audited — metadata only, never key
+material; key material is served only to the owning, signed-in user).
+Regenerating also **rotates the key on the user's servers**: the old public
+key is removed from `authorized_keys` (root and every `/home` user) and the
+new one installed, using each server's admin SSH key; a per-server
+verification summary (updated / skipped / failed, with reasons) is shown and
+appended to each server's log. When a jump server is configured, the key is
+rotated there too, on the account for the configured account model (the shared
+jumper account in shared mode, otherwise the user's own account).
+
+Each bundle template can carry an optional **description** (set in the bundle
+add/edit card). The Account page's **Bundle Downloads** card downloads a
+personal SSH config and shows the selected bundle's description. Templates with
+field mappings are rendered from account details;
+mapping sources include the username, the derived **user ID**, apps server
+host/IP, role, and **per-template variables** (`server_<slug>_name`,
+`server_<slug>_ip`, `server_<slug>_user`, where `<slug>` is the server
+template's name slug, e.g. `server_debian-coder_ip`). Each template variable
+resolves to the user's **first** server created from that template (the server
+user resolves to the template main user or the derived ID); templates with no
+server for that user, and mappings whose template was later deleted, render as
+empty. Because the variable is keyed by the template's **name slug**, renaming
+a server template (or having two templates whose names slugify to the same
+value) can leave a previously-saved mapping resolving empty; re-select the
+template variable after a rename. The predefined, read-only **"SSH Config Default"** is a
+**built-in** template that renders a full SSH config dynamically: a `Host *`
+keepalive stanza, a `Host jumpserver` block (with the configured port) when the
+jump server is enabled, and one `Host` block per server with `ProxyJump
+jumpserver` when the jump server is enabled. Built-in templates can be
+**cloned** into editable copies and **disabled** (hidden from downloads) but
+not edited or deleted. Administrators can also set the user's **apps server**
 (host/IP) — the host where that user runs their applications, used as the
 upstream for that user's reverse-proxy aliases. Each application carries its
 **own port** (see below), so there is no per-user port. A normal user only sets
@@ -484,6 +525,195 @@ remove → reload → verify, reverting on failure), and audits the result as
 `nginx_remove`. Aliases pushed before markers existed have no marker and are
 reported as skipped on removal.
 
+## Server provisioning (LXC/VM)
+
+Administrators configure server provisioning under **Settings → Server
+Provisioning** (admin only). Each Settings section groups its cards into
+**sub-tabs**; Server Provisioning has **Provider**, **Policy**, **Jump
+Server**, and **Server Templates**.
+
+- **LXC/VM provider** — currently Proxmox (API-token authentication). Configure
+  the Proxmox URL (`PROTO://IP:PORT`), token name, and API key; the key is
+  stored **write-only** (never returned by the API, shown in the UI, logged, or
+  audited — the UI shows only whether a key is set). A **template name filter**
+  and a **templates-only** toggle control which VMs/containers the provider
+  offers, and a **Verify TLS certificate** toggle (on by default, with a
+  warning when disabled) supports self-signed lab instances. Saving runs a
+  connection test; the result is shown with a **View connection log** toggle,
+  and after a successful test a verification dropdown lists the matching
+  templates read live from Proxmox.
+- **Provisioning policy** — enable/disable self-service server provisioning
+  (self-service users and administrators; normal users cannot request their own
+  servers), the maximum number of servers per user, whether self-service users
+  may modify server resources, and the per-user resource caps (defaults: 12
+  CPUs, 24 GB memory, 200 GB disk). Administrator-made resource changes do not
+  count against these limits.
+- **Server templates** — register the Proxmox templates (LXC or VM, by VM ID)
+  offered to users when creating a server, each with an app-facing name and an
+  **SSH key** chosen from the registry (see Remote Access) for later
+  customization. Templates are assumed to be preconfigured (SSH keys,
+  resources, user).
+- **Jump server** — optionally onboard users onto a bastion. When enabled with
+  a host, **SSH port** (default 22), management user, and registry SSH key,
+  creating a user provisions an OS account on the jump server with their public
+  key installed, deleting a user removes that key, and regenerating a key
+  rotates it there too — always on the account for the configured jump account
+  model (the shared jumper account in **shared** mode, the user's own account
+  in **per-user** mode), keyed to the owner for provenance. A **Sync users to
+  jump server** action backfills
+  existing users. All jump operations are best-effort (they never block user
+  create, delete, or login) and audited. Changing the jump server's connection
+  settings (host, user, port, or key) prompts a reminder to re-run **Sync users
+  to jump server**, since existing accounts would otherwise no longer match.
+  AppManager connects to the bastion as the **management user** (default
+  `root`), which must be privileged enough to create accounts and write keys.
+  The **jump account model** decides where users' keys live: **per-user**
+  (default) gives each user their own account (named by their derived user ID),
+  while **shared** installs every user's key into one shared account. In both
+  models the accounts are **hardened** for jump-only use — created with a
+  `nologin` shell and each key line prefixed with `restrict,port-forwarding`, so
+  they can only be used as a `ProxyJump` hop (no shell, TTY, agent, or X11).
+  Note that hardening does not restrict *where* a shared-account user may
+  TCP-forward, so **`shared` mode is best for a single tenant or trusted cohort**
+  — prefer `per_user` for multi-tenant setups.
+  Switching the account model re-syncs every user, so the UI requires the
+  administrator to acknowledge the re-sync first; if any user fails to sync the
+  change is reverted automatically and the error is reported.
+  By default the generated SSH config bundle addresses the bastion at the same
+  management host/port. If the bastion is managed over one interface but users
+  connect over another (e.g. private vs. public), turn off **Use jumpserver
+  admin config in SSH config bundle** and supply a separate **bundle host** and
+  **bundle port**; that address is only written into users' downloaded SSH
+  config (AppManager never dials it), so changing it needs no re-sync when it
+  points to the same jump server.
+
+Every SSH public key AppManager installs on a remote host — on the jump server,
+on a user's servers, and across the trusted-access mesh — is stamped with an
+identifying comment on the `authorized_keys` line so its origin is clear:
+`AppManager-managed:<user_id>` for a user's own key and
+`AppManager-trusted:<user_id>` for keys shared between a user's servers. Installs
+are idempotent by the key blob (any earlier copy of the same key is replaced, so
+re-syncing never leaves duplicates), and key removal/rotation still match on the
+blob, so the comment is purely informational.
+
+When creating a user, administrators can also **auto-provision servers**: the
+Create user card lists every server template with a toggle (all enabled by
+default), and one server is created per selected template, named
+`TEMPLATE_NAME-USERID`. Provisioning runs synchronously but is best-effort — a
+missing provider, unknown template, or clone failure yields a per-template
+result (shown with the temporary credentials) and never blocks user creation.
+
+Each server template also carries provisioning options (both sudo and trusted
+access default on):
+
+- **Main user** — when set, the user's SSH key is installed only for that OS
+  account on their server (blank falls back to the user's derived ID). Because
+  this is an admin-configured, single-value setting, that account defaults to
+  a `/bin/bash` login shell: it is created with bash if the template image
+  doesn't already have it, or its shell is normalized to bash if it differs
+  (only when the bash binary is present on the server). This auto-create/
+  normalize behavior only ever applies to this configured main user — never to
+  extra OS usernames a caller lists explicitly when creating a server, so a
+  self-service request can't be used to conjure arbitrary accounts.
+- **Sudo access** — adds the main user to the server's sudo/wheel group.
+- **Trusted SSH access** — establishes a full SSH mesh across the user's
+  servers that share the same main user: each server generates its own keypair
+  locally (private keys never leave the servers or touch AppManager) and every
+  server's public key is installed on the others, so the user's servers can
+  reach each other. The mesh is reconciled whenever a trusted server is created
+  or a VM's IP is entered.
+
+## Remote Access (SSH key registry)
+
+Under **Settings → Remote Access**, administrators manage a registry of SSH
+keys used across the app. A key is either a **reference to a key file path** on
+the server, or a **pasted private key stored encrypted at rest** in the
+database (AES via Fernet, using a master key from `APP_MASTER_KEY` or an
+auto-generated `data/master.key`). Pasted keys are write-only — never returned,
+logged, or echoed in errors; the registry shows only the name, kind, and (for
+stored keys) the public key and fingerprint. Every place that needs an SSH key
+(reverse proxy, server templates, jump server) selects a registered key by name
+from a dropdown. A key that is still in use cannot be deleted, but it can be
+**edited** in place — rename it, change the file path, switch between path and
+stored kinds, or paste a replacement private key (leaving the key blank keeps
+the current one). Replacing a stored key re-encrypts it, recomputes its public
+key and fingerprint, and refreshes any materialized copy. Per-user SSH
+keypairs are also stored encrypted at rest with the same master key.
+
+### User servers
+
+Each user can have multiple servers, shown as small `NAME - IP` cards in their
+User Management card and on their own **Account → My servers** card.
+Administrators can add a server to any user; self-service users can create
+their own (when self-service provisioning is enabled); normal users cannot
+request servers.
+
+Creating a server picks a registered template and a **name suffix**: the full
+server name always carries a static prefix, so it is composed as
+`<template-slug>-<owner-id>-<suffix>` (the same convention as auto-provisioned
+servers). Server names are **globally unique** (case-insensitive) — if the
+composed name is already taken the create is rejected and you are asked to
+choose a different suffix. The create form shows the fixed prefix, a live
+preview of the full name, and how many suffix characters remain (names are
+capped at 63). AppManager then
+clones it in Proxmox (full clone, next free VMID) and — for **LXC** — starts
+the container and records its IP address. The address is read from **inside the
+container** over SSH (the DHCP/network address the guest actually holds), and
+adopted only when Proxmox independently attributes the same address to that
+guest; otherwise the hypervisor-reported address is kept. A **VM** is cloned
+only: the operator is guided to configure it in Proxmox and enter its IP
+manually on the server card. An optional toggle installs the owner's SSH
+public key on the new server for a comma-separated list of OS users (default:
+the owner's user ID), connecting with the template's admin SSH key; only the
+public key ever leaves this host. Every creation stores a timestamped,
+secret-free transcript on the server record (**View log**), successes show a
+green confirmation, and everything is audited. A record is marked `failed`
+only when no guest was produced; if the clone succeeded but a later step
+errored (IP discovery, key installation), the record stays `created` — with
+the error in its log — because the guest exists, consumes capacity, and
+counts against quotas.
+
+When creating a server, the form shows small **resource-usage bars** just above
+the template picker — the user's committed servers, CPUs, memory, and disk
+against their per-user limits, coloured green/amber/red as a limit is
+approached. Administrators (who are exempt from per-user quotas) see a short
+"limits are not enforced" note instead.
+
+Quotas apply to non-administrator creators: the per-user server count and the
+summed CPU/memory/disk of quota-counted servers are checked against the
+provisioning policy (template resources are read from Proxmox before cloning).
+Servers created or resource-modified by an administrator are flagged
+(`admin_modified`) and exempt from quota accounting, so admin-granted capacity
+does not consume the user's own limits. Resource changes (CPU, memory, and
+grow-only disk) are applied to LXC servers via the Proxmox API; self-service
+users may change resources only when the policy allows it and within their
+remaining quota.
+
+Deleting a server is **deferred and reversible for 24 hours**. After an
+explicit "this is permanent" confirmation, the server enters a **deletion
+pending** state with a countdown and a **Cancel deletion** action; owners and
+administrators can cancel any time during the grace window. Once the window
+elapses, a sweep force-stops and **destroys the LXC/VM** in Proxmox (the guest
+and its referenced disks; intentionally-retained detached volumes are left
+alone) and removes the record. The sweep has no background scheduler — it runs
+at startup and opportunistically on server-list requests, bounded so it never
+holds up a request. If the automatic destroy fails, the server is removed from
+the owner's list but kept in the **administrator's** list with a red error
+notice and the full log; the administrator (who can check Proxmox directly) can
+then **force-remove** the record even when the destroy could not be confirmed.
+
+### Servers section
+
+The **Servers** entry in the sidebar (below Account) opens an overview of
+servers grouped by owner. Administrators see every user's servers; a regular
+user sees only their own. Each server card shows its assigned resources next to
+four compact usage charts — **CPU, memory, disk, and network** — drawn as small
+sparklines from Proxmox's historical `rrddata`, with a **timeframe** selector
+(last hour, day, or week). Charts are loaded per server as the list renders, so
+a long list stays responsive and one unreachable server never blocks the rest;
+a server with no running guest (or when the provider is unconfigured) simply
+shows a short "no stats" note.
+
 ## Home
 
 The Home page shows two groups of applications:
@@ -520,7 +750,8 @@ that records actions performed in the portal, grouped into three tabs:
 - **Application Management** — application create/request, approve, reject,
   update, delete, alias-change request/approval, and reverse-proxy push/remove.
 - **User activity** — sign-in (success and failure), sign-out, password changes,
-  and user create/update/delete/password-reset.
+  user create/update/delete/password-reset, and SSH-key regeneration and
+  private-key downloads (metadata only; never key material).
 - **System** — backend lifecycle (startup, shutdown, first-run administrator
   creation, authentication disabled), settings updates (branding and
   reverse-proxy), and team management (create, update, delete, reorder).

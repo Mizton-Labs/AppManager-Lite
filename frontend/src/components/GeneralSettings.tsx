@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, ApiError } from "../api";
-import type { BrandingSettings, ReverseProxySettings } from "../types";
+import type { BrandingSettings, ReverseProxySettings, SshKey } from "../types";
+import { SubTabs } from "./SubTabs";
 import { setBranding } from "../branding";
 import { fileToLogoDataUrl } from "../lib/image";
 import { resolveIconSrc } from "../lib/links";
@@ -39,17 +40,39 @@ export function GeneralSettings(
   props: { firstRun?: boolean; onConfigured?: () => void } = {},
 ) {
   return (
-    <>
-      <ApplicationBasicInformation
-        markConfigured={!props.firstRun}
-        onSaved={props.onConfigured}
-      />
-      <ReverseProxyConfiguration
-        firstRun={props.firstRun}
-        onConfigured={props.onConfigured}
-      />
-      <AboutCollaborators />
-    </>
+    <SubTabs
+      ariaLabel="General settings sections"
+      // On first run, land on the Reverse Proxy sub-tab: saving that form
+      // (with a successful protected-alias status) is what completes setup.
+      initialTab={props.firstRun ? "reverse-proxy" : undefined}
+      tabs={[
+        {
+          id: "basic",
+          label: "Basic Information",
+          render: () => (
+            <ApplicationBasicInformation
+              markConfigured={!props.firstRun}
+              onSaved={props.onConfigured}
+            />
+          ),
+        },
+        {
+          id: "reverse-proxy",
+          label: "Reverse Proxy",
+          render: () => (
+            <ReverseProxyConfiguration
+              firstRun={props.firstRun}
+              onConfigured={props.onConfigured}
+            />
+          ),
+        },
+        {
+          id: "collaborators",
+          label: "Collaborators",
+          render: () => <AboutCollaborators />,
+        },
+      ]}
+    />
   );
 }
 
@@ -237,7 +260,8 @@ function ReverseProxyConfiguration(props: {
   const [host, setHost] = useState("");
   const [sshUser, setSshUser] = useState("");
   const [confPath, setConfPath] = useState("");
-  const [keyPath, setKeyPath] = useState("");
+  const [keyId, setKeyId] = useState("");
+  const [sshKeys, setSshKeys] = useState<SshKey[]>([]);
   const [appmanagerHost, setAppmanagerHost] = useState("");
   const [appmanagerPort, setAppmanagerPort] = useState("8000");
   const [template, setTemplate] = useState("");
@@ -254,7 +278,11 @@ function ReverseProxyConfiguration(props: {
         setHost(result.nginx_host);
         setSshUser(result.nginx_user);
         setConfPath(result.nginx_conf_path);
-        setKeyPath(result.ssh_key_path);
+        setKeyId(
+          result.reverse_proxy_ssh_key_id !== null
+            ? String(result.reverse_proxy_ssh_key_id)
+            : "",
+        );
         setAppmanagerHost(result.appmanager_proxy_host || window.location.hostname);
         setAppmanagerPort(result.appmanager_proxy_port || "8000");
         setTemplate(result.alias_template);
@@ -271,6 +299,12 @@ function ReverseProxyConfiguration(props: {
       .finally(() => {
         if (active) setLoading(false);
       });
+    api
+      .listSshKeys()
+      .then((keys) => {
+        if (active) setSshKeys(Array.isArray(keys) ? keys : []);
+      })
+      .catch(() => undefined);
     return () => {
       active = false;
     };
@@ -286,7 +320,7 @@ function ReverseProxyConfiguration(props: {
         nginx_host: host.trim(),
         nginx_user: sshUser.trim(),
         nginx_conf_path: confPath.trim(),
-        ssh_key_path: keyPath.trim(),
+        reverse_proxy_ssh_key_id: keyId ? Number(keyId) : null,
         appmanager_proxy_host: appmanagerHost.trim(),
         appmanager_proxy_port: appmanagerPort.trim(),
         alias_template: template,
@@ -390,16 +424,17 @@ function ReverseProxyConfiguration(props: {
         </label>
 
         <label className="field">
-          <span>Local SSH key path (for management)</span>
-          <input
-            type="text"
-            value={keyPath}
-            onChange={(e) => setKeyPath(e.target.value)}
-            placeholder="/data/keys/proxy_ed25519"
-          />
+          <span>SSH key (for management)</span>
+          <select value={keyId} onChange={(e) => setKeyId(e.target.value)}>
+            <option value="">None</option>
+            {sshKeys.map((k) => (
+              <option key={k.id} value={k.id}>
+                {k.name} ({k.kind})
+              </option>
+            ))}
+          </select>
           <span className="muted logo-hint">
-            Path to a private key file on this server. The key is never stored in
-            the database or shown here.
+            Select a key registered under Settings &rarr; Remote Access.
           </span>
         </label>
 

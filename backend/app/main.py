@@ -15,6 +15,8 @@ from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -26,6 +28,7 @@ from .routers import (
     applications,
     audit as audit_router,
     auth,
+    provisioning as provisioning_router,
     settings as settings_router,
     users,
 )
@@ -74,6 +77,56 @@ def _system_event(action: str, detail: str = "") -> None:
         logger.exception("Failed to record system audit event action=%s", action)
 
 
+def _verify_master_key() -> None:
+    """Fail fast at startup if the master key cannot decrypt stored secrets.
+
+    Encrypted per-user keys become unreadable if APP_MASTER_KEY / master.key
+    is changed or lost after data was encrypted. Detect that here with a clear
+    fatal error rather than a confusing 500 deep in a later request.
+    """
+    from . import keystore
+    from .db import get_connection
+
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT ssh_private_key FROM users "
+            "WHERE ssh_private_key LIKE 'enc:v1:%' LIMIT 1"
+        ).fetchone()
+    if row is None:
+        return
+    try:
+        keystore.decrypt(row["ssh_private_key"])
+    except keystore.MasterKeyError:
+        logger.error(
+            "FATAL: the configured master key cannot decrypt stored secrets. "
+            "APP_MASTER_KEY / data/master.key must match the key used to "
+            "encrypt existing data. Restore the correct master key."
+        )
+        raise
+
+
+def _sweep_pending_server_deletions() -> None:
+    """Run the deferred-deletion sweep once at startup (issue_015-r4 F1).
+
+    There is no background scheduler; deletions are also swept lazily on each
+    server-list request. Doing one pass at startup ensures guests whose grace
+    window elapsed while the app was down are cleaned up promptly. Best-effort:
+    never blocks startup.
+    """
+    from .db import get_connection
+    from .routers.provisioning import expire_pending_server_deletions
+
+    try:
+        with get_connection() as conn:
+            actioned = expire_pending_server_deletions(conn)
+        if actioned:
+            logger.info(
+                "Startup deletion sweep destroyed %d server(s)", actioned
+            )
+    except Exception:  # noqa: BLE001 - startup must not fail on the sweep
+        logger.exception("Startup deletion sweep failed")
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
@@ -86,6 +139,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     )
     init_db()
     logger.info("Database ready at %s", settings.db_path)
+    _verify_master_key()
+    _sweep_pending_server_deletions()
     _system_event(
         "startup",
         detail=f"auth={settings.enable_auth} dev={settings.dev_mode}",
@@ -175,6 +230,34 @@ def create_app() -> FastAPI:
     app.include_router(applications.router, prefix="/api")
     app.include_router(audit_router.router, prefix="/api")
     app.include_router(settings_router.router, prefix="/api")
+    app.include_router(provisioning_router.router, prefix="/api")
+
+    # Fields whose value must never be echoed back in validation errors.
+    _SECRET_FIELDS = {"private_key", "proxmox_api_key", "password",
+                      "new_password", "current_password", "confirm_password"}
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_handler(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        """Return 422 details but redact the echoed input for secret fields.
+
+        FastAPI's default handler includes the offending ``input`` value; for
+        secret-bearing fields (e.g. a pasted SSH private key) that would leak
+        the secret into the response body and any body-logging proxy.
+        """
+        errors = []
+        for err in exc.errors():
+            e = dict(err)
+            loc = e.get("loc", ())
+            if any(part in _SECRET_FIELDS for part in loc) and "input" in e:
+                e["input"] = "<redacted>"
+            errors.append(e)
+        # jsonable_encoder handles non-serializable ctx values (e.g. the
+        # underlying exception object Pydantic attaches).
+        return JSONResponse(
+            status_code=422, content=jsonable_encoder({"detail": errors})
+        )
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next) -> Response:

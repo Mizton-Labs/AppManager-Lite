@@ -249,9 +249,20 @@ def user_from_sso_claims(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="No local account is linked to this SSO identity",
         )
-    return repository.create_sso_user(
-        conn, username=email, role=settings.sso_default_role
-    )
+    try:
+        user = repository.create_sso_user(
+            conn, username=email, role=settings.sso_default_role
+        )
+    except ValueError as exc:
+        # e.g. the derived user identifier collides with an existing account.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
+        ) from exc
+    # Best-effort jump-server onboarding for auto-provisioned SSO users.
+    from . import jumpserver
+
+    jumpserver.sync_user(conn, user)
+    return user
 
 
 def saml_settings(settings: Settings, request: Request) -> dict[str, Any]:

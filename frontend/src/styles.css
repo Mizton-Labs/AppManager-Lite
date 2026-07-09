@@ -127,6 +127,17 @@ code {
   border-bottom: 1px solid var(--border);
 }
 
+/* Sub-tabs within a Settings section */
+.subtabs {
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+.subtabs .tab {
+  font-size: 0.85rem;
+  padding: 0.35rem 0.7rem;
+}
+
 /* Audit log table */
 .audit-table {
   width: 100%;
@@ -401,11 +412,77 @@ textarea:focus,
   gap: 1.25rem;
 }
 
+/* Extra breathing room between the Create user card and the users list.
+   Selector is more specific than `.stack.wide` so the larger gap wins. */
+.stack.wide.users-tab {
+  gap: 2.25rem;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: var(--gap);
   align-items: start;
+}
+
+/*
+ * Account page layout (issue_015-r3): a top row of three equal, wide/short
+ * cards (Profile with embedded Change password, SSH key, Bundle downloads),
+ * then a full-width Server list row beneath them.
+ */
+.account-layout {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+.account-row-top {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--gap);
+  /* Stretch every card to the row's tallest card (the Profile card at its
+   * natural size), so the three cards are one consistent size. */
+  align-items: stretch;
+}
+
+/* Content that exceeds the shared card height (e.g. the SSH key rotation
+ * summary) scrolls inside the card so the row stays perfectly aligned. */
+.account-row-top > .card {
+  min-height: 0;
+  overflow: auto;
+}
+
+/* Stack the three cards on narrow viewports; let each size to its own
+ * content so a stacked card is not artificially tall or clipped. */
+@media (max-width: 900px) {
+  .account-row-top {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .account-row-top > .card {
+    overflow: visible;
+  }
+}
+
+.account-row-servers > .card {
+  width: 100%;
+}
+
+/* A divider'd sub-block inside a card (e.g. Change password within Profile). */
+.card-subsection {
+  margin-top: 1.1rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--border);
+}
+
+.card-subsection h3 {
+  margin: 0 0 0.6rem;
+  font-size: 0.95rem;
+}
+
+.bundle-description {
+  margin-top: -0.25rem;
 }
 
 .form-row {
@@ -423,6 +500,110 @@ textarea:focus,
   display: flex;
   flex-direction: column;
   gap: 1rem;
+}
+
+/* Static server-name prefix + suffix input (issue_015-r5 F1). */
+.prefixed-input {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.prefixed-input .name-prefix {
+  display: flex;
+  align-items: center;
+  padding: 0 0.5rem;
+  background: rgba(148, 163, 184, 0.12);
+  color: #94a3b8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  white-space: nowrap;
+  border-right: 1px solid var(--border);
+}
+
+.prefixed-input input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+.field-hint {
+  font-size: 0.72rem;
+  margin-top: 0.15rem;
+}
+
+.field-hint code {
+  font-size: 0.72rem;
+  word-break: break-all;
+}
+
+/* Resource quota indicator bars at the top of the create-server form (F3). */
+.quota-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  background: rgba(148, 163, 184, 0.06);
+}
+
+.quota-bar {
+  display: grid;
+  grid-template-columns: 3.5rem 1fr auto;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.72rem;
+  color: #cbd5e1;
+}
+
+.quota-bar-label {
+  color: #94a3b8;
+}
+
+.quota-bar-track {
+  position: relative;
+  display: block;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.18);
+  overflow: hidden;
+}
+
+.quota-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.2s ease;
+}
+
+.quota-bar-fill.quota-ok {
+  background: #22c55e;
+}
+
+.quota-bar-fill.quota-warn {
+  background: #f59e0b;
+}
+
+.quota-bar-fill.quota-full {
+  background: #ef4444;
+}
+
+.quota-bar-value {
+  font-variant-numeric: tabular-nums;
+  color: #94a3b8;
+}
+
+.quota-unlimited,
+.quota-bars-loading {
+  font-size: 0.75rem;
+  margin: 0;
 }
 
 /* Target-type radios + alias prefix */
@@ -523,6 +704,50 @@ textarea:focus,
   color: #fbbf24;
 }
 
+.alert.info {
+  background: rgba(96, 165, 250, 0.12);
+  border: 1px solid #60a5fa;
+  color: #93c5fd;
+}
+
+/* An indented group of related fields revealed by a toggle (e.g. the jump
+ * server bundle-address override). */
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding-left: 0.9rem;
+  border-left: 2px solid var(--border);
+}
+
+/* Modal dialog (e.g. the guarded jump account-model switch confirmation). */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  z-index: 50;
+}
+
+.modal-card {
+  background: var(--panel, #1e293b);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.25rem 1.4rem;
+  max-width: 32rem;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.modal-card h3 {
+  margin: 0;
+}
+
 .checkbox-field input[type="checkbox"] {
   width: auto;
   margin-right: 0.35rem;
@@ -557,6 +782,15 @@ textarea:focus,
   font-size: 0.7rem;
   padding: 0.1rem 0.45rem;
   border-radius: 999px;
+  background: rgba(148, 163, 184, 0.15);
+  color: #cbd5e1;
+}
+
+.badge-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.35rem 0;
 }
 
 .status-badge.off {
@@ -737,10 +971,23 @@ textarea:focus,
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
+  /* Prevent a long unbreakable child (e.g. an SSH key fingerprint or file
+   * path) from stretching the card past its grid track. */
+  min-width: 0;
 }
 
 .user-card.inactive {
   opacity: 0.7;
+}
+
+/* Wrap long unbreakable tokens (SSH key fingerprints, file paths) instead of
+ * letting them overflow the card. */
+.user-card > .muted {
+  overflow-wrap: anywhere;
+}
+
+.user-card code {
+  word-break: break-all;
 }
 
 .user-card-head {
@@ -760,6 +1007,95 @@ textarea:focus,
 
 .user-name {
   font-weight: 600;
+}
+
+.user-name-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.user-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+/* Per-user servers (User Management + Account) */
+.server-panel {
+  border-top: 1px solid var(--border);
+  padding-top: 0.6rem;
+  margin-top: 0.6rem;
+}
+
+.server-panel h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.server-panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--gap);
+  margin-bottom: 0.4rem;
+}
+
+.server-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.server-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem 0.7rem;
+  background: var(--bg);
+}
+
+.server-card.failed {
+  border-color: var(--warn);
+}
+
+/* Deferred deletion (issue_015-r4 F1). */
+.server-card.deletion-pending {
+  border-color: var(--warn);
+  background: rgba(245, 158, 11, 0.05);
+}
+
+.server-card.deletion-failed {
+  border-color: var(--brand-primary);
+  background: rgba(221, 29, 33, 0.06);
+}
+
+.server-card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.server-name {
+  font-weight: 600;
+}
+
+.server-meta {
+  margin: 0.2rem 0 0.3rem;
+  font-size: 0.82rem;
+}
+
+/* Account SSH key card */
+.ssh-public-key {
+  margin: 0;
+  padding: 0.6rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 .row-actions {
@@ -1434,3 +1770,155 @@ textarea:focus,
 .team-icon-picker.compact .team-icon-grid {
   grid-template-columns: repeat(auto-fill, minmax(60px, 1fr));
 }
+
+/* ---------------------------------------------------------------------------
+   Servers section + usage sparklines (issue_015-r5 F2)
+   --------------------------------------------------------------------------- */
+.servers-view .view-head {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.servers-view .view-head h2 {
+  margin: 0;
+}
+
+.timeframe-select {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+}
+
+.overview-owners {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  margin-top: 1rem;
+}
+
+.overview-owner-head {
+  margin: 0 0 0.6rem;
+  font-size: 0.95rem;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.3rem;
+}
+
+.overview-owner-count {
+  font-weight: normal;
+  font-size: 0.8rem;
+}
+
+.overview-server-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.overview-server {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  background: var(--bg);
+}
+
+.overview-server-info {
+  min-width: 12rem;
+  flex: 1 1 12rem;
+}
+
+.overview-server-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.overview-server-meta {
+  margin: 0.2rem 0 0;
+  font-size: 0.78rem;
+}
+
+/* The four compact charts, side by side; wraps on narrow screens. */
+.stats-cards {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(96px, 1fr));
+  gap: 0.5rem;
+  flex: 2 1 26rem;
+}
+
+.stats-note {
+  flex: 2 1 26rem;
+  margin: 0;
+  font-size: 0.78rem;
+  align-self: center;
+}
+
+.sparkline {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.sparkline-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.3rem;
+  font-size: 0.68rem;
+}
+
+.sparkline-label {
+  color: #94a3b8;
+}
+
+.sparkline-value {
+  font-variant-numeric: tabular-nums;
+  color: #cbd5e1;
+  white-space: nowrap;
+}
+
+.sparkline-svg {
+  width: 100%;
+  height: 34px;
+  display: block;
+}
+
+.spark-line {
+  fill: none;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.spark-area {
+  stroke: none;
+  opacity: 0.18;
+}
+
+.spark-line.spark-ok {
+  stroke: #22c55e;
+}
+.spark-area.spark-ok {
+  fill: #22c55e;
+}
+.spark-line.spark-warn {
+  stroke: #f59e0b;
+}
+.spark-area.spark-warn {
+  fill: #f59e0b;
+}
+.spark-line.spark-full {
+  stroke: #ef4444;
+}
+.spark-area.spark-full {
+  fill: #ef4444;
+}
+

@@ -18,11 +18,13 @@ from ..repository import TeamConflictError
 from ..schemas import (
     BrandingSettingsOut,
     BundleTemplateOut,
+    CloneBundleTemplateRequest,
     CreateBundleTemplateRequest,
     CreateTeamRequest,
     MessageOut,
     ReorderTeamsRequest,
     ReverseProxySettingsOut,
+    SetBundleTemplateEnabledRequest,
     TeamOut,
     UpdateBundleTemplateRequest,
     UpdateBrandingSettingsRequest,
@@ -41,6 +43,7 @@ def _settings_out(
         nginx_user=row.get("nginx_user", ""),
         nginx_conf_path=row.get("nginx_conf_path", ""),
         ssh_key_path=row.get("ssh_key_path", ""),
+        reverse_proxy_ssh_key_id=row.get("reverse_proxy_ssh_key_id"),
         appmanager_proxy_host=row.get("appmanager_proxy_host", ""),
         appmanager_proxy_port=row.get("appmanager_proxy_port", ""),
         alias_template=row.get("alias_template", ""),
@@ -83,17 +86,26 @@ def update_reverse_proxy_settings(
     __: None = Depends(verify_csrf),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> ReverseProxySettingsOut:
+    if payload.reverse_proxy_ssh_key_id is not None and (
+        repository.get_ssh_key(conn, payload.reverse_proxy_ssh_key_id) is None
+    ):
+        raise HTTPException(status_code=400, detail="Unknown SSH key")
     row = repository.update_settings_row(
         conn,
         nginx_host=payload.nginx_host,
         nginx_user=payload.nginx_user,
         nginx_conf_path=payload.nginx_conf_path,
         ssh_key_path=payload.ssh_key_path,
+        reverse_proxy_ssh_key_id=payload.reverse_proxy_ssh_key_id,
         appmanager_proxy_host=payload.appmanager_proxy_host,
         appmanager_proxy_port=payload.appmanager_proxy_port,
         alias_template=payload.alias_template,
     )
-    protected_alias_result = reverse_proxy.ensure_proxy_auth_config(row)
+    # Resolve the effective key path on a copy so the response still reflects
+    # the stored raw path / selected key id.
+    op_row = dict(row)
+    op_row["ssh_key_path"] = repository.reverse_proxy_key_path(conn, row)
+    protected_alias_result = reverse_proxy.ensure_proxy_auth_config(op_row)
     # Record which fields changed -- never the key path contents beyond a flag.
     changed = [
         name
@@ -102,6 +114,7 @@ def update_reverse_proxy_settings(
             "nginx_user",
             "nginx_conf_path",
             "ssh_key_path",
+            "reverse_proxy_ssh_key_id",
             "appmanager_proxy_host",
             "appmanager_proxy_port",
             "alias_template",
@@ -189,6 +202,7 @@ def create_bundle_template(
             conn,
             name=payload.name,
             content=payload.content,
+            description=payload.description,
             mappings=[m.model_dump() for m in payload.mappings],
         )
     except sqlite3.IntegrityError as exc:
@@ -220,12 +234,21 @@ def update_bundle_template(
     __: None = Depends(verify_csrf),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> BundleTemplateOut:
+    existing = repository.get_bundle_template(conn, template_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Bundle template not found")
+    if existing["is_builtin"]:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Built-in templates cannot be edited; clone it first.",
+        )
     try:
         template = repository.update_bundle_template(
             conn,
             template_id,
             name=payload.name,
             content=payload.content,
+            description=payload.description,
             mappings=(None if payload.mappings is None else [m.model_dump() for m in payload.mappings]),
         )
     except sqlite3.IntegrityError as exc:
@@ -263,6 +286,11 @@ def delete_bundle_template(
     existing = repository.get_bundle_template(conn, template_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="Bundle template not found")
+    if existing["is_builtin"]:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Built-in templates cannot be deleted; disable it instead.",
+        )
     repository.delete_bundle_template(conn, template_id)
     audit.record(
         conn,
@@ -274,6 +302,72 @@ def delete_bundle_template(
         target_name=existing["name"],
     )
     return MessageOut(detail="Bundle template deleted")
+
+
+@router.post(
+    "/settings/bundle-templates/{template_id}/clone",
+    response_model=BundleTemplateOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def clone_bundle_template(
+    template_id: int,
+    payload: CloneBundleTemplateRequest,
+    actor: dict[str, Any] = Depends(require_admin),
+    __: None = Depends(verify_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> BundleTemplateOut:
+    if repository.get_bundle_template(conn, template_id) is None:
+        raise HTTPException(status_code=404, detail="Bundle template not found")
+    try:
+        clone = repository.clone_bundle_template(
+            conn, template_id, new_name=payload.name
+        )
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A bundle template with that name already exists",
+        ) from exc
+    assert clone is not None
+    audit.record(
+        conn,
+        category=audit.CATEGORY_SYSTEM,
+        action="bundle_template_clone",
+        actor=actor,
+        target_type="bundle_template",
+        target_id=clone["id"],
+        target_name=clone["name"],
+        detail=f"cloned_from={template_id}",
+    )
+    return _bundle_out(clone)
+
+
+@router.patch(
+    "/settings/bundle-templates/{template_id}/enabled",
+    response_model=BundleTemplateOut,
+)
+def set_bundle_template_enabled(
+    template_id: int,
+    payload: SetBundleTemplateEnabledRequest,
+    actor: dict[str, Any] = Depends(require_admin),
+    __: None = Depends(verify_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> BundleTemplateOut:
+    template = repository.set_bundle_template_enabled(
+        conn, template_id, payload.enabled
+    )
+    if template is None:
+        raise HTTPException(status_code=404, detail="Bundle template not found")
+    audit.record(
+        conn,
+        category=audit.CATEGORY_SYSTEM,
+        action="bundle_template_enable",
+        actor=actor,
+        target_type="bundle_template",
+        target_id=template["id"],
+        target_name=template["name"],
+        detail=f"enabled={payload.enabled}",
+    )
+    return _bundle_out(template)
 
 
 # --- Team management (administrator-managed) --------------------------------

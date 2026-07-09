@@ -77,6 +77,8 @@
         { "path": "frontend/src/components/TeamManagement.tsx", "role": "Admin team management: create, rename, icon, reorder, delete." },
         { "path": "frontend/src/components/GeneralSettings.tsx", "role": "Branding and reverse-proxy configuration forms." },
         { "path": "frontend/src/components/AuditView.tsx", "role": "Admin audit-log viewer." },
+        { "path": "frontend/src/components/ServersView.tsx", "role": "Servers section: all servers grouped by owner with compact usage charts (admins see all; users see their own)." },
+        { "path": "frontend/src/components/Sparkline.tsx", "role": "Dependency-free compact SVG sparkline used by the server usage charts." },
         { "path": "frontend/src/lib", "role": "Helpers: links, image resize, clipboard, password." },
         { "path": "frontend/public/team-icons", "role": "Bundled team-icon SVG catalogue (generic-IT and cybersecurity sets)." },
         { "path": "frontend/public/logos", "role": "Bundled default application-logo SVG catalogue." }
@@ -117,7 +119,9 @@
         "authlib>=1.3,<2",
         "python3-saml>=1.16,<2",
         "python-multipart>=0.0.20,<1",
-        "pydantic>=2.7,<3"
+        "pydantic>=2.7,<3",
+        "cryptography>=42",
+        "httpx>=0.27,<0.29"
       ],
       "devDependencies": ["pytest>=9.0.3,<10", "httpx>=0.27,<0.29"]
     },
@@ -181,6 +185,8 @@
       { "name": "APP_SSO_EMAIL_DOMAIN_ALLOWLIST", "default": "", "type": "string", "purpose": "Optional comma-separated email domain allowlist for SSO sign-ins." },
       { "name": "APP_OIDC_ENABLED", "default": "0", "type": "boolean", "purpose": "Enable OIDC/OAuth2 login." },
       { "name": "APP_OIDC_PROVIDER", "default": "oidc", "type": "string", "purpose": "OIDC provider preset: google, microsoft, okta, auth0, keycloak, or generic." },
+      { "name": "APP_MASTER_KEY", "default": "", "type": "secret", "purpose": "Fernet master key for encrypting SSH private keys at rest; if unset, an auto-generated data/master.key (0600) is used. Back it up: changing/losing it makes encrypted data unrecoverable." },
+      { "name": "APP_MASTER_KEY_FILE", "default": "<data_dir>/master.key", "type": "path", "purpose": "Location of the auto-generated master key file when APP_MASTER_KEY is not set." },
       { "name": "APP_OIDC_LABEL", "default": "Single Sign-On", "type": "string", "purpose": "Login button label for OIDC." },
       { "name": "APP_OIDC_CLIENT_ID", "default": "", "type": "secret", "purpose": "OIDC client/application ID." },
       { "name": "APP_OIDC_CLIENT_SECRET", "default": "", "type": "secret", "purpose": "OIDC client secret, including Microsoft Entra/SPN secret values." },
@@ -214,9 +220,12 @@
       { "method": "GET", "path": "/api/auth/saml/metadata", "auth": "anonymous", "csrf": false, "summary": "Expose SAML service-provider metadata." },
       { "method": "POST", "path": "/api/auth/logout", "auth": "user", "csrf": true, "summary": "End the current session." },
       { "method": "POST", "path": "/api/account/password", "auth": "user", "csrf": true, "summary": "Change the signed-in user's own password." },
+      { "method": "GET", "path": "/api/account/ssh-key", "auth": "user", "csrf": false, "summary": "The signed-in user's SSH public key, derived user-id, and generation time (never the private key)." },
+      { "method": "GET", "path": "/api/account/ssh-key/download", "auth": "user", "csrf": false, "summary": "Download the signed-in user's own SSH key; requires part=private|public. Private downloads are audited (metadata only)." },
+      { "method": "POST", "path": "/api/account/ssh-key/regenerate", "auth": "user", "csrf": true, "summary": "Replace the signed-in user's SSH keypair and rotate it on their servers (remove old public key, install new), and on the jump server using the account for the configured jump account model (the shared jumper account in shared mode, the user's own account otherwise); returns a per-server summary (audited, no key material)." },
       { "method": "GET", "path": "/api/teams", "auth": "user", "csrf": false, "summary": "List teams (name, order, icon) for any signed-in user." },
       { "method": "GET", "path": "/api/users", "auth": "admin", "csrf": false, "summary": "List users." },
-      { "method": "POST", "path": "/api/users", "auth": "admin", "csrf": true, "summary": "Create a user (returns a generated password)." },
+      { "method": "POST", "path": "/api/users", "auth": "admin", "csrf": true, "summary": "Create a user (returns a generated password and per-template auto-provisioning results)." },
       { "method": "PATCH", "path": "/api/users/{user_id}", "auth": "admin", "csrf": true, "summary": "Update a user's role, teams, active state, or flags." },
       { "method": "POST", "path": "/api/users/{user_id}/reset-password", "auth": "admin", "csrf": true, "summary": "Reset a user's password (returns a generated password)." },
       { "method": "DELETE", "path": "/api/users/{user_id}", "auth": "admin", "csrf": true, "summary": "Delete a user." },
@@ -236,7 +245,33 @@
       { "method": "POST", "path": "/api/settings/teams", "auth": "admin", "csrf": true, "summary": "Create a team." },
       { "method": "PATCH", "path": "/api/settings/teams/{team_id}", "auth": "admin", "csrf": true, "summary": "Rename a team and/or change its icon." },
       { "method": "DELETE", "path": "/api/settings/teams/{team_id}", "auth": "admin", "csrf": true, "summary": "Delete a team." },
-      { "method": "POST", "path": "/api/settings/teams/reorder", "auth": "admin", "csrf": true, "summary": "Set the sidebar order of all teams." }
+      { "method": "POST", "path": "/api/settings/teams/reorder", "auth": "admin", "csrf": true, "summary": "Set the sidebar order of all teams." },
+      { "method": "GET", "path": "/api/settings/provisioning", "auth": "admin", "csrf": false, "summary": "Read LXC/VM provider and provisioning-policy settings (the Proxmox API key is never returned; only a presence flag)." },
+      { "method": "PATCH", "path": "/api/settings/provisioning", "auth": "admin", "csrf": true, "summary": "Update provider/policy settings; touching provider connection fields runs a Proxmox connection test and stores its status and log." },
+      { "method": "GET", "path": "/api/settings/provisioning/provider-templates", "auth": "admin", "csrf": false, "summary": "Live template/VM list from the provider, honoring the name filter and templates-only toggle." },
+      { "method": "POST", "path": "/api/settings/jump-server/sync", "auth": "admin", "csrf": true, "summary": "Onboard every active user to the configured jump server (idempotent); returns a per-user summary." },
+      { "method": "POST", "path": "/api/settings/jump-server/account-mode", "auth": "admin", "csrf": true, "summary": "Switch the jump account model (per_user/shared); requires acknowledgment, re-syncs all users, and reverts on any failure." },
+      { "method": "GET", "path": "/api/settings/ssh-keys", "auth": "admin", "csrf": false, "summary": "List registered SSH keys (registry; no private material returned)." },
+      { "method": "POST", "path": "/api/settings/ssh-keys", "auth": "admin", "csrf": true, "summary": "Register an SSH key: a key file path (kind=path) or a pasted private key stored encrypted (kind=stored, write-only)." },
+      { "method": "PATCH", "path": "/api/settings/ssh-keys/{key_id}", "auth": "admin", "csrf": true, "summary": "Edit a registered SSH key (name, path, kind switch, or replace the stored key; allowed while referenced)." },
+      { "method": "DELETE", "path": "/api/settings/ssh-keys/{key_id}", "auth": "admin", "csrf": true, "summary": "Delete a registered SSH key (409 if still referenced)." },
+      { "method": "GET", "path": "/api/settings/server-templates", "auth": "admin", "csrf": false, "summary": "List registered server templates." },
+      { "method": "POST", "path": "/api/settings/server-templates", "auth": "admin", "csrf": true, "summary": "Register a server template (vmid, name, lxc|vm, registry admin key, optional main OS user, sudo and trusted-access flags)." },
+      { "method": "PATCH", "path": "/api/settings/server-templates/{template_id}", "auth": "admin", "csrf": true, "summary": "Update a server template (incl. main user, sudo, trusted access)." },
+      { "method": "DELETE", "path": "/api/settings/server-templates/{template_id}", "auth": "admin", "csrf": true, "summary": "Delete a server template." },
+      { "method": "POST", "path": "/api/settings/bundle-templates/{template_id}/clone", "auth": "admin", "csrf": true, "summary": "Clone a bundle template (incl. a built-in) into a new editable, non-built-in template." },
+      { "method": "PATCH", "path": "/api/settings/bundle-templates/{template_id}/enabled", "auth": "admin", "csrf": true, "summary": "Enable or disable a bundle template; disabled templates are hidden from account downloads." },
+      { "method": "GET", "path": "/api/account/server-templates", "auth": "user", "csrf": false, "summary": "User-facing server-template options (id, name, kind only)." },
+      { "method": "GET", "path": "/api/account/server-access", "auth": "user", "csrf": false, "summary": "Whether the caller may create servers for their own account, with a reason when not." },
+      { "method": "GET", "path": "/api/servers/overview", "auth": "user", "csrf": false, "summary": "All servers the caller may see, grouped by owner, for the Servers section. Administrators see every user's servers (with destroy-failure detail); a non-admin sees only their own." },
+      { "method": "GET", "path": "/api/users/{user_id}/servers", "auth": "admin-or-self", "csrf": false, "summary": "List a user's servers. Also runs the lazy deferred-deletion sweep (bounded, single-flight). Admins see servers whose destroy failed (with the error); owners do not." },
+      { "method": "GET", "path": "/api/users/{user_id}/servers/usage", "auth": "admin-or-self", "csrf": false, "summary": "Per-user provisioning usage vs. limits (servers, CPUs, memory, disk) for the create-form quota bars; administrators are reported as unlimited." },
+      { "method": "GET", "path": "/api/users/{user_id}/servers/{server_id}/stats", "auth": "admin-or-self", "csrf": false, "summary": "Historical CPU/memory/disk/network usage for a server over a timeframe (hour/day/week), read from Proxmox rrddata; returns available=false with a reason when there is no guest, the provider is unconfigured, or the read fails." },
+      { "method": "POST", "path": "/api/users/{user_id}/servers", "auth": "admin-or-self", "csrf": true, "summary": "Create a server from a template: the request supplies only a name suffix and the full name is composed as '<template-slug>-<owner-id>-<suffix>' (globally unique, max 63 chars); clone (full), start + IP discovery for LXC (the container's real in-guest IP is read over SSH and recorded when the hypervisor corroborates it, else the hypervisor IP is kept), optional SSH public-key installation; VMs are cloned only and get a manual IP. Quotas apply to non-admin creators." },
+      { "method": "PATCH", "path": "/api/users/{user_id}/servers/{server_id}", "auth": "admin-or-self", "csrf": true, "summary": "Set a VM's IP address manually, or change LXC resources (admin always, exempting the server from quotas; self-service users when allowed by policy, within quota)." },
+      { "method": "DELETE", "path": "/api/users/{user_id}/servers/{server_id}", "auth": "admin-or-self", "csrf": true, "summary": "Schedule deferred deletion: the server enters a 24-hour grace period, then a sweep stops and destroys the LXC/VM and removes the record (idempotent if already pending)." },
+      { "method": "POST", "path": "/api/users/{user_id}/servers/{server_id}/cancel-deletion", "auth": "admin-or-self", "csrf": true, "summary": "Cancel a pending deferred deletion before the grace window elapses." },
+      { "method": "POST", "path": "/api/users/{user_id}/servers/{server_id}/force-remove", "auth": "admin", "csrf": true, "summary": "Administrator-only: remove the server record even if its automatic destroy failed (a best-effort destroy is attempted first; the admin verifies the guest in Proxmox)." }
     ]
   },
   "dataModel": {
@@ -245,8 +280,8 @@
     "tables": [
       {
         "name": "users",
-        "description": "Accounts with role, status, self-service flag, and per-user apps server/port.",
-        "columns": ["id", "username", "password_hash", "role", "is_active", "must_change_password", "self_service", "apps_server", "apps_port", "created_at", "updated_at"],
+        "description": "Accounts with role, status, self-service flag, per-user apps server/port, and a per-user Ed25519 SSH keypair (generated at creation, backfilled by migration; key material is served only to the owning user).",
+        "columns": ["id", "username", "password_hash", "role", "is_active", "must_change_password", "self_service", "apps_server", "apps_server_ip", "apps_port", "ssh_private_key", "ssh_public_key", "ssh_key_generated_at", "created_at", "updated_at"],
         "primaryKey": ["id"]
       },
       {
@@ -297,8 +332,33 @@
       },
       {
         "name": "settings",
-        "description": "Single pinned row (id = 1) for reverse-proxy and branding configuration.",
-        "columns": ["id", "nginx_host", "nginx_user", "nginx_conf_path", "ssh_key_path", "appmanager_proxy_host", "appmanager_proxy_port", "alias_template", "app_name", "app_logo", "configured", "updated_at"],
+        "description": "Single pinned row (id = 1) for reverse-proxy, branding, LXC/VM provider (Proxmox; API key stored write-only), and server-provisioning policy configuration.",
+        "columns": ["id", "nginx_host", "nginx_user", "nginx_conf_path", "ssh_key_path", "reverse_proxy_ssh_key_id", "appmanager_proxy_host", "appmanager_proxy_port", "alias_template", "app_name", "app_logo", "configured", "provider_type", "proxmox_url", "proxmox_token_name", "proxmox_api_key", "proxmox_template_filter", "proxmox_templates_only", "proxmox_verify_tls", "proxmox_conn_status", "proxmox_conn_log", "provisioning_self_service", "provisioning_max_servers", "provisioning_allow_resource_edit", "provisioning_max_cpus", "provisioning_max_memory_gb", "provisioning_max_disk_gb", "jump_enabled", "jump_host", "jump_user", "jump_port", "jump_ssh_key_id", "jump_management_user", "jump_account_mode", "jump_jumper_user", "jump_bundle_override", "jump_bundle_host", "jump_bundle_port", "updated_at"],
+        "primaryKey": ["id"]
+      },
+      {
+        "name": "ssh_keys",
+        "description": "Registry of SSH keys usable across the app: a key file path (kind=path) or a private key stored encrypted at rest (kind=stored). Secret material is never returned by the API.",
+        "columns": ["id", "name", "kind", "path", "encrypted_private_key", "public_key", "fingerprint", "created_at", "updated_at"],
+        "primaryKey": ["id"]
+      },
+      {
+        "name": "server_templates",
+        "description": "Admin-registered Proxmox templates (LXC or VM) offered when creating user servers; admin key referenced from the ssh_keys registry.",
+        "columns": ["id", "vmid", "name", "kind", "admin_ssh_key_path", "admin_ssh_key_id", "main_os_user", "enable_sudo", "enable_trusted_access", "created_at", "updated_at"],
+        "primaryKey": ["id"]
+      },
+      {
+        "name": "user_servers",
+        "description": "Per-user provisioned or referenced LXC/VM servers with resource accounting (admin_modified rows are exempt from user quotas) and a secret-free creation transcript. Supports deferred deletion: deletion_requested_at marks a pending deletion (24-hour grace before the guest is destroyed) and deletion_error records a destroy failure (admin-only recovery).",
+        "columns": ["id", "user_id", "name", "hostname", "template_id", "template_name", "vmid", "node", "kind", "ip_address", "cpus", "memory_gb", "disk_gb", "admin_modified", "admin_ssh_key_path", "admin_ssh_key_id", "status", "last_log", "deletion_requested_at", "deletion_error", "created_at", "updated_at"],
+        "primaryKey": ["id"],
+        "foreignKeys": ["user_id -> users.id (cascade)", "template_id -> server_templates.id (set null)"]
+      },
+      {
+        "name": "bundle_templates",
+        "description": "Downloadable user configuration bundles with field mappings. Built-in templates (is_builtin) render dynamically and cannot be edited/deleted (only cloned); disabled templates are hidden from account downloads.",
+        "columns": ["id", "name", "content", "description", "is_builtin", "enabled", "created_at", "updated_at"],
         "primaryKey": ["id"]
       }
     ]

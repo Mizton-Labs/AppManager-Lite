@@ -77,6 +77,17 @@ class Settings:
         )
         self.credentials_file: Path = self.data_dir / "first-run-admin-credentials.txt"
 
+        # At-rest encryption master key for stored SSH private keys and
+        # per-user keypairs. APP_MASTER_KEY (a urlsafe base64 Fernet key)
+        # takes precedence; otherwise a key file is auto-generated at 0600.
+        self.master_key_env: str = os.environ.get("APP_MASTER_KEY", "").strip()
+        self.master_key_file: Path = Path(
+            os.environ.get("APP_MASTER_KEY_FILE", self.data_dir / "master.key")
+        ).resolve()
+        # Directory where stored SSH private keys are materialized (0600) for
+        # use as ``ssh -i`` arguments.
+        self.ssh_keys_dir: Path = self.data_dir / "keys"
+
         auth_mode = os.environ.get("APP_AUTH_MODE", "").strip().lower()
         if auth_mode and auth_mode not in {"local", "sso", "both"}:
             raise ValueError("APP_AUTH_MODE must be 'local', 'sso', or 'both'")
@@ -169,6 +180,13 @@ class Settings:
 
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        # The database now holds per-user SSH private keys in addition to
+        # session tokens; keep the runtime data directory owner-only. Best
+        # effort: skip silently where chmod is not permitted (e.g. odd mounts).
+        try:
+            os.chmod(self.data_dir, 0o700)
+        except OSError:
+            pass
 
 
 @lru_cache(maxsize=1)

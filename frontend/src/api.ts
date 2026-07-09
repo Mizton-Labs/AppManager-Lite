@@ -13,8 +13,30 @@ import type {
   CreateUserInput,
   GeneratedPassword,
   ReverseProxySettings,
+  CreateServerTemplateInput,
+  CreateSshKeyInput,
+  UpdateSshKeyInput,
+  CreateUserServerInput,
+  JumpAccountModeInput,
+  JumpAccountModeResult,
+  JumpSyncEntry,
+  ProviderTemplates,
+  ProvisioningSettings,
+  ServerAccess,
+  ServersOverview,
+  ServerStats,
+  ServerTemplate,
+  ServerTemplateOption,
+  ServerUsage,
+  SshKey,
   SessionState,
+  SshKeyInfo,
+  SshKeyRegenerateResult,
   SsoConfig,
+  UpdateProvisioningSettingsInput,
+  UpdateServerTemplateInput,
+  UpdateUserServerInput,
+  UserServer,
   Team,
   UpdateBundleTemplateInput,
   UpdateApplicationInput,
@@ -127,6 +149,16 @@ export const api = {
   downloadAccountBundle: (id: number) =>
     requestText(`account/bundles/${id}/download`),
 
+  getAccountSshKey: () => request<SshKeyInfo>("account/ssh-key"),
+
+  downloadAccountSshKey: (part: "private" | "public") =>
+    requestText(`account/ssh-key/download?part=${part}`),
+
+  regenerateAccountSshKey: () =>
+    request<SshKeyRegenerateResult>("account/ssh-key/regenerate", {
+      method: "POST",
+    }),
+
   listTeams: () => request<Team[]>("teams"),
 
   listApplications: (team?: string) =>
@@ -204,6 +236,126 @@ export const api = {
       body: input,
     }),
 
+  /** Server-provisioning provider + policy settings (administrators only). */
+  getProvisioningSettings: () =>
+    request<ProvisioningSettings>("settings/provisioning"),
+
+  updateProvisioningSettings: (input: UpdateProvisioningSettingsInput) =>
+    request<ProvisioningSettings>("settings/provisioning", {
+      method: "PATCH",
+      body: input,
+    }),
+
+  listProviderTemplates: () =>
+    request<ProviderTemplates>("settings/provisioning/provider-templates"),
+
+  syncJumpServerUsers: () =>
+    request<{ results: JumpSyncEntry[] }>("settings/jump-server/sync", {
+      method: "POST",
+    }),
+
+  changeJumpAccountMode: (input: JumpAccountModeInput) =>
+    request<JumpAccountModeResult>("settings/jump-server/account-mode", {
+      method: "POST",
+      body: input,
+    }),
+
+  listServerTemplates: () =>
+    request<ServerTemplate[]>("settings/server-templates"),
+
+  createServerTemplate: (input: CreateServerTemplateInput) =>
+    request<ServerTemplate>("settings/server-templates", {
+      method: "POST",
+      body: input,
+    }),
+
+  updateServerTemplate: (id: number, input: UpdateServerTemplateInput) =>
+    request<ServerTemplate>(`settings/server-templates/${id}`, {
+      method: "PATCH",
+      body: input,
+    }),
+
+  deleteServerTemplate: (id: number) =>
+    request<{ detail: string }>(`settings/server-templates/${id}`, {
+      method: "DELETE",
+    }),
+
+  /** Per-user servers (admin, or the user themself). */
+  listUserServers: (userId: number) =>
+    request<UserServer[]>(`users/${userId}/servers`),
+
+  /** Per-user provisioning usage vs. limits (create-form quota bars). */
+  getUserServerUsage: (userId: number) =>
+    request<ServerUsage>(`users/${userId}/servers/usage`),
+
+  /** All servers the caller may see, grouped by owner (Servers view). */
+  getServersOverview: () => request<ServersOverview>("servers/overview"),
+
+  /** Historical usage stats for one server (Proxmox rrddata). */
+  getServerStats: (userId: number, serverId: number, timeframe: string) =>
+    request<ServerStats>(
+      `users/${userId}/servers/${serverId}/stats?timeframe=${encodeURIComponent(timeframe)}`,
+    ),
+
+  createUserServer: (userId: number, input: CreateUserServerInput) =>
+    request<UserServer>(`users/${userId}/servers`, {
+      method: "POST",
+      body: input,
+    }),
+
+  updateUserServer: (
+    userId: number,
+    serverId: number,
+    input: UpdateUserServerInput,
+  ) =>
+    request<UserServer>(`users/${userId}/servers/${serverId}`, {
+      method: "PATCH",
+      body: input,
+    }),
+
+  /** Request deferred deletion (24h grace); returns the updated server. */
+  deleteUserServer: (userId: number, serverId: number) =>
+    request<UserServer>(`users/${userId}/servers/${serverId}`, {
+      method: "DELETE",
+    }),
+
+  /** Cancel a pending deferred deletion; returns the updated server. */
+  cancelServerDeletion: (userId: number, serverId: number) =>
+    request<UserServer>(
+      `users/${userId}/servers/${serverId}/cancel-deletion`,
+      { method: "POST" },
+    ),
+
+  /** Admin-only: force-remove a server record (even if its destroy failed). */
+  forceRemoveServer: (userId: number, serverId: number) =>
+    request<{ detail: string }>(
+      `users/${userId}/servers/${serverId}/force-remove`,
+      { method: "POST" },
+    ),
+
+  listAccountServerTemplates: () =>
+    request<ServerTemplateOption[]>("account/server-templates"),
+
+  getAccountServerAccess: () =>
+    request<ServerAccess>("account/server-access"),
+
+  /** SSH key registry (Remote Access Config; administrators only). */
+  listSshKeys: () => request<SshKey[]>("settings/ssh-keys"),
+
+  createSshKey: (input: CreateSshKeyInput) =>
+    request<SshKey>("settings/ssh-keys", { method: "POST", body: input }),
+
+  updateSshKey: (id: number, input: UpdateSshKeyInput) =>
+    request<SshKey>(`settings/ssh-keys/${id}`, {
+      method: "PATCH",
+      body: input,
+    }),
+
+  deleteSshKey: (id: number) =>
+    request<{ detail: string }>(`settings/ssh-keys/${id}`, {
+      method: "DELETE",
+    }),
+
   /** Configurable branding (administrators only). */
   getBrandingSettings: () => request<BrandingSettings>("settings/branding"),
 
@@ -232,6 +384,18 @@ export const api = {
   deleteBundleTemplate: (id: number) =>
     request<{ detail: string }>(`settings/bundle-templates/${id}`, {
       method: "DELETE",
+    }),
+
+  cloneBundleTemplate: (id: number, name: string) =>
+    request<BundleTemplate>(`settings/bundle-templates/${id}/clone`, {
+      method: "POST",
+      body: { name },
+    }),
+
+  setBundleTemplateEnabled: (id: number, enabled: boolean) =>
+    request<BundleTemplate>(`settings/bundle-templates/${id}/enabled`, {
+      method: "PATCH",
+      body: { enabled },
     }),
 
   createTeam: (input: CreateTeamInput) =>

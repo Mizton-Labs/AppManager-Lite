@@ -9,6 +9,8 @@ export type ApprovalStatus = "pending" | "approved" | "rejected";
 export interface ApiUser {
   id: number;
   username: string;
+  /** Derived identifier: email local part with dots/underscores as dashes. */
+  user_id: string;
   role: Role;
   is_active: boolean;
   must_change_password: boolean;
@@ -47,17 +49,31 @@ export interface SsoConfig {
   providers: SsoProvider[];
 }
 
+export interface ProvisionResult {
+  template_id: number;
+  template_name: string;
+  status: "created" | "failed" | "skipped";
+  detail: string;
+}
+
 export interface GeneratedPassword {
   user: ApiUser;
   password: string;
+  provisioning?: ProvisionResult[];
 }
 
 export type BundleMappingSource =
   | "username"
+  | "user_id"
   | "user_apps_server"
   | "user_apps_server_host"
   | "user_apps_server_ip"
-  | "user_role";
+  | "user_role"
+  // Dynamic per-template variables keyed by the server template slug:
+  // server_<slug>_name / server_<slug>_ip / server_<slug>_user
+  | `server_${string}_name`
+  | `server_${string}_ip`
+  | `server_${string}_user`;
 
 export interface BundleTemplateMapping {
   field_name: string;
@@ -68,12 +84,16 @@ export interface BundleTemplate {
   id: number;
   name: string;
   content: string;
+  description: string;
   mappings: BundleTemplateMapping[];
+  is_builtin: boolean;
+  enabled: boolean;
 }
 
 export interface BundleOption {
   id: number;
   name: string;
+  description: string;
 }
 
 export interface BundleDownload {
@@ -81,15 +101,287 @@ export interface BundleDownload {
   filename: string;
 }
 
+/** Public half of the account's SSH keypair (never the private key). */
+export interface SshKeyInfo {
+  user_id: string;
+  public_key: string;
+  generated_at: string | null;
+}
+
+/** Per-server outcome of propagating a regenerated key. */
+export interface ServerKeyRotation {
+  server: string;
+  ip_address: string;
+  status: "updated" | "skipped" | "failed";
+  detail: string;
+}
+
+export interface SshKeyRegenerateResult extends SshKeyInfo {
+  rotation: ServerKeyRotation[];
+}
+
+/** Provider + policy settings; the API key itself is never returned. */
+export interface ProvisioningSettings {
+  provider_type: string;
+  proxmox_url: string;
+  proxmox_token_name: string;
+  proxmox_api_key_set: boolean;
+  proxmox_template_filter: string;
+  proxmox_templates_only: boolean;
+  proxmox_verify_tls: boolean;
+  proxmox_conn_status: string;
+  proxmox_conn_log: string;
+  provisioning_self_service: boolean;
+  provisioning_max_servers: number;
+  provisioning_allow_resource_edit: boolean;
+  provisioning_max_cpus: number;
+  provisioning_max_memory_gb: number;
+  provisioning_max_disk_gb: number;
+  jump_enabled: boolean;
+  jump_host: string;
+  jump_user: string;
+  jump_port: number;
+  jump_ssh_key_id: number | null;
+  jump_management_user: string;
+  jump_account_mode: "per_user" | "shared";
+  jump_jumper_user: string;
+  jump_bundle_override: boolean;
+  jump_bundle_host: string;
+  jump_bundle_port: number;
+}
+
+export interface JumpSyncEntry {
+  username: string;
+  status: string;
+  detail: string;
+}
+
+export interface UpdateProvisioningSettingsInput {
+  provider_type?: string;
+  proxmox_url?: string;
+  proxmox_token_name?: string;
+  /** Write-only: sent only when the administrator enters a new key. */
+  proxmox_api_key?: string;
+  proxmox_template_filter?: string;
+  proxmox_templates_only?: boolean;
+  proxmox_verify_tls?: boolean;
+  provisioning_self_service?: boolean;
+  provisioning_max_servers?: number;
+  provisioning_allow_resource_edit?: boolean;
+  provisioning_max_cpus?: number;
+  provisioning_max_memory_gb?: number;
+  provisioning_max_disk_gb?: number;
+  jump_enabled?: boolean;
+  jump_host?: string;
+  jump_user?: string;
+  jump_port?: number;
+  jump_ssh_key_id?: number | null;
+  jump_management_user?: string;
+  jump_jumper_user?: string;
+  jump_bundle_override?: boolean;
+  jump_bundle_host?: string;
+  jump_bundle_port?: number;
+}
+
+export interface JumpAccountModeInput {
+  account_mode: "per_user" | "shared";
+  jumper_user?: string;
+  acknowledge_sync: boolean;
+}
+
+export interface JumpAccountModeResult {
+  account_mode: "per_user" | "shared";
+  reverted: boolean;
+  detail: string;
+  results: JumpSyncEntry[];
+}
+
+/** A VM/LXC entry read live from the provider. */
+export interface ProviderTemplate {
+  vmid: number;
+  name: string;
+  kind: "lxc" | "vm";
+  node: string;
+  is_template: boolean;
+}
+
+export interface ProviderTemplates {
+  status: string;
+  log: string;
+  templates: ProviderTemplate[];
+}
+
+/** A registered SSH key (registry entry; never carries private material). */
+export interface SshKey {
+  id: number;
+  name: string;
+  kind: "path" | "stored";
+  path: string;
+  public_key: string;
+  fingerprint: string;
+  has_private_key: boolean;
+}
+
+export interface CreateSshKeyInput {
+  name: string;
+  kind: "path" | "stored";
+  path?: string;
+  private_key?: string;
+}
+
+export interface UpdateSshKeyInput {
+  name?: string;
+  kind?: "path" | "stored";
+  path?: string;
+  /** Write-only: send only to replace the stored private key. */
+  private_key?: string;
+}
+
+/** An admin-registered Proxmox template used to create user servers. */
+export interface ServerTemplate {
+  id: number;
+  vmid: number;
+  name: string;
+  kind: "lxc" | "vm";
+  admin_ssh_key_path: string;
+  admin_ssh_key_id: number | null;
+  main_os_user: string;
+  enable_sudo: boolean;
+  enable_trusted_access: boolean;
+}
+
+/** A user's provisioned (or referenced) LXC/VM server. */
+export interface UserServer {
+  id: number;
+  user_id: number;
+  name: string;
+  hostname: string;
+  template_id: number | null;
+  template_name: string;
+  vmid: number | null;
+  node: string;
+  kind: "lxc" | "vm";
+  ip_address: string;
+  cpus: number;
+  memory_gb: number;
+  disk_gb: number;
+  admin_modified: boolean;
+  status: "created" | "reference" | "failed";
+  last_log: string;
+  // Deferred deletion (issue_015-r4 F1).
+  deletion_requested_at: string;
+  deletion_pending: boolean;
+  deletion_failed: boolean;
+  /** Only populated in administrator responses. */
+  deletion_error: string;
+  created_at: string;
+}
+
+export interface CreateUserServerInput {
+  template_id: number;
+  name: string;
+  install_pubkey?: boolean;
+  pubkey_users?: string;
+}
+
+/** A user's servers, for the Servers overview (issue_015-r5 F2). */
+export interface OwnerServers {
+  user_id: number;
+  username: string;
+  derived_user_id: string;
+  servers: UserServer[];
+}
+
+export interface ServersOverview {
+  is_admin: boolean;
+  owners: OwnerServers[];
+}
+
+/** One historical usage sample for a server's sparklines. */
+export interface ServerStatsPoint {
+  time: number;
+  cpu_pct: number;
+  mem: number;
+  maxmem: number;
+  disk: number;
+  maxdisk: number;
+  netin: number;
+  netout: number;
+}
+
+export interface ServerStats {
+  available: boolean;
+  detail: string;
+  timeframe: string;
+  points: ServerStatsPoint[];
+}
+
+export type StatsTimeframe = "hour" | "day" | "week";
+
+export interface UpdateUserServerInput {
+  ip_address?: string;
+  cpus?: number;
+  memory_gb?: number;
+  disk_gb?: number;
+}
+
+/** User-facing template option (no vmid or key paths). */
+export interface ServerTemplateOption {
+  id: number;
+  name: string;
+  kind: "lxc" | "vm";
+}
+
+export interface ServerAccess {
+  can_create: boolean;
+  reason: string;
+}
+
+/** One resource dimension for the create-form quota bars (issue_015-r4 F3). */
+export interface ResourceUsage {
+  used: number;
+  limit: number;
+}
+
+/** Per-user provisioning usage vs. limits. `unlimited` is true for admins. */
+export interface ServerUsage {
+  unlimited: boolean;
+  servers: ResourceUsage;
+  cpus: ResourceUsage;
+  memory_gb: ResourceUsage;
+  disk_gb: ResourceUsage;
+}
+
+export interface CreateServerTemplateInput {
+  vmid: number;
+  name: string;
+  kind: "lxc" | "vm";
+  admin_ssh_key_path?: string;
+  admin_ssh_key_id?: number | null;
+  main_os_user?: string;
+  enable_sudo?: boolean;
+  enable_trusted_access?: boolean;
+}
+
+export interface UpdateServerTemplateInput {
+  vmid?: number;
+  name?: string;
+  kind?: "lxc" | "vm";
+  admin_ssh_key_path?: string;
+  admin_ssh_key_id?: number | null;
+}
+
 export interface CreateBundleTemplateInput {
   name: string;
   content: string;
+  description?: string;
   mappings: BundleTemplateMapping[];
 }
 
 export interface UpdateBundleTemplateInput {
   name?: string;
   content?: string;
+  description?: string;
   mappings?: BundleTemplateMapping[];
 }
 
@@ -119,6 +411,7 @@ export interface CreateUserInput {
   self_service?: boolean;
   apps_server?: string;
   apps_server_ip?: string;
+  provision_templates?: number[];
 }
 
 export interface UpdateUserInput {
@@ -136,6 +429,7 @@ export interface ReverseProxySettings {
   nginx_user: string;
   nginx_conf_path: string;
   ssh_key_path: string;
+  reverse_proxy_ssh_key_id: number | null;
   appmanager_proxy_host: string;
   appmanager_proxy_port: string;
   alias_template: string;
@@ -148,6 +442,7 @@ export interface UpdateReverseProxySettingsInput {
   nginx_user?: string;
   nginx_conf_path?: string;
   ssh_key_path?: string;
+  reverse_proxy_ssh_key_id?: number | null;
   appmanager_proxy_host?: string;
   appmanager_proxy_port?: string;
   alias_template?: string;

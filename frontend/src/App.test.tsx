@@ -41,6 +41,7 @@ function session(authMethod: SessionState["auth_method"]): SessionState {
     user: {
       id: 1,
       username: "sso.user@example.com",
+      user_id: "sso-user",
       role: "user",
       is_active: true,
       must_change_password: true,

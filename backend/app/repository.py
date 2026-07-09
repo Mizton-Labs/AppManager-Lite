@@ -7,25 +7,34 @@ can compose inside a single transaction.
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import sqlite3
 from typing import Any
 
-from . import security
+from . import keystore, security, sshkeys
+from .schemas import (
+    BUNDLE_MAPPING_SOURCES,
+    is_server_var_source,
+    server_var_source_slug,
+)
 from .teams import slugify
+
+__all__ = ["BUNDLE_MAPPING_SOURCES"]
+
+
+def _encrypt_private_key(value: str) -> str:
+    """Encrypt SSH private-key material for at-rest storage."""
+    return keystore.encrypt(value)
 
 
 class TeamConflictError(ValueError):
     """Raised when a team name (or its derived slug) collides with another."""
 
 
-BUNDLE_MAPPING_SOURCES = (
-    "username",
-    "user_apps_server",
-    "user_apps_server_host",
-    "user_apps_server_ip",
-    "user_role",
-)
+# Single source of truth for bundle mapping sources lives in schemas (the
+# API-validation layer); re-exported here so the renderer and the validator
+# can never desync. (Imported at module top.)
 
 
 def _row_to_team(row: sqlite3.Row) -> dict[str, Any]:
@@ -37,11 +46,43 @@ def _row_to_team(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+_USER_ID_ALLOWED = set("abcdefghijklmnopqrstuvwxyz0123456789-")
+
+
+def derive_user_id(username: str) -> str:
+    """Human-facing user identifier derived from the sign-in name.
+
+    The local part of the email (or the whole username when it is not an
+    email), lowercased, with dots and underscores replaced by dashes and any
+    other character outside ``[a-z0-9-]`` dropped. The result later names
+    per-user resources (server hostnames, config entries), so it is
+    restricted to a safe character set here rather than at each use site.
+    """
+    local_part = username.split("@", 1)[0].lower()
+    mapped = local_part.replace(".", "-").replace("_", "-")
+    return "".join(ch for ch in mapped if ch in _USER_ID_ALLOWED).strip("-")
+
+
+def user_id_conflict(
+    conn: sqlite3.Connection, user_id: str, *, exclude_id: int | None = None
+) -> bool:
+    """True when another user's derived identifier equals ``user_id``.
+
+    Derived identifiers are not stored, so this scans usernames; user counts
+    are small (an admin-managed portal), which keeps this trivial.
+    """
+    rows = conn.execute(
+        "SELECT username FROM users WHERE id IS NOT ?", (exclude_id,)
+    ).fetchall()
+    return any(derive_user_id(r["username"]) == user_id for r in rows)
+
+
 def _row_to_user(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
     teams = list_user_teams(conn, row["id"])
     return {
         "id": row["id"],
         "username": row["username"],
+        "user_id": derive_user_id(row["username"]),
         "role": row["role"],
         "is_active": bool(row["is_active"]),
         "must_change_password": bool(row["must_change_password"]),
@@ -272,12 +313,25 @@ def create_user(
     existing = get_user_by_username(conn, username)
     if existing is not None:
         raise ValueError("A user with that username already exists.")
+    user_id = derive_user_id(username)
+    if not user_id:
+        raise ValueError(
+            "The email address must yield a usable identifier "
+            "(letters, digits, or dashes before the @)."
+        )
+    if user_id_conflict(conn, user_id):
+        raise ValueError(
+            f"A user with the derived identifier '{user_id}' already exists; "
+            "choose an email address with a different local part."
+        )
+    private_key, public_key = sshkeys.generate_keypair(username)
     cur = conn.execute(
         """
         INSERT INTO users
             (username, password_hash, role, must_change_password, self_service,
-             apps_server, apps_server_ip, apps_port)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             apps_server, apps_server_ip, apps_port,
+             ssh_private_key, ssh_public_key, ssh_key_generated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         """,
         (
             username,
@@ -288,6 +342,8 @@ def create_user(
             apps_server,
             apps_server_ip,
             apps_port,
+            _encrypt_private_key(private_key),
+            public_key,
         ),
     )
     user_id = int(cur.lastrowid)
@@ -384,6 +440,50 @@ def set_password(
     )
 
 
+def get_user_ssh_key(
+    conn: sqlite3.Connection, user_id: int
+) -> dict[str, Any] | None:
+    """The user's SSH keypair, or ``None`` when the user (or key) is missing.
+
+    Key material is intentionally excluded from ``_row_to_user`` so it never
+    flows through generic user listings, logs, or audit entries; callers must
+    use this accessor and expose the private key only to the owning user.
+    """
+    row = conn.execute(
+        "SELECT ssh_private_key, ssh_public_key, ssh_key_generated_at "
+        "FROM users WHERE id = ?",
+        (user_id,),
+    ).fetchone()
+    if row is None or not row["ssh_public_key"]:
+        return None
+    # Private keys are stored encrypted at rest; decrypt for the owner-gated
+    # caller. Legacy plaintext rows pass through unchanged.
+    return {
+        "private_key": keystore.decrypt(row["ssh_private_key"]),
+        "public_key": row["ssh_public_key"],
+        "generated_at": row["ssh_key_generated_at"],
+    }
+
+
+def set_user_ssh_key(
+    conn: sqlite3.Connection,
+    user_id: int,
+    *,
+    private_key: str,
+    public_key: str,
+) -> None:
+    conn.execute(
+        """
+        UPDATE users
+        SET ssh_private_key = ?, ssh_public_key = ?,
+            ssh_key_generated_at = datetime('now'),
+            updated_at = datetime('now')
+        WHERE id = ?
+        """,
+        (keystore.encrypt(private_key), public_key, user_id),
+    )
+
+
 def delete_user(
     conn: sqlite3.Connection,
     user_id: int,
@@ -427,12 +527,28 @@ def _row_to_bundle_template(
         "id": row["id"],
         "name": row["name"],
         "content": row["content"],
+        "description": row["description"],
         "mappings": _bundle_mappings(conn, row["id"]),
+        "is_builtin": bool(row["is_builtin"]),
+        "enabled": bool(row["enabled"]),
     }
 
 
-def _validate_bundle_mappings(mappings: list[dict[str, str]]) -> None:
+def _validate_bundle_mappings(
+    conn: sqlite3.Connection,
+    mappings: list[dict[str, str]],
+    *,
+    allow_sources: set[str] | None = None,
+) -> None:
     seen: set[str] = set()
+    # Slugs of the server templates that currently exist; server-var sources
+    # must name one of these at save time (they may still go stale later, which
+    # renders as empty rather than failing the download).
+    template_slugs = {slugify(t["name"]) for t in list_server_templates(conn)}
+    # Sources already stored on this template are grandfathered so editing an
+    # unrelated field does not fail when a referenced template was since
+    # deleted (stale sources render empty at download).
+    grandfathered = allow_sources or set()
     for mapping in mappings:
         field_name = mapping["field_name"].strip()
         source = mapping["source"].strip()
@@ -440,15 +556,27 @@ def _validate_bundle_mappings(mappings: list[dict[str, str]]) -> None:
             raise ValueError("Bundle mapping field name must not be empty.")
         if field_name in seen:
             raise ValueError(f"Duplicate bundle mapping field: {field_name}")
-        if source not in BUNDLE_MAPPING_SOURCES:
+        if source in BUNDLE_MAPPING_SOURCES or source in grandfathered:
+            pass
+        elif is_server_var_source(source):
+            slug = server_var_source_slug(source)
+            if slug not in template_slugs:
+                raise ValueError(
+                    f"Unknown server template for mapping source: {source}"
+                )
+        else:
             raise ValueError(f"Unknown bundle mapping source: {source}")
         seen.add(field_name)
 
 
 def _replace_bundle_mappings(
-    conn: sqlite3.Connection, template_id: int, mappings: list[dict[str, str]]
+    conn: sqlite3.Connection,
+    template_id: int,
+    mappings: list[dict[str, str]],
+    *,
+    allow_sources: set[str] | None = None,
 ) -> None:
-    _validate_bundle_mappings(mappings)
+    _validate_bundle_mappings(conn, mappings, allow_sources=allow_sources)
     conn.execute(
         "DELETE FROM bundle_template_mappings WHERE template_id = ?", (template_id,)
     )
@@ -484,10 +612,12 @@ def create_bundle_template(
     name: str,
     content: str,
     mappings: list[dict[str, str]],
+    description: str = "",
 ) -> dict[str, Any]:
     cur = conn.execute(
-        "INSERT INTO bundle_templates (name, content) VALUES (?, ?)",
-        (name.strip(), content),
+        "INSERT INTO bundle_templates (name, content, description) "
+        "VALUES (?, ?, ?)",
+        (name.strip(), content, description.strip()),
     )
     template_id = int(cur.lastrowid)
     _replace_bundle_mappings(conn, template_id, mappings)
@@ -502,15 +632,19 @@ def update_bundle_template(
     *,
     name: str | None = None,
     content: str | None = None,
+    description: str | None = None,
     mappings: list[dict[str, str]] | None = None,
 ) -> dict[str, Any] | None:
-    if get_bundle_template(conn, template_id) is None:
+    existing = get_bundle_template(conn, template_id)
+    if existing is None:
         return None
     columns: dict[str, Any] = {}
     if name is not None:
         columns["name"] = name.strip()
     if content is not None:
         columns["content"] = content
+    if description is not None:
+        columns["description"] = description.strip()
     if columns:
         assignments = ", ".join(f"{col} = ?" for col in columns)
         conn.execute(
@@ -519,7 +653,12 @@ def update_bundle_template(
             [*columns.values(), template_id],
         )
     if mappings is not None:
-        _replace_bundle_mappings(conn, template_id, mappings)
+        # Grandfather sources already stored on this template so an edit that
+        # keeps a since-deleted template's source does not fail validation.
+        allow = {m["source"] for m in existing["mappings"]}
+        _replace_bundle_mappings(
+            conn, template_id, mappings, allow_sources=allow
+        )
     return get_bundle_template(conn, template_id)
 
 
@@ -528,9 +667,32 @@ def delete_bundle_template(conn: sqlite3.Connection, template_id: int) -> bool:
     return cur.rowcount > 0
 
 
-def render_bundle_template(template: dict[str, Any], user: dict[str, Any]) -> str:
-    values = {
+def _server_var_user(server: dict[str, Any], user_id: str) -> str:
+    """OS user for a server variable: the template main user, else user_id.
+
+    The server dict may carry the template's ``main_os_user`` (annotated by the
+    download path); fall back to the account's derived user id.
+    """
+    return (server.get("main_os_user") or "").strip() or user_id
+
+
+def bundle_mapping_values(
+    user: dict[str, Any],
+    user_servers: list[dict[str, Any]] | None = None,
+    server_templates: list[dict[str, Any]] | None = None,
+) -> dict[str, str]:
+    """All mapping-source -> value pairs for a user (static + per-template).
+
+    Server-template-scoped variables (``server_<slug>_{name,ip,user}``) resolve
+    to the user's FIRST usable server created from that template. Templates with
+    no usable server for the user render as empty strings.
+    """
+    user_id = user.get("user_id", "") or derive_user_id(
+        user.get("username", "") or ""
+    )
+    values: dict[str, str] = {
         "username": user.get("username", "") or "",
+        "user_id": user_id,
         "user_apps_server": user.get("apps_server", "")
         or user.get("apps_server_ip", "")
         or "",
@@ -538,12 +700,170 @@ def render_bundle_template(template: dict[str, Any], user: dict[str, Any]) -> st
         "user_apps_server_ip": user.get("apps_server_ip", "") or "",
         "user_role": user.get("role", "") or "",
     }
+    usable = [
+        s
+        for s in (user_servers or [])
+        if s.get("status") != "failed" and s.get("ip_address")
+    ]
+    # One set of variables per server template slug; resolved to the user's
+    # first usable server of that template.
+    for template in server_templates or []:
+        slug = slugify(template.get("name", ""))
+        if not slug:
+            continue
+        first = next(
+            (s for s in usable if slugify(s.get("template_name", "")) == slug),
+            None,
+        )
+        if first is not None:
+            raw = first.get("hostname") or first.get("name", "server")
+            name = re.sub(r"[^a-z0-9-]+", "-", raw.lower()).strip("-") or "server"
+            values[f"server_{slug}_name"] = name
+            values[f"server_{slug}_ip"] = first.get("ip_address", "")
+            values[f"server_{slug}_user"] = _server_var_user(first, user_id)
+        else:
+            values[f"server_{slug}_name"] = ""
+            values[f"server_{slug}_ip"] = ""
+            values[f"server_{slug}_user"] = ""
+    return values
+
+
+def render_bundle_template(
+    template: dict[str, Any],
+    user: dict[str, Any],
+    user_servers: list[dict[str, Any]] | None = None,
+    server_templates: list[dict[str, Any]] | None = None,
+) -> str:
+    values = bundle_mapping_values(user, user_servers, server_templates)
     rendered = str(template["content"])
     for mapping in template["mappings"]:
+        # Stale/deleted-template sources are absent from ``values`` and render
+        # as empty rather than raising.
         rendered = rendered.replace(
             mapping["field_name"], values.get(mapping["source"], "")
         )
     return rendered
+
+
+def render_generic_ssh_config(
+    user: dict[str, Any], user_servers: list[dict[str, Any]]
+) -> str:
+    """A generic SSH config built from the user's servers.
+
+    Used when a bundle template has no field mappings: one ``Host`` block per
+    server that has an IP address, keyed by the server's hostname (falling
+    back to a slug of its name).
+    """
+    user_id = user.get("user_id", "") or derive_user_id(
+        user.get("username", "") or ""
+    )
+    blocks = []
+    for server in user_servers:
+        if server.get("status") == "failed" or not server.get("ip_address"):
+            continue
+        # Server display names may contain spaces; SSH Host patterns must not.
+        raw = server.get("hostname") or server.get("name", "server")
+        host = re.sub(r"[^a-z0-9-]+", "-", raw.lower()).strip("-") or "server"
+        blocks.append(
+            f"Host {host}\n"
+            f"    HostName {server['ip_address']}\n"
+            + (f"    User {user_id}\n" if user_id else "")
+            + "    IdentityFile ~/.ssh/id_ed25519\n"
+        )
+    if not blocks:
+        return (
+            "# No servers with an IP address are registered for this "
+            "account yet.\n"
+        )
+    return "\n".join(blocks)
+
+
+def render_builtin_ssh_config(
+    user: dict[str, Any],
+    user_servers: list[dict[str, Any]],
+    jump: dict[str, Any] | None = None,
+) -> str:
+    """Render the built-in SSH config (issue_015-r2).
+
+    Produces a ``Host *`` keepalive stanza, an optional ``Host JUMPSERVER``
+    block when a jump server is enabled, and one ``Host`` block per usable
+    server (with ``ProxyJump`` when the jump server is enabled).
+    """
+    user_id = user.get("user_id", "") or derive_user_id(
+        user.get("username", "") or ""
+    )
+    parts = [
+        "Host *\n"
+        "    ServerAliveInterval 60\n"
+        "    ServerAliveCountMax 3\n"
+        "    TCPKeepAlive yes\n"
+    ]
+    jump_enabled = bool(jump and jump.get("enabled") and jump.get("host"))
+    if jump_enabled:
+        # The bundle address may differ from the management address (e.g. the
+        # bastion has separate public/private interfaces). When the override is
+        # set and supplies a host, emit that; otherwise fall back to the
+        # management host/port. User/IdentityFile are unaffected.
+        if jump.get("bundle_override") and jump.get("bundle_host"):
+            bundle_host = jump["bundle_host"]
+            bundle_port = int(jump.get("bundle_port", 22) or 22)
+        else:
+            bundle_host = jump["host"]
+            bundle_port = int(jump.get("port", 22) or 22)
+        parts.append(
+            "Host jumpserver\n"
+            f"    Hostname {bundle_host}\n"
+            f"    User {jump.get('jump_user', '') or user_id}\n"
+            f"    Port {bundle_port}\n"
+            "    IdentityFile ~/.ssh/id_ed25519\n"
+        )
+    for server in user_servers:
+        if server.get("status") == "failed" or not server.get("ip_address"):
+            continue
+        raw = server.get("hostname") or server.get("name", "server")
+        host = re.sub(r"[^a-z0-9-]+", "-", raw.lower()).strip("-") or "server"
+        srv_user = _server_var_user(server, user_id)
+        block = (
+            f"Host {host}\n"
+            f"    Hostname {server['ip_address']}\n"
+            + (f"    User {srv_user}\n" if srv_user else "")
+            + ("    ProxyJump jumpserver\n" if jump_enabled else "")
+            + "    IdentityFile ~/.ssh/id_ed25519\n"
+        )
+        parts.append(block)
+    return "\n".join(parts)
+
+
+def set_bundle_template_enabled(
+    conn: sqlite3.Connection, template_id: int, enabled: bool
+) -> dict[str, Any] | None:
+    if get_bundle_template(conn, template_id) is None:
+        return None
+    conn.execute(
+        "UPDATE bundle_templates SET enabled = ?, updated_at = datetime('now') "
+        "WHERE id = ?",
+        (int(enabled), template_id),
+    )
+    return get_bundle_template(conn, template_id)
+
+
+def clone_bundle_template(
+    conn: sqlite3.Connection, template_id: int, *, new_name: str
+) -> dict[str, Any] | None:
+    """Clone a template into a new editable (non-builtin) template."""
+    source = get_bundle_template(conn, template_id)
+    if source is None:
+        return None
+    return create_bundle_template(
+        conn,
+        name=new_name,
+        content=source["content"],
+        description=source.get("description", ""),
+        mappings=[
+            {"field_name": m["field_name"], "source": m["source"]}
+            for m in source["mappings"]
+        ],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1075,6 +1395,7 @@ def update_settings_row(
     nginx_user: str | None = None,
     nginx_conf_path: str | None = None,
     ssh_key_path: str | None = None,
+    reverse_proxy_ssh_key_id: int | None = None,
     appmanager_proxy_host: str | None = None,
     appmanager_proxy_port: str | None = None,
     alias_template: str | None = None,
@@ -1100,6 +1421,8 @@ def update_settings_row(
         columns["appmanager_proxy_port"] = appmanager_proxy_port
     if alias_template is not None:
         columns["alias_template"] = alias_template
+    if reverse_proxy_ssh_key_id is not None:
+        columns["reverse_proxy_ssh_key_id"] = reverse_proxy_ssh_key_id
     if app_name is not None:
         columns["app_name"] = app_name
     if app_logo is not None:
@@ -1117,3 +1440,595 @@ def update_settings_row(
             params,
         )
     return get_settings_row(conn)
+
+
+# Columns updatable through the provisioning settings endpoint. The API key is
+# write-only: it can be set here but is never included in any response model.
+_PROVISIONING_COLUMNS = (
+    "provider_type",
+    "proxmox_url",
+    "proxmox_token_name",
+    "proxmox_api_key",
+    "proxmox_template_filter",
+    "proxmox_templates_only",
+    "proxmox_verify_tls",
+    "proxmox_conn_status",
+    "proxmox_conn_log",
+    "provisioning_self_service",
+    "provisioning_max_servers",
+    "provisioning_allow_resource_edit",
+    "provisioning_max_cpus",
+    "provisioning_max_memory_gb",
+    "provisioning_max_disk_gb",
+    "jump_enabled",
+    "jump_host",
+    "jump_user",
+    "jump_port",
+    "jump_ssh_key_id",
+    "jump_management_user",
+    "jump_account_mode",
+    "jump_jumper_user",
+    "jump_bundle_override",
+    "jump_bundle_host",
+    "jump_bundle_port",
+)
+
+
+def update_provisioning_settings(
+    conn: sqlite3.Connection, **values: Any
+) -> dict[str, Any]:
+    """Update provisioning/provider settings columns (None values skipped).
+
+    Only the fixed, code-defined column set above is accepted; anything else
+    raises so a typo cannot silently write arbitrary columns.
+    """
+    conn.execute("INSERT OR IGNORE INTO settings (id) VALUES (1)")
+    columns: dict[str, Any] = {}
+    for key, value in values.items():
+        if key not in _PROVISIONING_COLUMNS:
+            raise ValueError(f"Unknown provisioning settings column: {key}")
+        if value is None:
+            continue
+        columns[key] = int(value) if isinstance(value, bool) else value
+    if columns:
+        assignments = ", ".join(f"{col} = ?" for col in columns)
+        conn.execute(
+            f"UPDATE settings SET {assignments}, updated_at = datetime('now') "
+            "WHERE id = ?",
+            [*columns.values(), 1],
+        )
+    return get_settings_row(conn)
+
+
+# ---------------------------------------------------------------------------
+# SSH key registry (issue_015-r1)
+# ---------------------------------------------------------------------------
+
+
+def _row_to_ssh_key(row: sqlite3.Row) -> dict[str, Any]:
+    """Registry entry WITHOUT secret material (safe for API responses)."""
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "kind": row["kind"],
+        "path": row["path"],
+        "public_key": row["public_key"],
+        "fingerprint": row["fingerprint"],
+        "has_private_key": bool(row["encrypted_private_key"]),
+    }
+
+
+def list_ssh_keys(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = conn.execute("SELECT * FROM ssh_keys ORDER BY name, id").fetchall()
+    return [_row_to_ssh_key(r) for r in rows]
+
+
+def get_ssh_key(conn: sqlite3.Connection, key_id: int) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT * FROM ssh_keys WHERE id = ?", (key_id,)
+    ).fetchone()
+    return _row_to_ssh_key(row) if row else None
+
+
+def create_ssh_key(
+    conn: sqlite3.Connection,
+    *,
+    name: str,
+    kind: str,
+    path: str = "",
+    encrypted_private_key: str = "",
+    public_key: str = "",
+    fingerprint: str = "",
+) -> dict[str, Any]:
+    try:
+        cur = conn.execute(
+            """
+            INSERT INTO ssh_keys
+                (name, kind, path, encrypted_private_key, public_key, fingerprint)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (name.strip(), kind, path.strip(), encrypted_private_key,
+             public_key, fingerprint),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise ValueError(
+            f"An SSH key named '{name.strip()}' already exists."
+        ) from exc
+    key = get_ssh_key(conn, int(cur.lastrowid))
+    assert key is not None
+    return key
+
+
+def update_ssh_key(
+    conn: sqlite3.Connection,
+    key_id: int,
+    *,
+    name: str | None = None,
+    kind: str | None = None,
+    path: str | None = None,
+    encrypted_private_key: str | None = None,
+    public_key: str | None = None,
+    fingerprint: str | None = None,
+) -> dict[str, Any] | None:
+    """Update selected columns of a registry key. Only provided fields change.
+
+    The router (re)computes ``encrypted_private_key`` / ``public_key`` /
+    ``fingerprint`` from a newly pasted key and clears the stored secret when
+    switching to a path key, then passes the results here.
+    """
+    if get_ssh_key(conn, key_id) is None:
+        return None
+    columns: dict[str, Any] = {}
+    if name is not None:
+        columns["name"] = name.strip()
+    if kind is not None:
+        columns["kind"] = kind
+    if path is not None:
+        columns["path"] = path.strip()
+    if encrypted_private_key is not None:
+        columns["encrypted_private_key"] = encrypted_private_key
+    if public_key is not None:
+        columns["public_key"] = public_key
+    if fingerprint is not None:
+        columns["fingerprint"] = fingerprint
+    if columns:
+        assignments = ", ".join(f"{col} = ?" for col in columns)
+        try:
+            conn.execute(
+                f"UPDATE ssh_keys SET {assignments}, "
+                "updated_at = datetime('now') WHERE id = ?",
+                [*columns.values(), key_id],
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(
+                f"An SSH key named '{columns.get('name')}' already exists."
+            ) from exc
+    return get_ssh_key(conn, key_id)
+
+
+def get_ssh_key_secret(conn: sqlite3.Connection, key_id: int) -> str:
+    """Return the stored encrypted private key token (or '') for a key."""
+    row = conn.execute(
+        "SELECT encrypted_private_key FROM ssh_keys WHERE id = ?", (key_id,)
+    ).fetchone()
+    return row["encrypted_private_key"] if row else ""
+
+
+def ssh_key_references(conn: sqlite3.Connection, key_id: int) -> list[str]:
+    """Human-readable list of places that reference a registry key."""
+    refs: list[str] = []
+    s = conn.execute(
+        "SELECT 1 FROM settings WHERE id = 1 AND reverse_proxy_ssh_key_id = ?",
+        (key_id,),
+    ).fetchone()
+    if s:
+        refs.append("reverse-proxy configuration")
+    j = conn.execute(
+        "SELECT 1 FROM settings WHERE id = 1 AND jump_ssh_key_id = ?",
+        (key_id,),
+    ).fetchone()
+    if j:
+        refs.append("jump server")
+    for r in conn.execute(
+        "SELECT name FROM server_templates WHERE admin_ssh_key_id = ?",
+        (key_id,),
+    ).fetchall():
+        refs.append(f"server template '{r['name']}'")
+    n = conn.execute(
+        "SELECT COUNT(*) AS c FROM user_servers WHERE admin_ssh_key_id = ?",
+        (key_id,),
+    ).fetchone()["c"]
+    if n:
+        refs.append(f"{n} user server(s)")
+    return refs
+
+
+def delete_ssh_key(conn: sqlite3.Connection, key_id: int) -> bool:
+    cur = conn.execute("DELETE FROM ssh_keys WHERE id = ?", (key_id,))
+    return cur.rowcount > 0
+
+
+def reverse_proxy_key_path(conn: sqlite3.Connection, row: dict[str, Any]) -> str:
+    """Effective SSH key path for reverse-proxy operations.
+
+    Resolves the registry key referenced by ``reverse_proxy_ssh_key_id``
+    (materializing a stored key when needed), falling back to the legacy
+    ``ssh_key_path`` column.
+    """
+    from . import servers
+
+    return servers.resolve_ssh_key(
+        conn,
+        row.get("reverse_proxy_ssh_key_id"),
+        fallback_path=(row.get("ssh_key_path") or "").strip(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Server templates (Proxmox templates registered for user-server creation)
+# ---------------------------------------------------------------------------
+
+
+def _row_to_server_template(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "vmid": row["vmid"],
+        "name": row["name"],
+        "kind": row["kind"],
+        "admin_ssh_key_path": row["admin_ssh_key_path"],
+        "admin_ssh_key_id": row["admin_ssh_key_id"],
+        "main_os_user": row["main_os_user"],
+        "enable_sudo": bool(row["enable_sudo"]),
+        "enable_trusted_access": bool(row["enable_trusted_access"]),
+    }
+
+
+def list_server_templates(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT * FROM server_templates ORDER BY name, id"
+    ).fetchall()
+    return [_row_to_server_template(r) for r in rows]
+
+
+def get_server_template(
+    conn: sqlite3.Connection, template_id: int
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT * FROM server_templates WHERE id = ?", (template_id,)
+    ).fetchone()
+    return _row_to_server_template(row) if row else None
+
+
+def create_server_template(
+    conn: sqlite3.Connection,
+    *,
+    vmid: int,
+    name: str,
+    kind: str,
+    admin_ssh_key_path: str = "",
+    admin_ssh_key_id: int | None = None,
+    main_os_user: str = "",
+    enable_sudo: bool = True,
+    enable_trusted_access: bool = True,
+) -> dict[str, Any]:
+    try:
+        cur = conn.execute(
+            """
+            INSERT INTO server_templates
+                (vmid, name, kind, admin_ssh_key_path, admin_ssh_key_id,
+                 main_os_user, enable_sudo, enable_trusted_access)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (vmid, name.strip(), kind, admin_ssh_key_path.strip(),
+             admin_ssh_key_id, main_os_user.strip(), int(enable_sudo),
+             int(enable_trusted_access)),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise ValueError(
+            f"A server template named '{name.strip()}' already exists."
+        ) from exc
+    template = get_server_template(conn, int(cur.lastrowid))
+    assert template is not None
+    return template
+
+
+def update_server_template(
+    conn: sqlite3.Connection,
+    template_id: int,
+    *,
+    vmid: int | None = None,
+    name: str | None = None,
+    kind: str | None = None,
+    admin_ssh_key_path: str | None = None,
+    admin_ssh_key_id: int | None = None,
+    clear_admin_ssh_key_id: bool = False,
+    main_os_user: str | None = None,
+    enable_sudo: bool | None = None,
+    enable_trusted_access: bool | None = None,
+) -> dict[str, Any] | None:
+    if get_server_template(conn, template_id) is None:
+        return None
+    columns: dict[str, Any] = {}
+    if vmid is not None:
+        columns["vmid"] = vmid
+    if name is not None:
+        columns["name"] = name.strip()
+    if kind is not None:
+        columns["kind"] = kind
+    if admin_ssh_key_path is not None:
+        columns["admin_ssh_key_path"] = admin_ssh_key_path.strip()
+    if admin_ssh_key_id is not None:
+        columns["admin_ssh_key_id"] = admin_ssh_key_id
+    elif clear_admin_ssh_key_id:
+        columns["admin_ssh_key_id"] = None
+    if main_os_user is not None:
+        columns["main_os_user"] = main_os_user.strip()
+    if enable_sudo is not None:
+        columns["enable_sudo"] = int(enable_sudo)
+    if enable_trusted_access is not None:
+        columns["enable_trusted_access"] = int(enable_trusted_access)
+    if columns:
+        assignments = ", ".join(f"{col} = ?" for col in columns)
+        try:
+            conn.execute(
+                f"UPDATE server_templates SET {assignments}, "
+                "updated_at = datetime('now') WHERE id = ?",
+                [*columns.values(), template_id],
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(
+                "A server template with that name already exists."
+            ) from exc
+    return get_server_template(conn, template_id)
+
+
+def delete_server_template(conn: sqlite3.Connection, template_id: int) -> bool:
+    cur = conn.execute(
+        "DELETE FROM server_templates WHERE id = ?", (template_id,)
+    )
+    return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# User servers (provisioned or referenced LXC/VM guests)
+# ---------------------------------------------------------------------------
+
+
+def _row_to_user_server(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "user_id": row["user_id"],
+        "name": row["name"],
+        "hostname": row["hostname"],
+        "template_id": row["template_id"],
+        "template_name": row["template_name"],
+        "vmid": row["vmid"],
+        "node": row["node"],
+        "kind": row["kind"],
+        "ip_address": row["ip_address"],
+        "cpus": row["cpus"],
+        "memory_gb": row["memory_gb"],
+        "disk_gb": row["disk_gb"],
+        "admin_modified": bool(row["admin_modified"]),
+        # Internal only: UserServerOut has no such fields, so these never
+        # reach API responses.
+        "admin_ssh_key_path": row["admin_ssh_key_path"],
+        "admin_ssh_key_id": row["admin_ssh_key_id"],
+        "status": row["status"],
+        "last_log": row["last_log"],
+        "deletion_requested_at": row["deletion_requested_at"],
+        "deletion_error": row["deletion_error"],
+        "created_at": row["created_at"],
+    }
+
+
+def list_user_servers(
+    conn: sqlite3.Connection, user_id: int
+) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT * FROM user_servers WHERE user_id = ? ORDER BY name, id",
+        (user_id,),
+    ).fetchall()
+    return [_row_to_user_server(r) for r in rows]
+
+
+def server_name_exists(conn: sqlite3.Connection, name: str) -> bool:
+    """True when any server (any owner) already has this name, case-insensitive.
+
+    Server names are globally unique in AppManager (they embed the owner and
+    template), so this backs the pre-create uniqueness check.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM user_servers WHERE lower(name) = lower(?) LIMIT 1",
+        (name,),
+    ).fetchone()
+    return row is not None
+
+
+def list_all_servers(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Every server across all users, each annotated with its owner's username.
+
+    Used by the admin server overview; the caller derives the owner id from the
+    username as needed.
+    """
+    rows = conn.execute(
+        "SELECT s.*, u.username AS owner_username "
+        "FROM user_servers s JOIN users u ON u.id = s.user_id "
+        "ORDER BY u.username, s.name, s.id"
+    ).fetchall()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        server = _row_to_user_server(r)
+        server["owner_username"] = r["owner_username"]
+        out.append(server)
+    return out
+
+
+def get_user_server(
+    conn: sqlite3.Connection, user_id: int, server_id: int
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT * FROM user_servers WHERE id = ? AND user_id = ?",
+        (server_id, user_id),
+    ).fetchone()
+    return _row_to_user_server(row) if row else None
+
+
+def count_user_servers(conn: sqlite3.Connection, user_id: int) -> int:
+    """Servers counted against the per-user limit.
+
+    A ``failed`` record still counts when it carries a ``vmid``: the guest
+    was actually cloned, so it consumes real capacity. Only failures that
+    never produced a guest are excluded.
+    """
+    return conn.execute(
+        "SELECT COUNT(*) AS c FROM user_servers "
+        "WHERE user_id = ? AND (status != 'failed' OR vmid IS NOT NULL)",
+        (user_id,),
+    ).fetchone()["c"]
+
+
+def sum_user_server_resources(
+    conn: sqlite3.Connection, user_id: int
+) -> dict[str, int]:
+    """Total resources counted against the user's quota.
+
+    Servers whose resources were last set by an administrator
+    (``admin_modified``) are exempt, as are failed creation records.
+    """
+    row = conn.execute(
+        """
+        SELECT COALESCE(SUM(cpus), 0) AS cpus,
+               COALESCE(SUM(memory_gb), 0) AS memory_gb,
+               COALESCE(SUM(disk_gb), 0) AS disk_gb
+        FROM user_servers
+        WHERE user_id = ? AND admin_modified = 0
+          AND (status != 'failed' OR vmid IS NOT NULL)
+        """,
+        (user_id,),
+    ).fetchone()
+    return {
+        "cpus": row["cpus"],
+        "memory_gb": row["memory_gb"],
+        "disk_gb": row["disk_gb"],
+    }
+
+
+def create_user_server(
+    conn: sqlite3.Connection,
+    *,
+    user_id: int,
+    name: str,
+    hostname: str = "",
+    template_id: int | None = None,
+    template_name: str = "",
+    vmid: int | None = None,
+    node: str = "",
+    kind: str,
+    ip_address: str = "",
+    cpus: int = 0,
+    memory_gb: int = 0,
+    disk_gb: int = 0,
+    admin_modified: bool = False,
+    admin_ssh_key_path: str = "",
+    admin_ssh_key_id: int | None = None,
+    status: str = "created",
+    last_log: str = "",
+) -> dict[str, Any]:
+    try:
+        cur = conn.execute(
+            """
+            INSERT INTO user_servers
+                (user_id, name, hostname, template_id, template_name, vmid,
+                 node, kind, ip_address, cpus, memory_gb, disk_gb,
+                 admin_modified, admin_ssh_key_path, admin_ssh_key_id,
+                 status, last_log)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id, name, hostname, template_id, template_name, vmid,
+                node, kind, ip_address, cpus, memory_gb, disk_gb,
+                int(admin_modified), admin_ssh_key_path, admin_ssh_key_id,
+                status, last_log,
+            ),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise ValueError(
+            f"A server named '{name}' already exists for this user."
+        ) from exc
+    server = get_user_server(conn, user_id, int(cur.lastrowid))
+    assert server is not None
+    return server
+
+
+def update_user_server(
+    conn: sqlite3.Connection,
+    user_id: int,
+    server_id: int,
+    *,
+    ip_address: str | None = None,
+    cpus: int | None = None,
+    memory_gb: int | None = None,
+    disk_gb: int | None = None,
+    admin_modified: bool | None = None,
+    status: str | None = None,
+    last_log: str | None = None,
+    deletion_requested_at: str | None = None,
+    deletion_error: str | None = None,
+) -> dict[str, Any] | None:
+    if get_user_server(conn, user_id, server_id) is None:
+        return None
+    columns: dict[str, Any] = {}
+    if ip_address is not None:
+        columns["ip_address"] = ip_address
+    if cpus is not None:
+        columns["cpus"] = cpus
+    if memory_gb is not None:
+        columns["memory_gb"] = memory_gb
+    if disk_gb is not None:
+        columns["disk_gb"] = disk_gb
+    if admin_modified is not None:
+        columns["admin_modified"] = int(admin_modified)
+    if status is not None:
+        columns["status"] = status
+    if last_log is not None:
+        columns["last_log"] = last_log
+    if deletion_requested_at is not None:
+        columns["deletion_requested_at"] = deletion_requested_at
+    if deletion_error is not None:
+        columns["deletion_error"] = deletion_error
+    if columns:
+        assignments = ", ".join(f"{col} = ?" for col in columns)
+        conn.execute(
+            f"UPDATE user_servers SET {assignments}, "
+            "updated_at = datetime('now') WHERE id = ? AND user_id = ?",
+            [*columns.values(), server_id, user_id],
+        )
+    return get_user_server(conn, user_id, server_id)
+
+
+def delete_user_server(
+    conn: sqlite3.Connection, user_id: int, server_id: int
+) -> bool:
+    cur = conn.execute(
+        "DELETE FROM user_servers WHERE id = ? AND user_id = ?",
+        (server_id, user_id),
+    )
+    return cur.rowcount > 0
+
+
+def list_servers_pending_deletion(
+    conn: sqlite3.Connection,
+) -> list[dict[str, Any]]:
+    """All servers with an outstanding deletion request, across every user.
+
+    Used by the deferred-deletion sweep. Rows already marked with a
+    ``deletion_error`` are still returned so a retry can clear or re-record
+    the error; the sweep decides whether the grace window has elapsed.
+    """
+    rows = conn.execute(
+        "SELECT * FROM user_servers "
+        "WHERE deletion_requested_at IS NOT NULL AND deletion_requested_at <> '' "
+        "ORDER BY deletion_requested_at, id"
+    ).fetchall()
+    return [_row_to_user_server(r) for r in rows]

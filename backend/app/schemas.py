@@ -13,13 +13,36 @@ from .teams import slugify as _slugify_name
 ROLES = ("admin", "user")
 URL_TYPES = ("url", "alias")
 APPROVAL_STATES = ("pending", "approved", "rejected")
+# Static (always-available) bundle mapping sources. Server-template-scoped
+# sources are dynamic (``server_<slug>_{name,ip,user}``) and are validated
+# separately against the live server templates at save time.
 BUNDLE_MAPPING_SOURCES = (
     "username",
+    "user_id",
     "user_apps_server",
     "user_apps_server_host",
     "user_apps_server_ip",
     "user_role",
 )
+
+# A server-template-scoped mapping source names a server template by its slug:
+# ``server_<slug>_name`` / ``_ip`` / ``_user``. It resolves to the user's first
+# server created from that template.
+SERVER_VAR_FIELDS = ("name", "ip", "user")
+SERVER_VAR_SOURCE_RE = re.compile(
+    r"^server_(?P<slug>[a-z0-9]+(?:-[a-z0-9]+)*)_(?P<field>name|ip|user)$"
+)
+
+
+def is_server_var_source(source: str) -> bool:
+    """True when ``source`` matches the ``server_<slug>_{name,ip,user}`` form."""
+    return SERVER_VAR_SOURCE_RE.match(source) is not None
+
+
+def server_var_source_slug(source: str) -> str | None:
+    """The template slug named by a server-var source, or None if not one."""
+    match = SERVER_VAR_SOURCE_RE.match(source)
+    return match.group("slug") if match else None
 
 # A local alias becomes part of a URL path, so it is restricted to URL-safe
 # characters: letters, digits, underscores, and dashes, with a hard length cap.
@@ -32,6 +55,7 @@ _ALIAS_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 # DNS/IP characters so it can be safely substituted into an nginx proxy_pass and
 # never used for command/config injection.
 _HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
+_OS_USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 _APPS_PROTOCOLS = ("http", "https")
 _APPS_PATH_RE = re.compile(r"^$|^/[A-Za-z0-9._~/-]*$")
 
@@ -237,6 +261,22 @@ class CreateUserRequest(BaseModel):
     self_service: bool = False
     apps_server: str = Field(default="", max_length=253)
     apps_server_ip: str = Field(default="", max_length=45)
+    # Server template IDs to auto-provision a server for on creation. Defaults
+    # to none; the admin UI pre-selects every template. Each provision is
+    # best-effort: a failure never blocks user creation. Capped and
+    # de-duplicated to bound the synchronous provisioning work per request.
+    provision_templates: list[int] = Field(default_factory=list, max_length=50)
+
+    @field_validator("provision_templates")
+    @classmethod
+    def _dedupe_provision_templates(cls, value: list[int]) -> list[int]:
+        seen: set[int] = set()
+        ordered: list[int] = []
+        for template_id in value:
+            if template_id not in seen:
+                seen.add(template_id)
+                ordered.append(template_id)
+        return ordered
 
     @field_validator("username")
     @classmethod
@@ -301,6 +341,9 @@ class UpdateUserRequest(BaseModel):
 class UserOut(BaseModel):
     id: int
     username: str
+    # Derived human-facing identifier: email local part with dots/underscores
+    # replaced by dashes (e.g. ``john.doe@example.com`` -> ``john-doe``).
+    user_id: str = ""
     role: str
     is_active: bool
     must_change_password: bool
@@ -308,6 +351,29 @@ class UserOut(BaseModel):
     apps_server: str = ""
     apps_server_ip: str = ""
     teams: list[str]
+
+
+class SshKeyInfoOut(BaseModel):
+    """Public half of the account's SSH keypair. Never carries the private key."""
+
+    user_id: str
+    public_key: str
+    generated_at: str | None = None
+
+
+class ServerKeyRotationOut(BaseModel):
+    """Per-server outcome of propagating a regenerated key."""
+
+    server: str
+    ip_address: str = ""
+    status: str  # updated | skipped | failed
+    detail: str = ""
+
+
+class SshKeyRegenerateOut(SshKeyInfoOut):
+    """Regeneration result plus the per-server key-rotation summary."""
+
+    rotation: list[ServerKeyRotationOut] = Field(default_factory=list)
 
 
 class SessionOut(BaseModel):
@@ -357,23 +423,45 @@ class BundleTemplateMapping(BaseModel):
     @classmethod
     def _check_source(cls, value: str) -> str:
         value = value.strip()
-        if value not in BUNDLE_MAPPING_SOURCES:
-            raise ValueError(
-                f"source must be one of {BUNDLE_MAPPING_SOURCES}."
-            )
-        return value
+        if value in BUNDLE_MAPPING_SOURCES or is_server_var_source(value):
+            return value
+        raise ValueError(
+            "source must be one of "
+            f"{BUNDLE_MAPPING_SOURCES} or a server template variable "
+            "(server_<template-slug>_name/_ip/_user)."
+        )
 
 
 class BundleTemplateOut(BaseModel):
     id: int
     name: str
     content: str
+    description: str = ""
     mappings: list[BundleTemplateMapping] = Field(default_factory=list)
+    is_builtin: bool = False
+    enabled: bool = True
+
+
+class CloneBundleTemplateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+
+    @field_validator("name")
+    @classmethod
+    def _clean_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Name must not be empty.")
+        return value
+
+
+class SetBundleTemplateEnabledRequest(BaseModel):
+    enabled: bool
 
 
 class CreateBundleTemplateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     content: str = Field(min_length=1, max_length=20000)
+    description: str = Field(default="", max_length=500)
     mappings: list[BundleTemplateMapping] = Field(default_factory=list)
 
     @field_validator("name")
@@ -388,6 +476,7 @@ class CreateBundleTemplateRequest(BaseModel):
 class UpdateBundleTemplateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128)
     content: str | None = Field(default=None, min_length=1, max_length=20000)
+    description: str | None = Field(default=None, max_length=500)
     mappings: list[BundleTemplateMapping] | None = None
 
     @field_validator("name")
@@ -404,6 +493,7 @@ class UpdateBundleTemplateRequest(BaseModel):
 class BundleOptionOut(BaseModel):
     id: int
     name: str
+    description: str = ""
 
 
 class ApplicationOut(BaseModel):
@@ -600,9 +690,20 @@ class UpdateApplicationRequest(BaseModel):
         return self
 
 
+class ProvisionResultOut(BaseModel):
+    """Per-template outcome of create-user auto-provisioning."""
+
+    template_id: int
+    template_name: str
+    status: str  # "created" | "failed" | "skipped"
+    detail: str = ""
+
+
 class GeneratedPasswordOut(BaseModel):
     user: UserOut
     password: str
+    # Present only for create-user; per-template auto-provisioning outcomes.
+    provisioning: list[ProvisionResultOut] = Field(default_factory=list)
 
 
 class AuditEntryOut(BaseModel):
@@ -636,6 +737,8 @@ class ReverseProxySettingsOut(BaseModel):
     nginx_user: str = ""
     nginx_conf_path: str = ""
     ssh_key_path: str = ""
+    # Registry key selected for reverse-proxy SSH (replaces the raw path in UI).
+    reverse_proxy_ssh_key_id: int | None = None
     appmanager_proxy_host: str = ""
     appmanager_proxy_port: str = ""
     alias_template: str = ""
@@ -648,6 +751,7 @@ class UpdateReverseProxySettingsRequest(BaseModel):
     nginx_user: str | None = Field(default=None, max_length=64)
     nginx_conf_path: str | None = Field(default=None, max_length=4096)
     ssh_key_path: str | None = Field(default=None, max_length=4096)
+    reverse_proxy_ssh_key_id: int | None = Field(default=None, ge=1)
     appmanager_proxy_host: str | None = Field(default=None, max_length=253)
     appmanager_proxy_port: str | None = Field(default=None, max_length=5)
     alias_template: str | None = Field(default=None, max_length=65536)
@@ -725,6 +829,552 @@ class UpdateReverseProxySettingsRequest(BaseModel):
                 "and error_page 401 = @appmanager_login;"
             )
         return value
+
+
+# --- Server provisioning (LXC/VM provider + policy) -------------------------
+
+_PROXMOX_URL_RE = re.compile(r"^https?://[A-Za-z0-9.\-\[\]:]+(?::\d{1,5})?/?$")
+
+
+class ProvisioningSettingsOut(BaseModel):
+    """Provider + policy settings. The API key itself is never returned."""
+
+    provider_type: str = ""
+    proxmox_url: str = ""
+    proxmox_token_name: str = ""
+    # Presence flag only; the stored secret is write-only.
+    proxmox_api_key_set: bool = False
+    proxmox_template_filter: str = ""
+    proxmox_templates_only: bool = True
+    proxmox_verify_tls: bool = True
+    proxmox_conn_status: str = ""
+    proxmox_conn_log: str = ""
+    provisioning_self_service: bool = False
+    provisioning_max_servers: int = 3
+    provisioning_allow_resource_edit: bool = False
+    provisioning_max_cpus: int = 12
+    provisioning_max_memory_gb: int = 24
+    provisioning_max_disk_gb: int = 200
+    jump_enabled: bool = False
+    jump_host: str = ""
+    jump_user: str = ""
+    jump_port: int = 22
+    jump_ssh_key_id: int | None = None
+    # Management/jump-user split + account model (see update request).
+    jump_management_user: str = "root"
+    jump_account_mode: str = "per_user"
+    jump_jumper_user: str = ""
+    # SSH-config-bundle address override (see UpdateProvisioningSettingsRequest).
+    jump_bundle_override: bool = False
+    jump_bundle_host: str = ""
+    jump_bundle_port: int = 22
+
+
+class UpdateProvisioningSettingsRequest(BaseModel):
+    provider_type: str | None = Field(default=None, max_length=20)
+    proxmox_url: str | None = Field(default=None, max_length=253)
+    proxmox_token_name: str | None = Field(default=None, max_length=253)
+    # Write-only secret: accepted here, stored, never echoed back.
+    proxmox_api_key: str | None = Field(default=None, max_length=512)
+    proxmox_template_filter: str | None = Field(default=None, max_length=120)
+    proxmox_templates_only: bool | None = None
+    proxmox_verify_tls: bool | None = None
+    provisioning_self_service: bool | None = None
+    provisioning_max_servers: int | None = Field(default=None, ge=0, le=100)
+    provisioning_allow_resource_edit: bool | None = None
+    provisioning_max_cpus: int | None = Field(default=None, ge=1, le=1024)
+    provisioning_max_memory_gb: int | None = Field(default=None, ge=1, le=4096)
+    provisioning_max_disk_gb: int | None = Field(default=None, ge=1, le=65536)
+    jump_enabled: bool | None = None
+    jump_host: str | None = Field(default=None, max_length=253)
+    jump_user: str | None = Field(default=None, max_length=64)
+    jump_port: int | None = Field(default=None, ge=1, le=65535)
+    jump_ssh_key_id: int | None = Field(default=None, ge=1)
+    # Management/jump-user split. The management user is the SSH login AppManager
+    # connects AS to manage the bastion (default root). The jumper user is the
+    # shared account used only in 'shared' account mode. The account MODE itself
+    # is changed only through the dedicated jump-server/account-mode endpoint
+    # (which re-syncs and reverts on failure), so it is not accepted here.
+    jump_management_user: str | None = Field(default=None, max_length=64)
+    jump_jumper_user: str | None = Field(default=None, max_length=64)
+    # SSH-config-bundle address override: when enabled, the built-in SSH config
+    # bundle addresses the jump server at this host/port instead of the
+    # management jump_host/jump_port (for bastions with separate public/private
+    # interfaces). Off by default; onboarding/sync always use jump_host.
+    jump_bundle_override: bool | None = None
+    jump_bundle_host: str | None = Field(default=None, max_length=253)
+    jump_bundle_port: int | None = Field(default=None, ge=1, le=65535)
+
+    @field_validator("jump_host", "jump_bundle_host")
+    @classmethod
+    def _check_jump_host(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return ""
+        if not _HOST_RE.match(value):
+            raise ValueError(
+                "Jump host must be a bare hostname or IP (letters, digits, '.', '-')."
+            )
+        return value
+
+    @field_validator("jump_user", "jump_management_user")
+    @classmethod
+    def _check_jump_user(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return ""
+        if not _SSH_USER_RE.match(value):
+            raise ValueError(
+                "Jump user must contain only letters, digits, '.', '_', and '-'."
+            )
+        return value
+
+    @field_validator("jump_jumper_user")
+    @classmethod
+    def _check_jump_jumper_user(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return ""
+        # Created as an OS account -> stricter Linux username rule.
+        if not _OS_USER_RE.match(value):
+            raise ValueError(
+                "Jumper user must be a valid Linux account name (lowercase "
+                "letter or underscore first, then lowercase letters, digits, "
+                "'-', '_'; max 32 chars)."
+            )
+        return value
+
+    @field_validator("provider_type")
+    @classmethod
+    def _check_provider_type(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if value not in ("", "proxmox"):
+            raise ValueError("Provider type must be 'proxmox' (or empty to disable).")
+        return value
+
+    @field_validator("proxmox_url")
+    @classmethod
+    def _check_proxmox_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip().rstrip("/")
+        if not value:
+            return ""
+        if not _PROXMOX_URL_RE.match(value):
+            raise ValueError(
+                "Proxmox URL must look like https://host:8006 (PROTO://IP:PORT)."
+            )
+        return value
+
+    @field_validator("proxmox_token_name")
+    @classmethod
+    def _check_proxmox_token_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if any(ch in value for ch in " \t\r\n\"'"):
+            raise ValueError("Token name must not contain spaces or quotes.")
+        return value
+
+    @field_validator("proxmox_api_key")
+    @classmethod
+    def _strip_api_key(cls, value: str | None) -> str | None:
+        # A whitespace-only "secret" must not sneak past the configured check.
+        return None if value is None else value.strip()
+
+
+class JumpSyncEntry(BaseModel):
+    username: str
+    status: str  # onboarded | failed | skipped | disabled
+    detail: str = ""
+
+
+class JumpSyncOut(BaseModel):
+    results: list[JumpSyncEntry] = Field(default_factory=list)
+
+
+class JumpAccountModeRequest(BaseModel):
+    """Guarded switch of the jump-server account model (per_user <-> shared)."""
+
+    account_mode: str
+    # The shared account name; required when switching to 'shared'.
+    jumper_user: str = Field(default="", max_length=64)
+    # The admin must acknowledge that all users will be re-synced.
+    acknowledge_sync: bool = False
+
+    @field_validator("account_mode")
+    @classmethod
+    def _check_mode(cls, value: str) -> str:
+        value = (value or "").strip()
+        if value not in ("per_user", "shared"):
+            raise ValueError("account_mode must be 'per_user' or 'shared'.")
+        return value
+
+    @field_validator("jumper_user")
+    @classmethod
+    def _check_jumper(cls, value: str) -> str:
+        value = (value or "").strip()
+        # The jumper user is created as an OS account, so it must satisfy the
+        # stricter OS-username rule (not just the SSH-login charset).
+        if value and not _OS_USER_RE.match(value):
+            raise ValueError(
+                "Jumper user must be a valid Linux account name (lowercase "
+                "letter or underscore first, then lowercase letters, digits, "
+                "'-', '_'; max 32 chars)."
+            )
+        return value
+
+
+class JumpAccountModeOut(BaseModel):
+    account_mode: str
+    reverted: bool = False
+    detail: str = ""
+    results: list[JumpSyncEntry] = Field(default_factory=list)
+
+
+class ProviderTemplateOut(BaseModel):
+    """A VM/LXC entry read live from the provider for the admin dropdown."""
+
+    vmid: int
+    name: str
+    kind: str
+    node: str = ""
+    is_template: bool = False
+
+
+class ProviderTemplatesOut(BaseModel):
+    status: str
+    log: str = ""
+    templates: list[ProviderTemplateOut] = Field(default_factory=list)
+
+
+class SshKeyOut(BaseModel):
+    """Registry entry without secret material."""
+
+    id: int
+    name: str
+    kind: str  # path | stored
+    path: str = ""
+    public_key: str = ""
+    fingerprint: str = ""
+    has_private_key: bool = False
+
+
+class CreateSshKeyRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    kind: str
+    # For kind='path'
+    path: str = Field(default="", max_length=4096)
+    # For kind='stored' (write-only; never returned)
+    private_key: str = Field(default="", max_length=32768)
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Key name must not be blank.")
+        return value
+
+    @field_validator("kind")
+    @classmethod
+    def _check_kind(cls, value: str) -> str:
+        if value not in ("path", "stored"):
+            raise ValueError("Key kind must be 'path' or 'stored'.")
+        return value
+
+    @field_validator("path")
+    @classmethod
+    def _check_path(cls, value: str) -> str:
+        return _validate_admin_key_path(value)
+
+
+class UpdateSshKeyRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=60)
+    kind: str | None = None
+    # For kind='path'
+    path: str | None = Field(default=None, max_length=4096)
+    # For kind='stored' (write-only; never returned). Sending a new value
+    # replaces the stored key; omitting it keeps the current one.
+    private_key: str | None = Field(default=None, max_length=32768)
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("Key name must not be blank.")
+        return value
+
+    @field_validator("kind")
+    @classmethod
+    def _check_kind(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if value not in ("path", "stored"):
+            raise ValueError("Key kind must be 'path' or 'stored'.")
+        return value
+
+    @field_validator("path")
+    @classmethod
+    def _check_path(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _validate_admin_key_path(value)
+
+
+class ServerTemplateOut(BaseModel):
+    id: int
+    vmid: int
+    name: str
+    kind: str
+    admin_ssh_key_path: str = ""
+    admin_ssh_key_id: int | None = None
+    main_os_user: str = ""
+    enable_sudo: bool = True
+    enable_trusted_access: bool = True
+
+
+def _validate_main_os_user(value: str) -> str:
+    """OS username for the template main user (same rules as servers)."""
+    value = value.strip()
+    if value and not _OS_USER_RE.match(value):
+        raise ValueError(
+            "Main user must be a valid Linux username (lowercase letters, "
+            "digits, dashes, underscores; starting with a letter or underscore)."
+        )
+    return value
+
+
+class ServerTemplateOptionOut(BaseModel):
+    """User-facing template option (no vmid or admin key path)."""
+
+    id: int
+    name: str
+    kind: str
+
+
+class ServerAccessOut(BaseModel):
+    """Whether the caller may create servers for their own account."""
+
+    can_create: bool = False
+    reason: str = ""
+
+
+class ResourceUsageOut(BaseModel):
+    """One resource dimension: how much of the per-user limit is committed."""
+
+    used: int = 0
+    limit: int = 0
+
+
+class ServerUsageOut(BaseModel):
+    """Per-user provisioning usage vs. limits, for the create-server form bars.
+
+    ``unlimited`` is true for administrators, who are exempt from per-user
+    caps; the individual dimensions are still populated with the committed
+    usage (limit 0) so callers can show a count without a cap. For non-admins
+    each dimension carries the committed usage and the applicable limit.
+    """
+
+    unlimited: bool = False
+    servers: ResourceUsageOut = Field(default_factory=ResourceUsageOut)
+    cpus: ResourceUsageOut = Field(default_factory=ResourceUsageOut)
+    memory_gb: ResourceUsageOut = Field(default_factory=ResourceUsageOut)
+    disk_gb: ResourceUsageOut = Field(default_factory=ResourceUsageOut)
+
+
+def _validate_admin_key_path(value: str) -> str:
+    """Admin SSH key path: shell-metachar-free and absolute when present.
+
+    Requiring a leading ``/`` forecloses ``-o...`` option injection and
+    ``host:path`` interpretation if the value is ever passed to scp-like
+    tools in other argv positions.
+    """
+    value = _validate_path_setting(value, "Admin SSH key path")
+    if value and not value.startswith("/"):
+        raise ValueError("Admin SSH key path must be an absolute path.")
+    return value
+
+
+class CreateServerTemplateRequest(BaseModel):
+    vmid: int = Field(ge=1, le=999999999)
+    name: str = Field(min_length=1, max_length=60)
+    kind: str
+    admin_ssh_key_path: str = Field(default="", max_length=4096)
+    admin_ssh_key_id: int | None = Field(default=None, ge=1)
+    main_os_user: str = Field(default="", max_length=32)
+    enable_sudo: bool = True
+    enable_trusted_access: bool = True
+
+    @field_validator("main_os_user")
+    @classmethod
+    def _check_main_os_user(cls, value: str) -> str:
+        return _validate_main_os_user(value)
+
+    @field_validator("kind")
+    @classmethod
+    def _check_kind(cls, value: str) -> str:
+        if value not in ("lxc", "vm"):
+            raise ValueError("Template kind must be 'lxc' or 'vm'.")
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Template name must not be blank.")
+        return value
+
+    @field_validator("admin_ssh_key_path")
+    @classmethod
+    def _check_admin_key_path(cls, value: str) -> str:
+        return _validate_admin_key_path(value)
+
+
+class UserServerOut(BaseModel):
+    id: int
+    user_id: int
+    name: str
+    hostname: str = ""
+    template_id: int | None = None
+    template_name: str = ""
+    vmid: int | None = None
+    node: str = ""
+    kind: str
+    ip_address: str = ""
+    cpus: int = 0
+    memory_gb: int = 0
+    disk_gb: int = 0
+    admin_modified: bool = False
+    status: str = "created"
+    last_log: str = ""
+    # Deferred deletion (issue_015-r4 F1). deletion_requested_at is the ISO
+    # timestamp of a pending deletion (empty = none). deletion_pending is a
+    # convenience flag. deletion_failed marks a server whose destroy failed
+    # (admin-only rows). deletion_error carries the failure detail and is only
+    # populated in administrator responses.
+    deletion_requested_at: str = ""
+    deletion_pending: bool = False
+    deletion_failed: bool = False
+    deletion_error: str = ""
+    created_at: str = ""
+
+
+class CreateUserServerRequest(BaseModel):
+    template_id: int = Field(ge=1)
+    # The user-supplied SUFFIX only; the server's full name is composed
+    # server-side as "<template>-<owner-derived-id>-<suffix>". Capped so the
+    # composed name still fits the 63-char server-name limit (validated after
+    # composition, which returns a clearer "N characters available" error).
+    name: str = Field(min_length=1, max_length=63)
+    install_pubkey: bool = True
+    pubkey_users: str = Field(default="", max_length=512)
+
+
+class OwnerServersOut(BaseModel):
+    """A user's servers, for the admin/self server overview (issue_015-r5 F2)."""
+
+    user_id: int
+    username: str
+    derived_user_id: str = ""
+    servers: list[UserServerOut] = Field(default_factory=list)
+
+
+class ServersOverviewOut(BaseModel):
+    """All servers the caller may see, grouped by owner.
+
+    Administrators see every user's servers; a non-admin sees only their own
+    (a single group). ``is_admin`` lets the UI adapt copy/columns.
+    """
+
+    is_admin: bool = False
+    owners: list[OwnerServersOut] = Field(default_factory=list)
+
+
+class ServerStatsPointOut(BaseModel):
+    """One historical sample for a server's usage sparklines."""
+
+    time: int = 0
+    # CPU as a percentage 0-100 (Proxmox reports a 0-1 fraction).
+    cpu_pct: float = 0.0
+    mem: float = 0.0
+    maxmem: float = 0.0
+    disk: float = 0.0
+    maxdisk: float = 0.0
+    netin: float = 0.0
+    netout: float = 0.0
+
+
+class ServerStatsOut(BaseModel):
+    """Historical usage for one server over a timeframe (Proxmox rrddata).
+
+    ``available`` is false when stats cannot be read (no guest/vmid, provider
+    not configured, or the read failed); ``detail`` explains why.
+    """
+
+    available: bool = False
+    detail: str = ""
+    timeframe: str = "hour"
+    points: list[ServerStatsPointOut] = Field(default_factory=list)
+
+
+class UpdateUserServerRequest(BaseModel):
+    """Manual IP entry (VMs) and resource changes (LXC)."""
+
+    ip_address: str | None = Field(default=None, max_length=15)
+    cpus: int | None = Field(default=None, ge=1, le=1024)
+    memory_gb: int | None = Field(default=None, ge=1, le=4096)
+    disk_gb: int | None = Field(default=None, ge=1, le=65536)
+
+
+class UpdateServerTemplateRequest(BaseModel):
+    vmid: int | None = Field(default=None, ge=1, le=999999999)
+    name: str | None = Field(default=None, min_length=1, max_length=60)
+    kind: str | None = None
+    admin_ssh_key_path: str | None = Field(default=None, max_length=4096)
+    admin_ssh_key_id: int | None = Field(default=None, ge=1)
+    main_os_user: str | None = Field(default=None, max_length=32)
+    enable_sudo: bool | None = None
+    enable_trusted_access: bool | None = None
+
+    @field_validator("kind")
+    @classmethod
+    def _check_kind(cls, value: str | None) -> str | None:
+        if value is not None and value not in ("lxc", "vm"):
+            raise ValueError("Template kind must be 'lxc' or 'vm'.")
+        return value
+
+    @field_validator("main_os_user")
+    @classmethod
+    def _check_main_os_user(cls, value: str | None) -> str | None:
+        return None if value is None else _validate_main_os_user(value)
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("Template name must not be blank.")
+        return value
+
+    @field_validator("admin_ssh_key_path")
+    @classmethod
+    def _check_admin_key_path(cls, value: str | None) -> str | None:
+        return None if value is None else _validate_admin_key_path(value)
 
 
 class BrandingSettingsOut(BaseModel):

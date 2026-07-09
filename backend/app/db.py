@@ -6,6 +6,7 @@ elsewhere use parameter binding; no SQL is built from user input.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -25,6 +26,9 @@ CREATE TABLE IF NOT EXISTS users (
     apps_server          TEXT    NOT NULL DEFAULT '',
     apps_server_ip       TEXT    NOT NULL DEFAULT '',
     apps_port            TEXT    NOT NULL DEFAULT '',
+    ssh_private_key      TEXT    NOT NULL DEFAULT '',
+    ssh_public_key       TEXT    NOT NULL DEFAULT '',
+    ssh_key_generated_at TEXT,
     created_at           TEXT    NOT NULL DEFAULT (datetime('now')),
     updated_at           TEXT    NOT NULL DEFAULT (datetime('now'))
 );
@@ -110,6 +114,68 @@ CREATE TABLE IF NOT EXISTS audit_log (
     detail         TEXT    NOT NULL DEFAULT ''
 );
 
+-- Registry of SSH keys usable across the app (issue_015-r1). A key is either
+-- a reference to a key file on the server (kind='path') or a private key
+-- stored encrypted at rest in the DB (kind='stored'). Secret material
+-- (encrypted_private_key) is never returned by the API.
+CREATE TABLE IF NOT EXISTS ssh_keys (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    name                  TEXT    NOT NULL UNIQUE,
+    kind                  TEXT    NOT NULL CHECK (kind IN ('path', 'stored')),
+    path                  TEXT    NOT NULL DEFAULT '',
+    encrypted_private_key TEXT    NOT NULL DEFAULT '',
+    public_key            TEXT    NOT NULL DEFAULT '',
+    fingerprint           TEXT    NOT NULL DEFAULT '',
+    created_at            TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at            TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Admin-registered Proxmox templates used to create user servers.
+CREATE TABLE IF NOT EXISTS server_templates (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    vmid               INTEGER NOT NULL,
+    name               TEXT    NOT NULL UNIQUE,
+    kind               TEXT    NOT NULL CHECK (kind IN ('lxc', 'vm')),
+    admin_ssh_key_path TEXT    NOT NULL DEFAULT '',
+    created_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at         TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Per-user provisioned (or referenced) LXC/VM servers.
+CREATE TABLE IF NOT EXISTS user_servers (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name           TEXT    NOT NULL,
+    hostname       TEXT    NOT NULL DEFAULT '',
+    template_id    INTEGER REFERENCES server_templates(id) ON DELETE SET NULL,
+    template_name  TEXT    NOT NULL DEFAULT '',
+    vmid           INTEGER,
+    node           TEXT    NOT NULL DEFAULT '',
+    kind           TEXT    NOT NULL CHECK (kind IN ('lxc', 'vm')),
+    ip_address     TEXT    NOT NULL DEFAULT '',
+    cpus           INTEGER NOT NULL DEFAULT 0,
+    memory_gb      INTEGER NOT NULL DEFAULT 0,
+    disk_gb        INTEGER NOT NULL DEFAULT 0,
+    admin_modified INTEGER NOT NULL DEFAULT 0,
+    -- Optional per-server admin key path (used for key rotation on servers
+    -- that have no template, e.g. imported reference servers). Never exposed
+    -- through the API.
+    admin_ssh_key_path TEXT NOT NULL DEFAULT '',
+    -- created: provisioned by AppManager; reference: imported record of a
+    -- pre-existing server; failed: creation attempt kept for its log.
+    status         TEXT    NOT NULL DEFAULT 'created'
+                       CHECK (status IN ('created', 'reference', 'failed')),
+    last_log       TEXT    NOT NULL DEFAULT '',
+    -- Deferred deletion (issue_015-r4 F1): ISO timestamp of a pending deletion
+    -- request (empty = not pending), and the last destroy-failure detail
+    -- (empty = none; non-empty marks an admin-recoverable failed destroy).
+    deletion_requested_at TEXT NOT NULL DEFAULT '',
+    deletion_error TEXT NOT NULL DEFAULT '',
+    created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(user_id, name)
+);
+
 CREATE TABLE IF NOT EXISTS bundle_templates (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     name       TEXT    NOT NULL UNIQUE,
@@ -141,6 +207,24 @@ CREATE TABLE IF NOT EXISTS settings (
     app_logo        TEXT    NOT NULL DEFAULT '',
     collaborators   TEXT    NOT NULL DEFAULT '[]',
     configured      INTEGER NOT NULL DEFAULT 0,
+    -- LXC/VM provider (Proxmox). The API key is write-only: stored here,
+    -- never returned by any endpoint or written to logs/audit entries.
+    provider_type            TEXT    NOT NULL DEFAULT '',
+    proxmox_url              TEXT    NOT NULL DEFAULT '',
+    proxmox_token_name       TEXT    NOT NULL DEFAULT '',
+    proxmox_api_key          TEXT    NOT NULL DEFAULT '',
+    proxmox_template_filter  TEXT    NOT NULL DEFAULT '',
+    proxmox_templates_only   INTEGER NOT NULL DEFAULT 1,
+    proxmox_verify_tls       INTEGER NOT NULL DEFAULT 1,
+    proxmox_conn_status      TEXT    NOT NULL DEFAULT '',
+    proxmox_conn_log         TEXT    NOT NULL DEFAULT '',
+    -- Server-provisioning policy.
+    provisioning_self_service     INTEGER NOT NULL DEFAULT 0,
+    provisioning_max_servers      INTEGER NOT NULL DEFAULT 3,
+    provisioning_allow_resource_edit INTEGER NOT NULL DEFAULT 0,
+    provisioning_max_cpus         INTEGER NOT NULL DEFAULT 12,
+    provisioning_max_memory_gb    INTEGER NOT NULL DEFAULT 24,
+    provisioning_max_disk_gb      INTEGER NOT NULL DEFAULT 200,
     updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -152,6 +236,7 @@ CREATE INDEX IF NOT EXISTS idx_application_teams_team
 CREATE INDEX IF NOT EXISTS idx_audit_category_id ON audit_log(category, id);
 CREATE INDEX IF NOT EXISTS idx_bundle_template_mappings_template
     ON bundle_template_mappings(template_id);
+CREATE INDEX IF NOT EXISTS idx_user_servers_user ON user_servers(user_id);
 """
 
 
@@ -162,7 +247,28 @@ def connect() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
+    # Wait (rather than immediately raising SQLITE_BUSY) when another writer
+    # holds the lock. WAL allows one writer + concurrent readers; the lazy
+    # deletion sweep (issue_015-r4 F1) can hold a write transaction across
+    # network I/O, widening the contention window, so give writers a few
+    # seconds to acquire the lock instead of failing the request outright.
+    conn.execute("PRAGMA busy_timeout = 5000")
+    _restrict_db_permissions(settings.db_path)
     return conn
+
+
+def _restrict_db_permissions(db_path: object) -> None:
+    """Keep the database (and WAL/SHM companions) owner-only.
+
+    The database stores per-user SSH private keys and session tokens. Best
+    effort: permission errors are ignored so read-only or exotic filesystems
+    do not break connections.
+    """
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            os.chmod(f"{db_path}{suffix}", 0o600)
+        except OSError:
+            pass
 
 
 @contextmanager
@@ -215,6 +321,116 @@ def _add_column(
     return True
 
 
+def _backfill_user_ssh_keys(conn: sqlite3.Connection) -> None:
+    """Generate a keypair for every user that does not have one yet.
+
+    Private keys are stored encrypted at rest (issue_015-r1). Key material
+    never leaves the database here; nothing is logged.
+    """
+    from . import keystore, sshkeys
+
+    rows = conn.execute(
+        "SELECT id, username FROM users WHERE ssh_public_key = ''"
+    ).fetchall()
+    for row in rows:
+        private_key, public_key = sshkeys.generate_keypair(row["username"])
+        conn.execute(
+            """
+            UPDATE users
+            SET ssh_private_key = ?, ssh_public_key = ?,
+                ssh_key_generated_at = datetime('now')
+            WHERE id = ?
+            """,
+            (keystore.encrypt(private_key), public_key, row["id"]),
+        )
+
+
+def _encrypt_existing_user_keys(conn: sqlite3.Connection) -> None:
+    """Encrypt any per-user private keys still stored in plaintext.
+
+    Idempotent: rows whose ``ssh_private_key`` is already an ``enc:v1:``
+    token (or empty) are skipped. Detects legacy plaintext by the OpenSSH
+    PEM header.
+    """
+    from . import keystore
+
+    rows = conn.execute(
+        "SELECT id, ssh_private_key FROM users WHERE ssh_private_key != ''"
+    ).fetchall()
+    for row in rows:
+        value = row["ssh_private_key"]
+        if keystore.is_encrypted(value):
+            continue
+        conn.execute(
+            "UPDATE users SET ssh_private_key = ? WHERE id = ?",
+            (keystore.encrypt(value), row["id"]),
+        )
+
+
+def _import_key_paths_to_registry(conn: sqlite3.Connection) -> None:
+    """Import already-configured SSH key file paths into the registry.
+
+    Creates one ``kind='path'`` ssh_keys row per distinct configured path
+    (reverse-proxy settings, server templates, reference user servers) and
+    links the corresponding ``*_ssh_key_id`` FK. Idempotent: rows that
+    already reference a registry key, and paths already imported, are skipped.
+    """
+    def _key_id_for_path(path: str) -> int:
+        path = (path or "").strip()
+        existing = conn.execute(
+            "SELECT id FROM ssh_keys WHERE kind = 'path' AND path = ?", (path,)
+        ).fetchone()
+        if existing:
+            return existing["id"]
+        # Derive a unique, human-readable name from the file name.
+        base = path.rsplit("/", 1)[-1] or "key"
+        name = f"{base} (imported)"
+        n = 2
+        while conn.execute(
+            "SELECT 1 FROM ssh_keys WHERE name = ?", (name,)
+        ).fetchone():
+            name = f"{base} (imported {n})"
+            n += 1
+        cur = conn.execute(
+            "INSERT INTO ssh_keys (name, kind, path) VALUES (?, 'path', ?)",
+            (name, path),
+        )
+        return int(cur.lastrowid)
+
+    # Reverse-proxy settings key.
+    row = conn.execute(
+        "SELECT ssh_key_path, reverse_proxy_ssh_key_id FROM settings WHERE id = 1"
+    ).fetchone()
+    if row and row["ssh_key_path"] and not row["reverse_proxy_ssh_key_id"]:
+        kid = _key_id_for_path(row["ssh_key_path"])
+        conn.execute(
+            "UPDATE settings SET reverse_proxy_ssh_key_id = ? WHERE id = 1",
+            (kid,),
+        )
+
+    # Server templates.
+    for r in conn.execute(
+        "SELECT id, admin_ssh_key_path FROM server_templates "
+        "WHERE admin_ssh_key_path != '' AND admin_ssh_key_id IS NULL"
+    ).fetchall():
+        kid = _key_id_for_path(r["admin_ssh_key_path"])
+        conn.execute(
+            "UPDATE server_templates SET admin_ssh_key_id = ? WHERE id = ?",
+            (kid, r["id"]),
+        )
+
+    # Reference user servers.
+    for r in conn.execute(
+        "SELECT id, admin_ssh_key_path FROM user_servers "
+        "WHERE admin_ssh_key_path != '' AND admin_ssh_key_id IS NULL"
+    ).fetchall():
+        kid = _key_id_for_path(r["admin_ssh_key_path"])
+        conn.execute(
+            "UPDATE user_servers SET admin_ssh_key_id = ? WHERE id = ?",
+            (kid, r["id"]),
+        )
+
+
 def _migrate_schema(conn: sqlite3.Connection) -> None:
     """Bring an existing database up to the current column set.
 
@@ -233,6 +449,14 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     _add_column(conn, "users", "apps_server", "TEXT NOT NULL DEFAULT ''")
     _add_column(conn, "users", "apps_server_ip", "TEXT NOT NULL DEFAULT ''")
     _add_column(conn, "users", "apps_port", "TEXT NOT NULL DEFAULT ''")
+
+    # Each user carries their own Ed25519 SSH keypair (issue_015). New users
+    # get one at creation; the backfill below covers accounts that predate the
+    # feature (and is a cheap no-op once every user has a key).
+    _add_column(conn, "users", "ssh_private_key", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "users", "ssh_public_key", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "users", "ssh_key_generated_at", "TEXT")
+    _backfill_user_ssh_keys(conn)
 
     # Sessions record how the user authenticated so SSO sessions can bypass
     # local-password-only first-login requirements without clearing the flag.
@@ -306,3 +530,199 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     # Teams gained an optional small icon (a bundled catalogue path or a capped
     # raster data URI), shown on the sidebar team button.
     _add_column(conn, "teams", "icon", "TEXT NOT NULL DEFAULT ''")
+
+    # LXC/VM provider configuration and server-provisioning policy (issue_015).
+    _add_column(conn, "settings", "provider_type", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "settings", "proxmox_url", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "settings", "proxmox_token_name", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "settings", "proxmox_api_key", "TEXT NOT NULL DEFAULT ''")
+    _add_column(
+        conn, "settings", "proxmox_template_filter", "TEXT NOT NULL DEFAULT ''"
+    )
+    _add_column(
+        conn, "settings", "proxmox_templates_only", "INTEGER NOT NULL DEFAULT 1"
+    )
+    _add_column(conn, "settings", "proxmox_verify_tls", "INTEGER NOT NULL DEFAULT 1")
+    _add_column(conn, "settings", "proxmox_conn_status", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "settings", "proxmox_conn_log", "TEXT NOT NULL DEFAULT ''")
+    _add_column(
+        conn,
+        "settings",
+        "provisioning_self_service",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    _add_column(
+        conn, "settings", "provisioning_max_servers", "INTEGER NOT NULL DEFAULT 3"
+    )
+    _add_column(
+        conn,
+        "settings",
+        "provisioning_allow_resource_edit",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    _add_column(
+        conn, "settings", "provisioning_max_cpus", "INTEGER NOT NULL DEFAULT 12"
+    )
+    _add_column(
+        conn,
+        "settings",
+        "provisioning_max_memory_gb",
+        "INTEGER NOT NULL DEFAULT 24",
+    )
+    _add_column(
+        conn, "settings", "provisioning_max_disk_gb", "INTEGER NOT NULL DEFAULT 200"
+    )
+
+    # Reference servers imported without a template carry their own admin
+    # key path for key rotation.
+    _add_column(
+        conn, "user_servers", "admin_ssh_key_path", "TEXT NOT NULL DEFAULT ''"
+    )
+
+    # SSH key registry (issue_015-r1): foreign keys from the settings row,
+    # server templates, and user servers to a registered key. Legacy *_path
+    # columns are kept as a read fallback.
+    _add_column(
+        conn, "settings", "reverse_proxy_ssh_key_id", "INTEGER"
+    )
+    _add_column(conn, "server_templates", "admin_ssh_key_id", "INTEGER")
+    # Per-template provisioning options (issue_015-r2). When main_os_user is
+    # set, the user's key is installed only for that OS user. enable_sudo adds
+    # that user to the sudo group; enable_trusted_access sets up a full SSH
+    # mesh across the user's trusted servers. Both flags default on.
+    _add_column(
+        conn, "server_templates", "main_os_user", "TEXT NOT NULL DEFAULT ''"
+    )
+    _add_column(
+        conn, "server_templates", "enable_sudo", "INTEGER NOT NULL DEFAULT 1"
+    )
+    _add_column(
+        conn,
+        "server_templates",
+        "enable_trusted_access",
+        "INTEGER NOT NULL DEFAULT 1",
+    )
+    _add_column(conn, "user_servers", "admin_ssh_key_id", "INTEGER")
+
+    # Jump server (issue_015-r1): onboard/offboard OS accounts on a bastion.
+    _add_column(conn, "settings", "jump_enabled", "INTEGER NOT NULL DEFAULT 0")
+    _add_column(conn, "settings", "jump_host", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "settings", "jump_user", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "settings", "jump_port", "INTEGER NOT NULL DEFAULT 22")
+    _add_column(conn, "settings", "jump_ssh_key_id", "INTEGER")
+
+    # Jump server SSH-config-bundle address override (issue_015-r3). When the
+    # bastion is reachable at a different address in generated user SSH configs
+    # than the private address AppManager manages it over (e.g. public vs.
+    # private interface), the override supplies the bundle-facing host/port.
+    # Default off: bundles use the management jump_host/jump_port.
+    _add_column(
+        conn, "settings", "jump_bundle_override", "INTEGER NOT NULL DEFAULT 0"
+    )
+    _add_column(conn, "settings", "jump_bundle_host", "TEXT NOT NULL DEFAULT ''")
+    _add_column(
+        conn, "settings", "jump_bundle_port", "INTEGER NOT NULL DEFAULT 22"
+    )
+
+    # Jump server management/jump-user split + account model (issue_015-r3).
+    #  - jump_management_user: the SSH login AppManager connects AS to manage the
+    #    bastion (create accounts, install keys). Must be privileged; default
+    #    root.
+    #  - jump_account_mode: 'per_user' (each user gets their own hardened
+    #    account, named by their derived user_id) or 'shared' (all users' keys
+    #    installed into one shared hardened account). Default per_user.
+    #  - jump_jumper_user: the shared account name, used only in 'shared' mode.
+    _add_column(
+        conn, "settings", "jump_management_user",
+        "TEXT NOT NULL DEFAULT 'root'",
+    )
+    _add_column(
+        conn, "settings", "jump_account_mode",
+        "TEXT NOT NULL DEFAULT 'per_user'",
+    )
+    _add_column(
+        conn, "settings", "jump_jumper_user", "TEXT NOT NULL DEFAULT ''"
+    )
+    # Preserve any pre-split configured jump user as the shared jumper account
+    # so an existing 'shared'-style setup keeps working after upgrade.
+    conn.execute(
+        "UPDATE settings SET jump_jumper_user = jump_user "
+        "WHERE id = 1 AND jump_jumper_user = '' "
+        "AND jump_user IS NOT NULL AND jump_user <> ''"
+    )
+
+    # Encrypt any per-user private keys still stored in plaintext, and import
+    # already-configured key file paths into the registry (idempotent).
+    _encrypt_existing_user_keys(conn)
+    _import_key_paths_to_registry(conn)
+
+    # Bundle templates gained builtin/enabled flags (issue_015-r2). Builtin
+    # templates render dynamically, can be cloned but not renamed/deleted, and
+    # can be disabled to hide them from the account download list.
+    _add_column(
+        conn, "bundle_templates", "is_builtin", "INTEGER NOT NULL DEFAULT 0"
+    )
+    _add_column(
+        conn, "bundle_templates", "enabled", "INTEGER NOT NULL DEFAULT 1"
+    )
+
+    # Bundle templates gained an optional description shown under the account
+    # download dropdown (issue_015-r3).
+    _add_column(
+        conn, "bundle_templates", "description", "TEXT NOT NULL DEFAULT ''"
+    )
+
+    # Predefined built-in SSH-config template. Rendered dynamically from the
+    # user's servers + jump server at download time (its content is a marker,
+    # not used verbatim). Idempotent by the unique template name; ensure the
+    # builtin flag is set even for rows seeded before this migration.
+    conn.execute(
+        "INSERT OR IGNORE INTO bundle_templates (name, content, is_builtin) "
+        "VALUES (?, ?, 1)",
+        (
+            "SSH Config Default",
+            "# Generated dynamically from your servers at download time.\n",
+        ),
+    )
+    conn.execute(
+        "UPDATE bundle_templates SET is_builtin = 1 WHERE name = 'SSH Config Default'"
+    )
+    # Give the built-in a default description if it has none yet (keeps any
+    # admin-provided override intact on re-runs).
+    conn.execute(
+        "UPDATE bundle_templates SET description = ? "
+        "WHERE name = 'SSH Config Default' AND description = ''",
+        (
+            "Ready-to-use SSH client config for all your servers, generated "
+            "from your account at download time.",
+        ),
+    )
+
+    # Deferred server deletion (issue_015-r4 F1). A deletion request enters a
+    # 24h grace window during which it can be cancelled; a lazy sweep then
+    # destroys the guest. deletion_requested_at holds the ISO timestamp of the
+    # request (empty = not pending). deletion_error holds the last destroy
+    # failure detail (empty = none); a non-empty value marks a server that
+    # failed to destroy - hidden from the owner but kept in the admin list for
+    # recovery. Additive columns only; the status CHECK is intentionally
+    # unchanged (no table rebuild).
+    _add_column(
+        conn, "user_servers", "deletion_requested_at",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    _add_column(
+        conn, "user_servers", "deletion_error", "TEXT NOT NULL DEFAULT ''"
+    )
+
+    # Enforce globally-unique server names case-insensitively (issue_015-r5 F1)
+    # as a backstop to the application-level pre-check. Best-effort: if legacy
+    # data already contains a case-insensitive duplicate, the index cannot be
+    # created; leave it and rely on the application check rather than failing
+    # startup. New collisions are prevented once the index exists.
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_user_servers_name_ci "
+            "ON user_servers(lower(name))"
+        )
+    except sqlite3.IntegrityError:
+        pass

@@ -7,6 +7,7 @@ import {
   HomeIcon,
   InfoIcon,
   ListIcon,
+  ServerIcon,
   SlidersIcon,
   UserIcon,
 } from "./icons";
@@ -56,6 +57,12 @@ export function Sidebar(props: {
           to="/account"
           icon={<UserIcon />}
           label="Account"
+          collapsed={collapsed}
+        />
+        <SideLink
+          to="/servers"
+          icon={<ServerIcon />}
+          label="Servers"
           collapsed={collapsed}
         />
         <SideLink

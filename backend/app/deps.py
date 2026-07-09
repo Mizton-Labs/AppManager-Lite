@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 import sqlite3
 from collections.abc import Iterator
 from typing import Any
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 _ANONYMOUS_ADMIN: dict[str, Any] = {
     "id": 0,
     "username": "local",
+    "user_id": "local",
     "role": "admin",
     "is_active": True,
     "must_change_password": False,
@@ -96,7 +98,7 @@ def verify_csrf(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
         )
     header = request.headers.get(sessions.CSRF_HEADER_NAME, "")
-    if not header or header != session["csrf_token"]:
+    if not header or not secrets.compare_digest(header, session["csrf_token"]):
         logger.warning(
             "CSRF validation failed username=%r path=%s",
             user.get("username"),

@@ -48,12 +48,15 @@ beforeEach(() => {
     vi.fn(async (input: string) => {
       const url = String(input);
       const isSettings = /\/api\/settings\//.test(url);
+      const isSshKeys = /\/api\/settings\/ssh-keys\b/.test(url);
       const isTeams = /\/api\/teams\b/.test(url);
       return {
         ok: true,
         status: 200,
         json: async () =>
-          isTeams
+          isSshKeys
+            ? []
+            : isTeams
             ? [
                 { id: 1, name: "Threat Hunting", sort_order: 0, icon: "" },
                 { id: 2, name: "Red Team", sort_order: 1, icon: "" },
@@ -157,12 +160,13 @@ describe("PortalShell", () => {
     renderShell(makeSession({ role: "admin" }, { configured: false }));
 
     // The first-login wizard sends the admin straight to Settings with the
-    // setup prompt visible.
+    // setup prompt visible, landing on the Reverse Proxy sub-tab (the form
+    // whose save completes first-run setup).
     expect(
       await screen.findByText(/finish setup by setting branding/i),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("heading", { name: /application basic information/i }),
+      screen.getByRole("heading", { name: /reverse proxy configuration/i }),
     ).toBeInTheDocument();
   });
 
