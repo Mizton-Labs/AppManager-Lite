@@ -1097,6 +1097,42 @@ class CreateSshKeyRequest(BaseModel):
         return _validate_admin_key_path(value)
 
 
+class UpdateSshKeyRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=60)
+    kind: str | None = None
+    # For kind='path'
+    path: str | None = Field(default=None, max_length=4096)
+    # For kind='stored' (write-only; never returned). Sending a new value
+    # replaces the stored key; omitting it keeps the current one.
+    private_key: str | None = Field(default=None, max_length=32768)
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("Key name must not be blank.")
+        return value
+
+    @field_validator("kind")
+    @classmethod
+    def _check_kind(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if value not in ("path", "stored"):
+            raise ValueError("Key kind must be 'path' or 'stored'.")
+        return value
+
+    @field_validator("path")
+    @classmethod
+    def _check_path(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _validate_admin_key_path(value)
+
+
 class ServerTemplateOut(BaseModel):
     id: int
     vmid: int

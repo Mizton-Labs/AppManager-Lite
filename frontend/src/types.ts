@@ -229,6 +229,14 @@ export interface CreateSshKeyInput {
   private_key?: string;
 }
 
+export interface UpdateSshKeyInput {
+  name?: string;
+  kind?: "path" | "stored";
+  path?: string;
+  /** Write-only: send only to replace the stored private key. */
+  private_key?: string;
+}
+
 /** An admin-registered Proxmox template used to create user servers. */
 export interface ServerTemplate {
   id: number;

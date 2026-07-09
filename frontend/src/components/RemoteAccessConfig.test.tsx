@@ -29,6 +29,22 @@ function stubKeys(initial: SshKey[] = []) {
       keys = [...keys, created];
       return json(created, 201);
     }
+    if (url.includes("/api/settings/ssh-keys/") && method === "PATCH") {
+      const id = Number(url.split("/").pop());
+      const body = JSON.parse(init?.body as string);
+      keys = keys.map((k) =>
+        k.id === id
+          ? {
+              ...k,
+              ...(body.name !== undefined ? { name: body.name } : {}),
+              ...(body.kind !== undefined ? { kind: body.kind } : {}),
+              ...(body.path !== undefined ? { path: body.path } : {}),
+              ...(body.private_key ? { has_private_key: true } : {}),
+            }
+          : k,
+      );
+      return json(keys.find((k) => k.id === id));
+    }
     if (url.includes("/api/settings/ssh-keys/") && method === "DELETE") {
       keys = keys.filter((k) => !url.endsWith(`/${k.id}`));
       return json({ detail: "SSH key deleted" });
@@ -93,6 +109,43 @@ describe("RemoteAccessConfig", () => {
     expect(sent.kind).toBe("stored");
     expect(sent.private_key).toContain("BEGIN OPENSSH");
     expect(sent.path).toBeUndefined();
+  });
+
+  it("edits an existing key's name and path", async () => {
+    const fetchMock = stubKeys([
+      {
+        id: 5,
+        name: "edit me",
+        kind: "path",
+        path: "/old/path",
+        public_key: "",
+        fingerprint: "",
+        has_private_key: false,
+      },
+    ]);
+    render(<RemoteAccessConfig />);
+
+    await screen.findByText("edit me");
+    await userEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    const nameField = await screen.findByDisplayValue("edit me");
+    await userEvent.clear(nameField);
+    await userEvent.type(nameField, "edited");
+    const pathField = screen.getByDisplayValue("/old/path");
+    await userEvent.clear(pathField);
+    await userEvent.type(pathField, "/new/path");
+    await userEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+    const call = fetchMock.mock.calls.find(
+      ([u, i]) =>
+        String(u).includes("/api/settings/ssh-keys/5") &&
+        (i as RequestInit | undefined)?.method === "PATCH",
+    );
+    expect(JSON.parse((call![1] as RequestInit).body as string)).toMatchObject({
+      name: "edited",
+      kind: "path",
+      path: "/new/path",
+    });
+    expect(await screen.findByText("edited")).toBeInTheDocument();
   });
 
   it("deletes a key after confirmation", async () => {

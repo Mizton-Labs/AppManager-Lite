@@ -27,6 +27,7 @@ from ..deps import get_current_user, get_db, require_admin, verify_csrf
 from ..schemas import (
     CreateServerTemplateRequest,
     CreateSshKeyRequest,
+    UpdateSshKeyRequest,
     CreateUserServerRequest,
     JumpSyncEntry,
     JumpSyncOut,
@@ -553,6 +554,94 @@ def create_ssh_key(
         conn,
         category=audit.CATEGORY_SYSTEM,
         action="ssh_key_create",
+        actor=admin,
+        target_type="ssh_key",
+        target_id=key["id"],
+        target_name=key["name"],
+        detail=f"kind={key['kind']}",
+    )
+    return SshKeyOut(**key)
+
+
+@router.patch("/settings/ssh-keys/{key_id}", response_model=SshKeyOut)
+def update_ssh_key(
+    key_id: int,
+    payload: UpdateSshKeyRequest,
+    admin: dict[str, Any] = Depends(require_admin),
+    __: None = Depends(verify_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> SshKeyOut:
+    """Edit a registry key (name, path, kind, or replace the stored key).
+
+    Editing is allowed even while the key is referenced (it updates in place).
+    Switching to a path key clears the stored secret; providing a new private
+    key (or keeping kind=stored) re-encrypts it and recomputes the public key
+    and fingerprint. Any on-disk materialized copy is removed when the secret
+    or kind changes so the next use re-materializes fresh.
+    """
+    existing = repository.get_ssh_key(conn, key_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="SSH key not found")
+
+    new_kind = payload.kind or existing["kind"]
+    fields: dict[str, Any] = {}
+    if payload.name is not None:
+        fields["name"] = payload.name
+    if payload.kind is not None:
+        fields["kind"] = payload.kind
+
+    secret_or_kind_changed = False
+    if new_kind == "path":
+        # A path key holds no secret material.
+        if payload.path is not None:
+            fields["path"] = payload.path
+        # The resulting path must be non-empty (mirrors create-time validation);
+        # otherwise the key would resolve to an empty `ssh -i` argument.
+        effective_path = (
+            payload.path if payload.path is not None else existing["path"]
+        )
+        if not (effective_path or "").strip():
+            raise HTTPException(
+                status_code=400, detail="A key file path is required."
+            )
+        if existing["kind"] != "path":
+            # Clear stored secret / public material when leaving stored.
+            fields["encrypted_private_key"] = ""
+            fields["public_key"] = ""
+            fields["fingerprint"] = ""
+            secret_or_kind_changed = True
+    else:  # stored
+        fields["path"] = ""
+        if payload.private_key is not None and payload.private_key.strip():
+            try:
+                public_key = sshkeys.public_key_from_private(payload.private_key)
+            except sshkeys.SshKeyError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            fields["encrypted_private_key"] = keystore.encrypt(
+                payload.private_key.strip()
+            )
+            fields["public_key"] = public_key
+            fields["fingerprint"] = sshkeys.fingerprint(public_key)
+            secret_or_kind_changed = True
+        elif existing["kind"] != "stored" or not existing.get("has_private_key"):
+            # Switching to stored (or a stored key with no material) needs a key.
+            raise HTTPException(
+                status_code=400, detail="A private key value is required."
+            )
+
+    try:
+        key = repository.update_ssh_key(conn, key_id, **fields)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if key is None:
+        raise HTTPException(status_code=404, detail="SSH key not found")
+    if secret_or_kind_changed:
+        # Drop any stale decrypted copy so the next resolve re-materializes.
+        servers.remove_materialized_key(key_id)
+    audit.record(
+        conn,
+        category=audit.CATEGORY_SYSTEM,
+        action="ssh_key_update",
         actor=admin,
         target_type="ssh_key",
         target_id=key["id"],

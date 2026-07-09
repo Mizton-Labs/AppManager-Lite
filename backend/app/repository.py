@@ -1559,6 +1559,53 @@ def create_ssh_key(
     return key
 
 
+def update_ssh_key(
+    conn: sqlite3.Connection,
+    key_id: int,
+    *,
+    name: str | None = None,
+    kind: str | None = None,
+    path: str | None = None,
+    encrypted_private_key: str | None = None,
+    public_key: str | None = None,
+    fingerprint: str | None = None,
+) -> dict[str, Any] | None:
+    """Update selected columns of a registry key. Only provided fields change.
+
+    The router (re)computes ``encrypted_private_key`` / ``public_key`` /
+    ``fingerprint`` from a newly pasted key and clears the stored secret when
+    switching to a path key, then passes the results here.
+    """
+    if get_ssh_key(conn, key_id) is None:
+        return None
+    columns: dict[str, Any] = {}
+    if name is not None:
+        columns["name"] = name.strip()
+    if kind is not None:
+        columns["kind"] = kind
+    if path is not None:
+        columns["path"] = path.strip()
+    if encrypted_private_key is not None:
+        columns["encrypted_private_key"] = encrypted_private_key
+    if public_key is not None:
+        columns["public_key"] = public_key
+    if fingerprint is not None:
+        columns["fingerprint"] = fingerprint
+    if columns:
+        assignments = ", ".join(f"{col} = ?" for col in columns)
+        try:
+            conn.execute(
+                f"UPDATE ssh_keys SET {assignments}, "
+                "updated_at = datetime('now') WHERE id = ?",
+                [*columns.values(), key_id],
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(
+                f"An SSH key named '{columns.get('name')}' already exists."
+            ) from exc
+    return get_ssh_key(conn, key_id)
+
+
 def get_ssh_key_secret(conn: sqlite3.Connection, key_id: int) -> str:
     """Return the stored encrypted private key token (or '') for a key."""
     row = conn.execute(

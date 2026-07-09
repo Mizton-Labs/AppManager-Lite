@@ -15,6 +15,7 @@ import type {
   ReverseProxySettings,
   CreateServerTemplateInput,
   CreateSshKeyInput,
+  UpdateSshKeyInput,
   CreateUserServerInput,
   JumpAccountModeInput,
   JumpAccountModeResult,
@@ -312,6 +313,12 @@ export const api = {
 
   createSshKey: (input: CreateSshKeyInput) =>
     request<SshKey>("settings/ssh-keys", { method: "POST", body: input }),
+
+  updateSshKey: (id: number, input: UpdateSshKeyInput) =>
+    request<SshKey>(`settings/ssh-keys/${id}`, {
+      method: "PATCH",
+      body: input,
+    }),
 
   deleteSshKey: (id: number) =>
     request<{ detail: string }>(`settings/ssh-keys/${id}`, {

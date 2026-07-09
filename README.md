@@ -621,7 +621,11 @@ auto-generated `data/master.key`). Pasted keys are write-only — never returned
 logged, or echoed in errors; the registry shows only the name, kind, and (for
 stored keys) the public key and fingerprint. Every place that needs an SSH key
 (reverse proxy, server templates, jump server) selects a registered key by name
-from a dropdown. A key that is still in use cannot be deleted. Per-user SSH
+from a dropdown. A key that is still in use cannot be deleted, but it can be
+**edited** in place — rename it, change the file path, switch between path and
+stored kinds, or paste a replacement private key (leaving the key blank keeps
+the current one). Replacing a stored key re-encrypts it, recomputes its public
+key and fingerprint, and refreshes any materialized copy. Per-user SSH
 keypairs are also stored encrypted at rest with the same master key.
 
 ### User servers
