@@ -412,6 +412,45 @@ def get_lxc_ip(
         waited += _POLL_SECONDS
 
 
+def list_lxc_ips(
+    config: dict[str, Any],
+    node: str,
+    vmid: int,
+    *,
+    result: ProxmoxResult,
+) -> set[str]:
+    """Return all non-loopback IPv4 addresses the hypervisor sees for a guest.
+
+    A single, non-polling read of the interfaces endpoint (the caller has
+    already confirmed the guest is up). Used to corroborate an in-guest IP
+    report: only an address the hypervisor also attributes to this guest may
+    be trusted, so a compromised guest cannot make AppManager adopt an
+    arbitrary address. Returns an empty set on any read failure.
+    """
+    addrs: set[str] = set()
+    probe = ProxmoxResult()
+    data = _call(config, "GET", f"/nodes/{node}/lxc/{vmid}/interfaces",
+                 result=probe)
+    if probe.status != "ok":
+        result.log("could not read hypervisor interface list for corroboration")
+        return addrs
+    for iface in data or []:
+        if not isinstance(iface, dict):
+            continue
+        if iface.get("name") in ("lo", "lo0"):
+            continue
+        inet = str(iface.get("inet", "") or "")
+        ip = inet.split("/", 1)[0]
+        if (
+            ip
+            and not ip.startswith("127.")
+            and _IPV4_RE.match(ip)
+            and all(int(part) <= 255 for part in ip.split("."))
+        ):
+            addrs.add(ip)
+    return addrs
+
+
 _DISK_SIZE_RE = re.compile(r"size=(\d+)([MGT])")
 
 
