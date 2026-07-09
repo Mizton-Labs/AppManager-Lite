@@ -648,7 +648,14 @@ Administrators can add a server to any user; self-service users can create
 their own (when self-service provisioning is enabled); normal users cannot
 request servers.
 
-Creating a server picks a registered template and a name, then AppManager
+Creating a server picks a registered template and a **name suffix**: the full
+server name always carries a static prefix, so it is composed as
+`<template-slug>-<owner-id>-<suffix>` (the same convention as auto-provisioned
+servers). Server names are **globally unique** (case-insensitive) — if the
+composed name is already taken the create is rejected and you are asked to
+choose a different suffix. The create form shows the fixed prefix, a live
+preview of the full name, and how many suffix characters remain (names are
+capped at 63). AppManager then
 clones it in Proxmox (full clone, next free VMID) and — for **LXC** — starts
 the container and records its IP address. The address is read from **inside the
 container** over SSH (the DHCP/network address the guest actually holds), and
@@ -694,6 +701,18 @@ holds up a request. If the automatic destroy fails, the server is removed from
 the owner's list but kept in the **administrator's** list with a red error
 notice and the full log; the administrator (who can check Proxmox directly) can
 then **force-remove** the record even when the destroy could not be confirmed.
+
+### Servers section
+
+The **Servers** entry in the sidebar (below Account) opens an overview of
+servers grouped by owner. Administrators see every user's servers; a regular
+user sees only their own. Each server card shows its assigned resources next to
+four compact usage charts — **CPU, memory, disk, and network** — drawn as small
+sparklines from Proxmox's historical `rrddata`, with a **timeframe** selector
+(last hour, day, or week). Charts are loaded per server as the list renders, so
+a long list stays responsive and one unreachable server never blocks the rest;
+a server with no running guest (or when the provider is unconfigured) simply
+shows a short "no stats" note.
 
 ## Home
 
