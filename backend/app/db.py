@@ -613,6 +613,33 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         conn, "settings", "jump_bundle_port", "INTEGER NOT NULL DEFAULT 22"
     )
 
+    # Jump server management/jump-user split + account model (issue_015-r3).
+    #  - jump_management_user: the SSH login AppManager connects AS to manage the
+    #    bastion (create accounts, install keys). Must be privileged; default
+    #    root.
+    #  - jump_account_mode: 'per_user' (each user gets their own hardened
+    #    account, named by their derived user_id) or 'shared' (all users' keys
+    #    installed into one shared hardened account). Default per_user.
+    #  - jump_jumper_user: the shared account name, used only in 'shared' mode.
+    _add_column(
+        conn, "settings", "jump_management_user",
+        "TEXT NOT NULL DEFAULT 'root'",
+    )
+    _add_column(
+        conn, "settings", "jump_account_mode",
+        "TEXT NOT NULL DEFAULT 'per_user'",
+    )
+    _add_column(
+        conn, "settings", "jump_jumper_user", "TEXT NOT NULL DEFAULT ''"
+    )
+    # Preserve any pre-split configured jump user as the shared jumper account
+    # so an existing 'shared'-style setup keeps working after upgrade.
+    conn.execute(
+        "UPDATE settings SET jump_jumper_user = jump_user "
+        "WHERE id = 1 AND jump_jumper_user = '' "
+        "AND jump_user IS NOT NULL AND jump_user <> ''"
+    )
+
     # Encrypt any per-user private keys still stored in plaintext, and import
     # already-configured key file paths into the registry (idempotent).
     _encrypt_existing_user_keys(conn)

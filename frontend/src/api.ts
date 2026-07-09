@@ -16,6 +16,8 @@ import type {
   CreateServerTemplateInput,
   CreateSshKeyInput,
   CreateUserServerInput,
+  JumpAccountModeInput,
+  JumpAccountModeResult,
   JumpSyncEntry,
   ProviderTemplates,
   ProvisioningSettings,
@@ -246,6 +248,12 @@ export const api = {
   syncJumpServerUsers: () =>
     request<{ results: JumpSyncEntry[] }>("settings/jump-server/sync", {
       method: "POST",
+    }),
+
+  changeJumpAccountMode: (input: JumpAccountModeInput) =>
+    request<JumpAccountModeResult>("settings/jump-server/account-mode", {
+      method: "POST",
+      body: input,
     }),
 
   listServerTemplates: () =>

@@ -91,11 +91,17 @@ function JumpServerCard(props: {
   const { settings } = props;
   const [enabled, setEnabled] = useState(settings.jump_enabled);
   const [host, setHost] = useState(settings.jump_host);
-  const [user, setUser] = useState(settings.jump_user);
+  const [managementUser, setManagementUser] = useState(
+    settings.jump_management_user || "root",
+  );
   const [port, setPort] = useState(String(settings.jump_port ?? 22));
   const [keyId, setKeyId] = useState(
     settings.jump_ssh_key_id !== null ? String(settings.jump_ssh_key_id) : "",
   );
+  // Account model is changed through a guarded endpoint (it re-syncs every
+  // user), so it lives outside the normal save form.
+  const accountMode = settings.jump_account_mode || "per_user";
+  const [jumperUser, setJumperUser] = useState(settings.jump_jumper_user);
   // Bundle-address override: when OFF (the default), the generated SSH config
   // bundle uses the management host/port; when ON, it uses a separate address.
   const [useAdminConfig, setUseAdminConfig] = useState(
@@ -115,6 +121,11 @@ function JumpServerCard(props: {
   const [syncReminder, setSyncReminder] = useState(false);
   const [bundleNotice, setBundleNotice] = useState(false);
   const [syncResults, setSyncResults] = useState<JumpSyncEntry[] | null>(null);
+  // A pending account-model switch awaiting the admin's acknowledgment.
+  const [pendingMode, setPendingMode] = useState<
+    "per_user" | "shared" | null
+  >(null);
+  const [modeBusy, setModeBusy] = useState(false);
 
   useEffect(() => {
     api
@@ -133,7 +144,8 @@ function JumpServerCard(props: {
     const connectionChanged =
       enabled !== settings.jump_enabled ||
       host.trim() !== settings.jump_host ||
-      user.trim() !== settings.jump_user ||
+      managementUser.trim() !== settings.jump_management_user ||
+      jumperUser.trim() !== settings.jump_jumper_user ||
       (Number(port) || 22) !== settings.jump_port ||
       (keyId ? Number(keyId) : null) !== settings.jump_ssh_key_id;
     const bundleOverride = !useAdminConfig;
@@ -145,7 +157,8 @@ function JumpServerCard(props: {
       const next = await api.updateProvisioningSettings({
         jump_enabled: enabled,
         jump_host: host.trim(),
-        jump_user: user.trim(),
+        jump_management_user: managementUser.trim() || "root",
+        jump_jumper_user: jumperUser.trim(),
         jump_port: Number(port) || 22,
         jump_ssh_key_id: keyId ? Number(keyId) : null,
         jump_bundle_override: bundleOverride,
@@ -168,6 +181,36 @@ function JumpServerCard(props: {
       );
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function confirmModeChange() {
+    if (pendingMode === null) return;
+    setModeBusy(true);
+    setError(null);
+    try {
+      const result = await api.changeJumpAccountMode({
+        account_mode: pendingMode,
+        jumper_user: jumperUser.trim(),
+        acknowledge_sync: true,
+      });
+      setSyncResults(result.results);
+      if (result.reverted) {
+        // The switch failed and was rolled back server-side; surface why and
+        // reload so the UI reflects the still-effective previous mode.
+        setError(result.detail || "The account model change was reverted.");
+      }
+      // Reload settings so account_mode reflects the server's final state.
+      props.onSaved(await api.getProvisioningSettings());
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : "Unable to change the account model.",
+      );
+    } finally {
+      setModeBusy(false);
+      setPendingMode(null);
     }
   }
 
@@ -243,8 +286,16 @@ function JumpServerCard(props: {
           />
         </label>
         <label className="field">
-          <span>Jump user (account used to manage the bastion)</span>
-          <input value={user} onChange={(e) => setUser(e.target.value)} />
+          <span>Management user (SSH login used to manage the bastion)</span>
+          <input
+            value={managementUser}
+            onChange={(e) => setManagementUser(e.target.value)}
+            placeholder="root"
+          />
+          <span className="hint">
+            The account AppManager logs in as to create accounts and install
+            keys on the bastion (must be privileged; usually root).
+          </span>
         </label>
         <label className="field">
           <span>SSH key</span>
@@ -257,6 +308,45 @@ function JumpServerCard(props: {
             ))}
           </select>
         </label>
+        <fieldset className="field">
+          <legend>Jump account model</legend>
+          <p className="hint">
+            Jump accounts are hardened (no shell/TTY; usable only to jump
+            onward). Changing the model re-syncs every user.
+          </p>
+          <label className="checkbox-field">
+            <input
+              type="radio"
+              name="jump-account-mode"
+              checked={accountMode === "per_user"}
+              onChange={() =>
+                accountMode !== "per_user" && setPendingMode("per_user")
+              }
+            />
+            <span>Each user has their own hardened account (default)</span>
+          </label>
+          <label className="checkbox-field">
+            <input
+              type="radio"
+              name="jump-account-mode"
+              checked={accountMode === "shared"}
+              onChange={() =>
+                accountMode !== "shared" && setPendingMode("shared")
+              }
+            />
+            <span>All users share one hardened account</span>
+          </label>
+          {accountMode === "shared" && (
+            <label className="field">
+              <span>Shared jump account name</span>
+              <input
+                value={jumperUser}
+                onChange={(e) => setJumperUser(e.target.value)}
+                placeholder="e.g. cdt-jumper"
+              />
+            </label>
+          )}
+        </fieldset>
         <label className="checkbox-field">
           <input
             type="checkbox"
@@ -333,6 +423,67 @@ function JumpServerCard(props: {
               </li>
             ))}
           </ul>
+        </div>
+      )}
+      {pendingMode !== null && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal-card">
+            <h3>Change jump account model?</h3>
+            <p>
+              Switching to{" "}
+              <strong>
+                {pendingMode === "shared"
+                  ? "a shared hardened account"
+                  : "per-user hardened accounts"}
+              </strong>{" "}
+              re-syncs every user's key to the bastion under the new model. If
+              any user fails to sync, the change is reverted automatically.
+            </p>
+            {pendingMode === "shared" && (
+              <p className="alert warn" role="alert">
+                In shared mode every user's key lives in one account. Hardening
+                blocks shell/TTY access, but any user in the shared account can
+                TCP-forward to hosts the bastion can reach — use shared mode only
+                for a single tenant or a trusted cohort.
+              </p>
+            )}
+            {pendingMode === "shared" && !jumperUser.trim() && (
+              <p className="alert warn" role="alert">
+                Enter a shared jump account name below before confirming.
+              </p>
+            )}
+            {pendingMode === "shared" && (
+              <label className="field">
+                <span>Shared jump account name</span>
+                <input
+                  value={jumperUser}
+                  onChange={(e) => setJumperUser(e.target.value)}
+                  placeholder="e.g. cdt-jumper"
+                />
+              </label>
+            )}
+            <div className="row-actions">
+              <button
+                type="button"
+                className="btn primary"
+                onClick={confirmModeChange}
+                disabled={
+                  modeBusy ||
+                  (pendingMode === "shared" && !jumperUser.trim())
+                }
+              >
+                {modeBusy ? "Applying…" : "Acknowledge & re-sync"}
+              </button>
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => setPendingMode(null)}
+                disabled={modeBusy}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </section>

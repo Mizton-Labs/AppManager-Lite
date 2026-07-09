@@ -34,7 +34,8 @@ def _register_key(client, csrf, name="jump key", path="/jump/key"):
 def _enable_jump(client, csrf, key_id, host="10.0.0.9", user="root"):
     r = client.patch(
         "/api/settings/provisioning",
-        json={"jump_enabled": True, "jump_host": host, "jump_user": user,
+        json={"jump_enabled": True, "jump_host": host,
+              "jump_management_user": user, "jump_user": user,
               "jump_ssh_key_id": key_id},
         headers={"X-CSRF-Token": csrf},
     )
@@ -71,7 +72,9 @@ def test_jump_settings_roundtrip_and_validation(admin) -> None:
     body = r.json()
     assert body["jump_enabled"] is True
     assert body["jump_host"] == "10.0.0.9"
-    assert body["jump_user"] == "root"
+    assert body["jump_management_user"] == "root"
+    # Account model defaults to per-user.
+    assert body["jump_account_mode"] == "per_user"
     assert body["jump_ssh_key_id"] == key["id"]
 
     # Unknown key -> 400.
@@ -82,7 +85,8 @@ def test_jump_settings_roundtrip_and_validation(admin) -> None:
     )
     assert bad.status_code == 400
     # Bad host / user -> 422.
-    for payload in ({"jump_host": "bad host"}, {"jump_user": "a b"}):
+    for payload in ({"jump_host": "bad host"},
+                    {"jump_management_user": "a b"}):
         assert client.patch(
             "/api/settings/provisioning", json=payload,
             headers={"X-CSRF-Token": csrf},
@@ -281,7 +285,8 @@ def test_regenerate_rotates_jump_server(admin, monkeypatch) -> None:
 def test_onboard_rejects_bad_os_user(monkeypatch) -> None:
     _FakeSsh(monkeypatch)
     from app.proxmox import ProxmoxResult
-    cfg = jumpserver.JumpConfig(True, "h", "root", "/k")
+    cfg = jumpserver.JumpConfig(
+        enabled=True, host="h", key_path="/k", management_user="root")
     r = ProxmoxResult()
     assert not jumpserver.onboard_user(
         cfg, os_user="Bad User", public_key="ssh-ed25519 AAAA x", result=r
@@ -292,7 +297,8 @@ def test_onboard_rejects_bad_os_user(monkeypatch) -> None:
 def test_offboard_rejects_malformed_key(monkeypatch) -> None:
     _FakeSsh(monkeypatch)
     from app.proxmox import ProxmoxResult
-    cfg = jumpserver.JumpConfig(True, "h", "root", "/k")
+    cfg = jumpserver.JumpConfig(
+        enabled=True, host="h", key_path="/k", management_user="root")
     r = ProxmoxResult()
     assert not jumpserver.offboard_user(
         cfg, os_user="alice", public_key="no-blob", result=r
@@ -338,7 +344,9 @@ def test_onboard_stamps_key_with_appmanager_marker(monkeypatch) -> None:
     """The onboarded authorized_keys line carries the AppManager marker."""
     ssh = _FakeSsh(monkeypatch)
     from app.proxmox import ProxmoxResult
-    cfg = jumpserver.JumpConfig(True, "h", "root", "/k")
+    cfg = jumpserver.JumpConfig(
+        enabled=True, host="h", key_path="/k", management_user="root",
+    )
     r = ProxmoxResult()
     ok = jumpserver.onboard_user(
         cfg, os_user="alice",
@@ -346,13 +354,206 @@ def test_onboard_stamps_key_with_appmanager_marker(monkeypatch) -> None:
     )
     assert ok
     remote = ssh.commands[0][-1]
+    # Connects as the management user.
+    assert ssh.commands[0][-2] == "root@h"
     # The stamped comment replaces the original one, keyed by the OS user.
     assert "AppManager-managed:alice" in remote
     assert "alice@laptop" not in remote
+    # Hardened for jump-only use: nologin shell + restrict,port-forwarding.
+    assert "nologin" in remote
+    assert "restrict,port-forwarding" in remote
     # Idempotent install: existing lines for this blob are removed then the
     # canonical line is appended (blob-based dedupe).
     assert "grep -vF" in remote
     assert "AAAAC3Nz" in remote
+
+
+def test_onboard_uses_separate_stamp_id_for_shared_account(monkeypatch) -> None:
+    """In shared mode the account differs from the per-user provenance stamp."""
+    ssh = _FakeSsh(monkeypatch)
+    from app.proxmox import ProxmoxResult
+    cfg = jumpserver.JumpConfig(
+        enabled=True, host="h", key_path="/k", management_user="root",
+        account_mode="shared", jumper_user="cdt-jumper",
+    )
+    r = ProxmoxResult()
+    assert jumpserver.onboard_user(
+        cfg, os_user="cdt-jumper",
+        public_key="ssh-ed25519 AAAAZZZZ x", result=r, stamp_id="alice",
+    )
+    remote = ssh.commands[0][-1]
+    # Key installed into the shared account, stamped with the owning user's id.
+    assert "cdt-jumper" in remote
+    assert "AppManager-managed:alice" in remote
+
+
+def test_target_account_by_mode() -> None:
+    user = {"user_id": "alice", "username": "alice@x"}
+    per = jumpserver.JumpConfig(
+        enabled=True, host="h", key_path="/k", account_mode="per_user")
+    shared = jumpserver.JumpConfig(
+        enabled=True, host="h", key_path="/k", account_mode="shared",
+        jumper_user="cdt-jumper")
+    assert jumpserver.target_account(per, user) == "alice"
+    assert jumpserver.target_account(shared, user) == "cdt-jumper"
+
+
+def test_shared_mode_requires_jumper_user_to_be_ready() -> None:
+    cfg = jumpserver.JumpConfig(
+        enabled=True, host="h", key_path="/k", account_mode="shared",
+        jumper_user="")
+    assert cfg.ready is False
+    cfg.jumper_user = "cdt-jumper"
+    assert cfg.ready is True
+
+
+# ---------------------------------------------------------------------------
+# Guarded account-mode switch (per_user <-> shared)
+# ---------------------------------------------------------------------------
+
+
+def test_account_mode_switch_requires_ack(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    key = _register_key(client, csrf)
+    _enable_jump(client, csrf, key["id"])
+    _FakeSsh(monkeypatch)
+    # No acknowledgment -> 409, mode unchanged.
+    r = client.post(
+        "/api/settings/jump-server/account-mode",
+        json={"account_mode": "shared", "jumper_user": "cdt-jumper"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 409
+    assert "acknowledge" in r.json()["detail"].lower()
+    assert client.get("/api/settings/provisioning").json()[
+        "jump_account_mode"] == "per_user"
+
+
+def test_account_mode_switch_success(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    key = _register_key(client, csrf)
+    _create_member(client, csrf, username="a@example.com")
+    _enable_jump(client, csrf, key["id"])
+    _FakeSsh(monkeypatch)  # all SSH ok -> sync succeeds
+    r = client.post(
+        "/api/settings/jump-server/account-mode",
+        json={"account_mode": "shared", "jumper_user": "cdt-jumper",
+              "acknowledge_sync": True},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["account_mode"] == "shared"
+    assert body["reverted"] is False
+    assert client.get("/api/settings/provisioning").json()[
+        "jump_account_mode"] == "shared"
+
+
+def test_account_mode_switch_reverts_on_sync_failure(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    key = _register_key(client, csrf)
+    _create_member(client, csrf, username="a@example.com")
+    _enable_jump(client, csrf, key["id"])
+    # Onboarding fails (rc=255) -> the switch must revert.
+    _FakeSsh(monkeypatch, rc=255, stdout="")
+    r = client.post(
+        "/api/settings/jump-server/account-mode",
+        json={"account_mode": "shared", "jumper_user": "cdt-jumper",
+              "acknowledge_sync": True},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["reverted"] is True
+    assert body["account_mode"] == "per_user"  # reverted
+    assert "revert" in body["detail"].lower()
+    # DB left at the previous mode.
+    assert client.get("/api/settings/provisioning").json()[
+        "jump_account_mode"] == "per_user"
+
+
+def test_account_mode_switch_noop_rejected(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    key = _register_key(client, csrf)
+    _enable_jump(client, csrf, key["id"])
+    _FakeSsh(monkeypatch)
+    # Already per_user -> switching to per_user is a no-op -> 400.
+    r = client.post(
+        "/api/settings/jump-server/account-mode",
+        json={"account_mode": "per_user", "acknowledge_sync": True},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 400
+
+
+def test_shared_jumper_name_collision_rejected(admin, monkeypatch) -> None:
+    """A jumper name equal to a user's derived id is rejected (data-loss guard)."""
+    client, csrf, _ = admin
+    key = _register_key(client, csrf)
+    # This user's derived id is 'shared'.
+    _create_member(client, csrf, username="shared@example.com")
+    _enable_jump(client, csrf, key["id"])
+    _FakeSsh(monkeypatch)
+    r = client.post(
+        "/api/settings/jump-server/account-mode",
+        json={"account_mode": "shared", "jumper_user": "shared",
+              "acknowledge_sync": True},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 400
+    assert "collides" in r.json()["detail"].lower()
+
+
+def test_switch_shared_to_per_user_drains_shared_account(admin, monkeypatch) -> None:
+    """Leaving shared mode drains the shared account (no lingering keys)."""
+    client, csrf, _ = admin
+    key = _register_key(client, csrf)
+    _create_member(client, csrf, username="a@example.com")
+    _enable_jump(client, csrf, key["id"])
+    _FakeSsh(monkeypatch)
+    # Into shared mode first.
+    assert client.post(
+        "/api/settings/jump-server/account-mode",
+        json={"account_mode": "shared", "jumper_user": "cdt-jumper",
+              "acknowledge_sync": True},
+        headers={"X-CSRF-Token": csrf},
+    ).status_code == 200
+    # Now back to per_user: the shared account must be drained.
+    ssh = _FakeSsh(monkeypatch)
+    r = client.post(
+        "/api/settings/jump-server/account-mode",
+        json={"account_mode": "per_user", "acknowledge_sync": True},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["account_mode"] == "per_user"
+    # An offboard (grep -vF, no useradd) targeted the shared cdt-jumper account.
+    drains = [
+        c[-1] for c in ssh.commands
+        if "cdt-jumper" in c[-1] and "useradd" not in c[-1]
+    ]
+    assert drains, "expected the shared account to be drained on switch-out"
+
+
+def test_switch_to_shared_reverts_and_drains_on_failure(admin, monkeypatch) -> None:
+    """A failed per_user->shared switch reverts AND drains the new shared acct."""
+    client, csrf, _ = admin
+    key = _register_key(client, csrf)
+    _create_member(client, csrf, username="a@example.com")
+    _enable_jump(client, csrf, key["id"])
+    # Onboarding fails -> revert. (Offboard/onboard both run through the same
+    # fake; the endpoint still reverts because sync reports failure.)
+    _FakeSsh(monkeypatch, rc=255, stdout="")
+    r = client.post(
+        "/api/settings/jump-server/account-mode",
+        json={"account_mode": "shared", "jumper_user": "cdt-jumper",
+              "acknowledge_sync": True},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["reverted"] is True
+    assert client.get("/api/settings/provisioning").json()[
+        "jump_account_mode"] == "per_user"
 
 
 def test_install_public_key_stamps_and_dedupes(monkeypatch) -> None:

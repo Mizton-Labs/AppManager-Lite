@@ -264,7 +264,7 @@ def test_builtin_render_with_jump_server(admin, monkeypatch) -> None:
     client.patch(
         "/api/settings/provisioning",
         json={"jump_enabled": True, "jump_host": "10.9.9.9",
-              "jump_user": "bastion", "jump_port": 2222,
+              "jump_management_user": "root", "jump_port": 2222,
               "jump_ssh_key_id": key["id"]},
         headers={"X-CSRF-Token": csrf},
     )
@@ -283,10 +283,11 @@ def test_builtin_render_with_jump_server(admin, monkeypatch) -> None:
     assert "ServerAliveInterval 60" in text
     assert "ServerAliveCountMax 3" in text
     assert "TCPKeepAlive yes" in text
-    # Jump block with the configured port + identity file.
+    # Jump block with the configured port + identity file. In per-user mode
+    # (default) the jump login is the user's own derived id.
     assert "Host jumpserver" in text
     assert "Hostname 10.9.9.9" in text
-    assert "User bastion" in text
+    assert "User bt" in text
     assert "Port 2222" in text
     assert "IdentityFile ~/.ssh/id_ed25519" in text
     # Per-server block references the jump via ProxyJump.
@@ -301,7 +302,7 @@ def _enable_jump(client, csrf, **over):
         headers={"X-CSRF-Token": csrf},
     ).json()
     body = {"jump_enabled": True, "jump_host": "10.9.9.9",
-            "jump_user": "bastion", "jump_port": 2222,
+            "jump_management_user": "root", "jump_port": 2222,
             "jump_ssh_key_id": key["id"]}
     body.update(over)
     r = client.patch(
@@ -335,8 +336,9 @@ def test_builtin_bundle_uses_override_address(admin) -> None:
     assert "Port 443" in text
     assert "10.9.9.9" not in text
     assert "Port 2222" not in text
-    # Onboarding user + ProxyJump alias are unchanged.
-    assert "User bastion" in text
+    # Onboarding user + ProxyJump alias are unchanged (per-user mode -> the
+    # user's own derived id is the jump login).
+    assert "User bt" in text
     assert "ProxyJump jumpserver" in text
 
 

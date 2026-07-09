@@ -860,6 +860,10 @@ class ProvisioningSettingsOut(BaseModel):
     jump_user: str = ""
     jump_port: int = 22
     jump_ssh_key_id: int | None = None
+    # Management/jump-user split + account model (see update request).
+    jump_management_user: str = "root"
+    jump_account_mode: str = "per_user"
+    jump_jumper_user: str = ""
     # SSH-config-bundle address override (see UpdateProvisioningSettingsRequest).
     jump_bundle_override: bool = False
     jump_bundle_host: str = ""
@@ -886,6 +890,13 @@ class UpdateProvisioningSettingsRequest(BaseModel):
     jump_user: str | None = Field(default=None, max_length=64)
     jump_port: int | None = Field(default=None, ge=1, le=65535)
     jump_ssh_key_id: int | None = Field(default=None, ge=1)
+    # Management/jump-user split. The management user is the SSH login AppManager
+    # connects AS to manage the bastion (default root). The jumper user is the
+    # shared account used only in 'shared' account mode. The account MODE itself
+    # is changed only through the dedicated jump-server/account-mode endpoint
+    # (which re-syncs and reverts on failure), so it is not accepted here.
+    jump_management_user: str | None = Field(default=None, max_length=64)
+    jump_jumper_user: str | None = Field(default=None, max_length=64)
     # SSH-config-bundle address override: when enabled, the built-in SSH config
     # bundle addresses the jump server at this host/port instead of the
     # management jump_host/jump_port (for bastions with separate public/private
@@ -908,7 +919,7 @@ class UpdateProvisioningSettingsRequest(BaseModel):
             )
         return value
 
-    @field_validator("jump_user")
+    @field_validator("jump_user", "jump_management_user")
     @classmethod
     def _check_jump_user(cls, value: str | None) -> str | None:
         if value is None:
@@ -919,6 +930,23 @@ class UpdateProvisioningSettingsRequest(BaseModel):
         if not _SSH_USER_RE.match(value):
             raise ValueError(
                 "Jump user must contain only letters, digits, '.', '_', and '-'."
+            )
+        return value
+
+    @field_validator("jump_jumper_user")
+    @classmethod
+    def _check_jump_jumper_user(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return ""
+        # Created as an OS account -> stricter Linux username rule.
+        if not _OS_USER_RE.match(value):
+            raise ValueError(
+                "Jumper user must be a valid Linux account name (lowercase "
+                "letter or underscore first, then lowercase letters, digits, "
+                "'-', '_'; max 32 chars)."
             )
         return value
 
@@ -970,6 +998,45 @@ class JumpSyncEntry(BaseModel):
 
 
 class JumpSyncOut(BaseModel):
+    results: list[JumpSyncEntry] = Field(default_factory=list)
+
+
+class JumpAccountModeRequest(BaseModel):
+    """Guarded switch of the jump-server account model (per_user <-> shared)."""
+
+    account_mode: str
+    # The shared account name; required when switching to 'shared'.
+    jumper_user: str = Field(default="", max_length=64)
+    # The admin must acknowledge that all users will be re-synced.
+    acknowledge_sync: bool = False
+
+    @field_validator("account_mode")
+    @classmethod
+    def _check_mode(cls, value: str) -> str:
+        value = (value or "").strip()
+        if value not in ("per_user", "shared"):
+            raise ValueError("account_mode must be 'per_user' or 'shared'.")
+        return value
+
+    @field_validator("jumper_user")
+    @classmethod
+    def _check_jumper(cls, value: str) -> str:
+        value = (value or "").strip()
+        # The jumper user is created as an OS account, so it must satisfy the
+        # stricter OS-username rule (not just the SSH-login charset).
+        if value and not _OS_USER_RE.match(value):
+            raise ValueError(
+                "Jumper user must be a valid Linux account name (lowercase "
+                "letter or underscore first, then lowercase letters, digits, "
+                "'-', '_'; max 32 chars)."
+            )
+        return value
+
+
+class JumpAccountModeOut(BaseModel):
+    account_mode: str
+    reverted: bool = False
+    detail: str = ""
     results: list[JumpSyncEntry] = Field(default_factory=list)
 
 

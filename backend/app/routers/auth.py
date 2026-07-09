@@ -520,13 +520,16 @@ def download_account_bundle(
         # and the jump server (with ProxyJump when the jump server is enabled).
         jump = jumpserver.load_config(conn)
         settings_row = repository.get_settings_row(conn)
+        # The account the user jumps THROUGH: the shared jumper account in
+        # shared mode, or their own per-user account otherwise.
+        jump_login = jumpserver.target_account(jump, user)
         content = repository.render_builtin_ssh_config(
             user,
             _user_servers_with_main_user(conn, user["id"]),
             jump={
                 "enabled": jump.enabled,
                 "host": jump.host,
-                "user": jump.user,
+                "jump_user": jump_login,
                 "port": jump.port,
                 "bundle_override": bool(
                     settings_row.get("jump_bundle_override", 0)

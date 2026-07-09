@@ -1,9 +1,28 @@
 """Jump-server user onboarding/offboarding (issue_015-r1 phase C).
 
-When a jump server is configured, each AppManager user gets an OS account on
-the bastion (named by their derived user_id) with their SSH public key
-installed. User deletion removes the key from that account. All operations
-connect as the configured jump user with a registry-selected SSH key.
+When a jump server is configured, AppManager installs each user's SSH public
+key on the bastion so they can jump onward to their servers. Two account models
+are supported:
+
+* ``per_user`` (default): each AppManager user gets their own hardened account
+  on the bastion (named by their derived user_id), holding only their key.
+* ``shared``: every user's key is installed into a single shared hardened
+  account (``jump_jumper_user``).
+
+In both models the accounts are hardened for jump-only use: the shell is
+``nologin`` and each installed key line is prefixed with
+``restrict,port-forwarding`` so it can be used only as a ``ProxyJump`` hop
+(no TTY, shell, agent, or X11), which is exactly what the generated SSH config
+needs.
+
+Note on ``shared`` mode: hardening prevents an interactive shell, but it does
+NOT scope *where* a key may TCP-forward. Because every user shares one account,
+any user with a key in the shared account can open a forward to any host the
+bastion can reach. Prefer ``per_user`` for multi-tenant deployments; use
+``shared`` only for a single tenant or a trusted cohort.
+
+AppManager connects to the bastion as ``jump_management_user`` (default root),
+which must be privileged enough to create accounts and write authorized_keys.
 
 ``_run`` is the subprocess seam (shared with ``servers``); tests patch it.
 """
@@ -20,30 +39,60 @@ from .proxmox import ProxmoxResult
 
 _SSH_TIMEOUT = 25
 
+# Per-key authorized_keys options: harden to a jump-only hop. ``restrict``
+# disables pty/X11/agent/port-forwarding, then ``port-forwarding`` re-enables
+# just forwarding so ProxyJump (-W) still works.
+_HARDENED_KEY_OPTIONS = "restrict,port-forwarding"
+
+ACCOUNT_MODES = ("per_user", "shared")
+
 
 @dataclass
 class JumpConfig:
     enabled: bool
     host: str
-    user: str
     key_path: str
+    management_user: str = "root"
+    account_mode: str = "per_user"
+    jumper_user: str = ""
     port: int = 22
+    # Legacy single "jump user" value, retained for reference/migration.
+    user: str = ""
 
     @property
     def ready(self) -> bool:
-        return bool(self.enabled and self.host and self.user and self.key_path)
+        base = bool(
+            self.enabled and self.host and self.management_user and self.key_path
+        )
+        if self.account_mode == "shared":
+            return base and bool(self.jumper_user)
+        return base
 
 
 def load_config(conn: sqlite3.Connection) -> JumpConfig:
     row = repository.get_settings_row(conn)
     key_path = servers.resolve_ssh_key(conn, row.get("jump_ssh_key_id"))
+    mode = (row.get("jump_account_mode") or "per_user").strip() or "per_user"
+    if mode not in ACCOUNT_MODES:
+        mode = "per_user"
     return JumpConfig(
         enabled=bool(row.get("jump_enabled", 0)),
         host=(row.get("jump_host") or "").strip(),
-        user=(row.get("jump_user") or "").strip(),
         key_path=key_path,
+        management_user=(row.get("jump_management_user") or "root").strip()
+        or "root",
+        account_mode=mode,
+        jumper_user=(row.get("jump_jumper_user") or "").strip(),
         port=int(row.get("jump_port", 22) or 22),
+        user=(row.get("jump_user") or "").strip(),
     )
+
+
+def target_account(config: JumpConfig, user: dict[str, Any]) -> str:
+    """The bastion OS account a user's key is installed into for this mode."""
+    if config.account_mode == "shared":
+        return config.jumper_user
+    return os_user_for(user)
 
 
 def _ssh_argv(config: JumpConfig, remote_command: str) -> list[str]:
@@ -59,7 +108,7 @@ def _ssh_argv(config: JumpConfig, remote_command: str) -> list[str]:
         "StrictHostKeyChecking=accept-new",
         "-o",
         "ConnectTimeout=10",
-        f"{config.user}@{config.host}",
+        f"{config.management_user}@{config.host}",
         remote_command,
     ]
 
@@ -74,11 +123,17 @@ def onboard_user(
     os_user: str,
     public_key: str,
     result: ProxmoxResult,
+    stamp_id: str = "",
 ) -> bool:
-    """Create the OS account (if missing) and install the public key.
+    """Create the hardened jump account (if missing) and install the key.
 
-    Idempotent. The remote runs under the jump user, which must be able to
-    create accounts (root or sudo). Only the public key travels.
+    Idempotent. Connects as the management user (must be able to create
+    accounts). The account is created with a ``nologin`` shell and the key line
+    is prefixed with hardened options so it is usable only as a ``ProxyJump``
+    hop. Only the public key travels. ``os_user`` is the bastion account the key
+    is installed into; ``stamp_id`` (defaulting to ``os_user``) identifies the
+    owning AppManager user in the key comment, so a shared account still records
+    per-user provenance.
     """
     if not servers._OS_USER_RE.match(os_user):
         result.fail(f"invalid OS username {os_user!r}")
@@ -86,11 +141,12 @@ def onboard_user(
     if not public_key.strip():
         result.fail("user has no SSH public key")
         return False
-    # Stamp the installed line so it is clearly attributable to AppManager on
-    # the bastion (offboarding still matches by the key blob, so the comment is
-    # irrelevant to removal).
+    # Stamp the installed line so it is clearly attributable to the owning user
+    # on the bastion (offboarding still matches by the key blob, so the comment
+    # is irrelevant to removal), and prefix hardened options to make the key
+    # jump-only.
     stamped = sshkeys.stamp_public_key(
-        public_key, f"AppManager-managed:{os_user}"
+        public_key, f"AppManager-managed:{stamp_id or os_user}"
     )
     try:
         blob = stamped.split()[1]
@@ -100,17 +156,21 @@ def onboard_user(
     if not servers._KEY_BLOB_RE.match(blob):
         result.fail("user public key blob has an unexpected format")
         return False
+    hardened_line = f"{_HARDENED_KEY_OPTIONS} {stamped}"
     qu = shlex.quote(os_user)
-    qk = shlex.quote(stamped)
+    qk = shlex.quote(hardened_line)
     qb = shlex.quote(blob)
-    # Create the account if missing, then rewrite authorized_keys atomically:
-    # build the deduped content (minus any existing line for this blob) plus the
-    # canonical stamped line in a temp file and rename it over the original, so
-    # a mid-script death can never leave the file truncated (locking the user
-    # out). ``grep -vF`` exits 1 when it selects nothing - tolerated.
+    # Create the account (hardened, nologin shell) if missing, then rewrite
+    # authorized_keys atomically: build the deduped content (minus any existing
+    # line for this blob) plus the canonical hardened+stamped line in a temp
+    # file and rename it over the original, so a mid-script death can never
+    # leave the file truncated (locking the user out). ``grep -vF`` exits 1 when
+    # it selects nothing - tolerated.
     remote = "sh -c " + shlex.quote(
         "set -e; "
-        f"id -u {qu} >/dev/null 2>&1 || useradd -m -s /bin/bash {qu}; "
+        "nologin=$(command -v nologin || echo /usr/sbin/nologin); "
+        f"id -u {qu} >/dev/null 2>&1 || "
+        f'useradd -m -s "$nologin" {qu}; '
         f"h=$(getent passwd {qu} | cut -d: -f6); "
         '[ -n "$h" ] || { echo no-home; exit 1; }; '
         'mkdir -p "$h/.ssh"; chmod 700 "$h/.ssh"; '
@@ -205,14 +265,18 @@ def sync_user(
             return "disabled", "jump server not enabled"
         if not config.ready:
             return "failed", "jump server is enabled but not fully configured"
-        os_user = os_user_for(user)
-        if not servers._OS_USER_RE.match(os_user or ""):
-            return "skipped", f"derived OS username {os_user!r} is not valid"
+        owner_id = os_user_for(user)
+        account = target_account(config, user)
+        if not servers._OS_USER_RE.match(account or ""):
+            return "skipped", f"jump account {account!r} is not a valid username"
+        if not servers._OS_USER_RE.match(owner_id or ""):
+            return "skipped", f"derived OS username {owner_id!r} is not valid"
         key = repository.get_user_ssh_key(conn, user["id"])
         public_key = (key or {}).get("public_key", "")
         result = ProxmoxResult()
         ok = onboard_user(
-            config, os_user=os_user, public_key=public_key, result=result
+            config, os_user=account, public_key=public_key, result=result,
+            stamp_id=owner_id,
         )
         last = result.steps[-1] if result.steps else ""
         return ("onboarded" if ok else "failed"), last

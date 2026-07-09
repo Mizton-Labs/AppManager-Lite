@@ -30,6 +30,8 @@ from ..schemas import (
     CreateUserServerRequest,
     JumpSyncEntry,
     JumpSyncOut,
+    JumpAccountModeRequest,
+    JumpAccountModeOut,
     MessageOut,
     ProviderTemplatesOut,
     ProvisioningSettingsOut,
@@ -91,6 +93,10 @@ def _provisioning_out(row: dict[str, Any]) -> ProvisioningSettingsOut:
         jump_user=row.get("jump_user", "") or "",
         jump_port=int(row.get("jump_port", 22) or 22),
         jump_ssh_key_id=row.get("jump_ssh_key_id"),
+        jump_management_user=row.get("jump_management_user", "root") or "root",
+        jump_account_mode=row.get("jump_account_mode", "per_user")
+        or "per_user",
+        jump_jumper_user=row.get("jump_jumper_user", "") or "",
         jump_bundle_override=bool(row.get("jump_bundle_override", 0)),
         jump_bundle_host=row.get("jump_bundle_host", "") or "",
         jump_bundle_port=int(row.get("jump_bundle_port", 22) or 22),
@@ -145,19 +151,38 @@ def update_provisioning_settings(
     ):
         raise HTTPException(status_code=400, detail="Unknown SSH key")
 
-    # Enabling the jump server requires host, user, and key to be present in
-    # the resulting state (reject "enabled but not configured").
+    # Enabling the jump server requires host, management user, and key to be
+    # present in the resulting state (reject "enabled but not configured"). In
+    # shared account mode a jumper user is also required.
     current = repository.get_settings_row(conn)
     effective_enabled = changes.get("jump_enabled", bool(current.get("jump_enabled", 0)))
     if effective_enabled:
         eff_host = changes.get("jump_host", current.get("jump_host", ""))
-        eff_user = changes.get("jump_user", current.get("jump_user", ""))
+        eff_mgmt = changes.get(
+            "jump_management_user",
+            current.get("jump_management_user", "root"),
+        ) or "root"
         eff_key = changes.get("jump_ssh_key_id", current.get("jump_ssh_key_id"))
-        if not (eff_host and eff_user and eff_key):
+        if not (eff_host and eff_mgmt and eff_key):
             raise HTTPException(
                 status_code=400,
-                detail="Enabling the jump server requires a host, user, and SSH key.",
+                detail=(
+                    "Enabling the jump server requires a host, management user, "
+                    "and SSH key."
+                ),
             )
+        eff_mode = current.get("jump_account_mode", "per_user") or "per_user"
+        if eff_mode == "shared":
+            eff_jumper = changes.get(
+                "jump_jumper_user", current.get("jump_jumper_user", "")
+            )
+            if not eff_jumper:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Shared jump account mode requires a jumper user name."
+                    ),
+                )
 
     # The bundle-address override needs its own host once enabled (this address
     # is only written into user SSH configs; AppManager never dials it).
@@ -280,6 +305,197 @@ def sync_jump_server_users(
         detail=f"users={len(results)}",
     )
     return JumpSyncOut(results=results)
+
+
+def _sync_all_users(conn: sqlite3.Connection) -> tuple[bool, list[JumpSyncEntry]]:
+    """Onboard every active user under the current config. Returns (ok, rows)."""
+    results: list[JumpSyncEntry] = []
+    all_ok = True
+    for user in repository.list_users(conn):
+        if not user.get("is_active", True):
+            continue
+        status_str, detail = jumpserver.sync_user(conn, user)
+        if status_str not in ("onboarded", "disabled"):
+            all_ok = False
+        results.append(
+            JumpSyncEntry(
+                username=user["username"], status=status_str, detail=detail
+            )
+        )
+    return all_ok, results
+
+
+def _offboard_all_from(
+    conn: sqlite3.Connection, config: jumpserver.JumpConfig, account: str
+) -> None:
+    """Best-effort removal of every user's key from a single bastion account.
+
+    Used to clean up the previous model's location when switching account mode
+    (e.g. drain the shared account when moving to per-user, or drain each
+    per-user account when moving to shared).
+    """
+    if not account or not jumpserver.servers._OS_USER_RE.match(account):
+        return
+    for user in repository.list_users(conn):
+        key = repository.get_user_ssh_key(conn, user["id"]) or {}
+        pub = key.get("public_key", "")
+        if not pub:
+            continue
+        try:
+            jumpserver.offboard_user(
+                config, os_user=account, public_key=pub,
+                result=proxmox.ProxmoxResult(),
+            )
+        except Exception:  # noqa: BLE001 - best effort cleanup
+            pass
+
+
+@router.post(
+    "/settings/jump-server/account-mode", response_model=JumpAccountModeOut
+)
+def change_jump_account_mode(
+    payload: JumpAccountModeRequest,
+    admin: dict[str, Any] = Depends(require_admin),
+    __: None = Depends(verify_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> JumpAccountModeOut:
+    """Switch the jump account model, re-syncing all users transactionally.
+
+    Changing the model would leave the bastion inconsistent with the stored
+    config, so the admin must acknowledge a re-sync. The new mode is applied,
+    all users are re-synced, and the previous location is drained. If any user
+    fails to sync, the change is fully reverted and the error is reported.
+    """
+    row = repository.get_settings_row(conn)
+    prev_mode = row.get("jump_account_mode", "per_user") or "per_user"
+    prev_jumper = row.get("jump_jumper_user", "") or ""
+    new_mode = payload.account_mode
+    new_jumper = payload.jumper_user or prev_jumper
+
+    if not bool(row.get("jump_enabled", 0)):
+        raise HTTPException(
+            status_code=400, detail="The jump server is not enabled"
+        )
+    if new_mode == "shared" and not new_jumper:
+        raise HTTPException(
+            status_code=400,
+            detail="Switching to shared mode requires a jumper user name.",
+        )
+    # A shared account named the same as any user's derived id would make the
+    # per-user drain (and offboarding) ambiguous, risking data loss.
+    if new_mode == "shared":
+        collision = next(
+            (
+                u["username"]
+                for u in repository.list_users(conn)
+                if jumpserver.os_user_for(u) == new_jumper
+            ),
+            None,
+        )
+        if collision is not None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"The jumper user '{new_jumper}' collides with the account "
+                    f"of user {collision}. Choose a different shared account "
+                    "name."
+                ),
+            )
+    if new_mode == prev_mode and new_jumper == prev_jumper:
+        raise HTTPException(
+            status_code=400, detail="The jump account model is unchanged."
+        )
+    if not payload.acknowledge_sync:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Changing the jump account model re-syncs every user to the "
+                "bastion. Acknowledge the re-sync to proceed."
+            ),
+        )
+
+    # Apply the new model, then re-sync everyone under it.
+    repository.update_provisioning_settings(
+        conn, jump_account_mode=new_mode, jump_jumper_user=new_jumper
+    )
+    config = jumpserver.load_config(conn)
+    if not config.ready:
+        # Restore and bail before touching the bastion.
+        repository.update_provisioning_settings(
+            conn, jump_account_mode=prev_mode, jump_jumper_user=prev_jumper
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="The jump server is enabled but not fully configured.",
+        )
+
+    all_ok, results = _sync_all_users(conn)
+
+    if not all_ok:
+        # Revert the mode; report why. Before restoring the config, drain any
+        # keys already written under the NEW model so a failed switch cannot
+        # widen access (e.g. a partial per_user->shared must not leave users in
+        # the shared account after reverting to per-user).
+        if new_mode == "shared" and new_jumper:
+            _offboard_all_from(conn, config, new_jumper)
+        repository.update_provisioning_settings(
+            conn, jump_account_mode=prev_mode, jump_jumper_user=prev_jumper
+        )
+        failed = [r for r in results if r.status not in ("onboarded", "disabled")]
+        reason = "; ".join(
+            f"{r.username}: {r.detail or r.status}" for r in failed[:5]
+        )
+        audit.record(
+            conn,
+            category=audit.CATEGORY_SYSTEM,
+            action="jump_account_mode_revert",
+            actor=admin,
+            target_type="jump_server",
+            target_name=config.host,
+            detail=f"from={prev_mode} to={new_mode} failed; reverted. {reason}"[:400],
+        )
+        return JumpAccountModeOut(
+            account_mode=prev_mode,
+            reverted=True,
+            detail=(
+                "Re-sync failed; the account model change was reverted. "
+                f"{reason}"
+            ),
+            results=results,
+        )
+
+    # Success: drain the previous location so old key copies do not linger.
+    # Never drain the account that is the CURRENT target under the new config
+    # (guards against a jumper name that collides with a user's derived id,
+    # which would otherwise wipe the keys we just installed).
+    new_config = jumpserver.load_config(conn)
+    keep = {
+        jumpserver.target_account(new_config, u)
+        for u in repository.list_users(conn)
+    }
+    if prev_mode == "shared" and prev_jumper and prev_jumper not in keep:
+        # Left shared mode (or renamed the shared account): drain the old one.
+        _offboard_all_from(conn, new_config, prev_jumper)
+    elif prev_mode == "per_user" and new_mode == "shared":
+        # Moved into a shared account: drain each user's old per-user account
+        # (skipping any that is now the shared target via the ``keep`` guard).
+        for user in repository.list_users(conn):
+            account = jumpserver.os_user_for(user)
+            if account not in keep:
+                _offboard_all_from(conn, new_config, account)
+
+    audit.record(
+        conn,
+        category=audit.CATEGORY_SYSTEM,
+        action="jump_account_mode_change",
+        actor=admin,
+        target_type="jump_server",
+        target_name=config.host,
+        detail=f"from={prev_mode} to={new_mode} jumper={new_jumper} users={len(results)}",
+    )
+    return JumpAccountModeOut(
+        account_mode=new_mode, reverted=False, results=results
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -142,6 +142,9 @@ export interface ProvisioningSettings {
   jump_user: string;
   jump_port: number;
   jump_ssh_key_id: number | null;
+  jump_management_user: string;
+  jump_account_mode: "per_user" | "shared";
+  jump_jumper_user: string;
   jump_bundle_override: boolean;
   jump_bundle_host: string;
   jump_bundle_port: number;
@@ -173,9 +176,24 @@ export interface UpdateProvisioningSettingsInput {
   jump_user?: string;
   jump_port?: number;
   jump_ssh_key_id?: number | null;
+  jump_management_user?: string;
+  jump_jumper_user?: string;
   jump_bundle_override?: boolean;
   jump_bundle_host?: string;
   jump_bundle_port?: number;
+}
+
+export interface JumpAccountModeInput {
+  account_mode: "per_user" | "shared";
+  jumper_user?: string;
+  acknowledge_sync: boolean;
+}
+
+export interface JumpAccountModeResult {
+  account_mode: "per_user" | "shared";
+  reverted: boolean;
+  detail: string;
+  results: JumpSyncEntry[];
 }
 
 /** A VM/LXC entry read live from the provider. */
