@@ -201,6 +201,13 @@ def test_admin_creates_lxc_server_with_key_install(admin, monkeypatch) -> None:
         assert argv[argv.index("-i") + 1] == "/home/svc/.ssh/id_ed25519"
         assert argv[-2] == "root@10.0.7.42"
         assert "ssh-ed25519" in argv[-1]
+        # These OS users came from free-form pubkey_users text, not a
+        # template-configured main_os_user, so the bash-default/auto-create
+        # behavior must NOT apply (it would let a caller auto-create arbitrary
+        # accounts); the account must already exist.
+        assert "useradd -m -s /bin/bash" not in argv[-1]
+        assert "usermod -s /bin/bash" not in argv[-1]
+        assert '"no such user"; exit 1' in argv[-1]
 
     listed = client.get(f"/api/users/{user_id}/servers")
     assert [s["name"] for s in listed.json()] == ["coder box"]
