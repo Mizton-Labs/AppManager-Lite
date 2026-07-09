@@ -96,10 +96,24 @@ function JumpServerCard(props: {
   const [keyId, setKeyId] = useState(
     settings.jump_ssh_key_id !== null ? String(settings.jump_ssh_key_id) : "",
   );
+  // Bundle-address override: when OFF (the default), the generated SSH config
+  // bundle uses the management host/port; when ON, it uses a separate address.
+  const [useAdminConfig, setUseAdminConfig] = useState(
+    !settings.jump_bundle_override,
+  );
+  const [bundleHost, setBundleHost] = useState(settings.jump_bundle_host);
+  const [bundlePort, setBundlePort] = useState(
+    String(settings.jump_bundle_port ?? 22),
+  );
   const [sshKeys, setSshKeys] = useState<SshKey[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  // Persistent post-save advisories: a sync reminder when the connection
+  // settings changed, and an informational note when only the bundle address
+  // changed.
+  const [syncReminder, setSyncReminder] = useState(false);
+  const [bundleNotice, setBundleNotice] = useState(false);
   const [syncResults, setSyncResults] = useState<JumpSyncEntry[] | null>(null);
 
   useEffect(() => {
@@ -114,6 +128,19 @@ function JumpServerCard(props: {
     setBusy(true);
     setError(null);
     setSaved(false);
+    // Snapshot the connection-affecting fields before the save so we can tell
+    // whether existing users need re-syncing.
+    const connectionChanged =
+      enabled !== settings.jump_enabled ||
+      host.trim() !== settings.jump_host ||
+      user.trim() !== settings.jump_user ||
+      (Number(port) || 22) !== settings.jump_port ||
+      (keyId ? Number(keyId) : null) !== settings.jump_ssh_key_id;
+    const bundleOverride = !useAdminConfig;
+    const bundleChanged =
+      bundleOverride !== settings.jump_bundle_override ||
+      bundleHost.trim() !== settings.jump_bundle_host ||
+      (Number(bundlePort) || 22) !== settings.jump_bundle_port;
     try {
       const next = await api.updateProvisioningSettings({
         jump_enabled: enabled,
@@ -121,9 +148,20 @@ function JumpServerCard(props: {
         jump_user: user.trim(),
         jump_port: Number(port) || 22,
         jump_ssh_key_id: keyId ? Number(keyId) : null,
+        jump_bundle_override: bundleOverride,
+        // When using the admin config, clear the override address so a stale
+        // value can't silently reactivate if the override is turned on later.
+        jump_bundle_host: bundleOverride ? bundleHost.trim() : "",
+        jump_bundle_port: bundleOverride ? Number(bundlePort) || 22 : 22,
       });
       props.onSaved(next);
       setSaved(true);
+      // A connection change is the one that can break existing access.
+      setSyncReminder(enabled && connectionChanged);
+      // Surface the bundle note only when the bundle address changed without a
+      // connection change (a connection change already prompts the stronger
+      // sync reminder).
+      setBundleNotice(bundleChanged && !(enabled && connectionChanged));
     } catch (err) {
       setError(
         err instanceof ApiError ? err.message : "Unable to save the jump server.",
@@ -140,6 +178,8 @@ function JumpServerCard(props: {
     try {
       const result = await api.syncJumpServerUsers();
       setSyncResults(result.results);
+      // Users are now aligned with the current settings.
+      setSyncReminder(false);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Sync failed.");
     } finally {
@@ -163,6 +203,20 @@ function JumpServerCard(props: {
       {saved && (
         <p className="alert success" role="status">
           Jump server settings saved.
+        </p>
+      )}
+      {syncReminder && (
+        <p className="alert warn" role="alert">
+          Jump server connection settings changed. Existing users must be
+          re-synced or their access may stop working — click{" "}
+          <strong>Sync users to jump server</strong> below.
+        </p>
+      )}
+      {bundleNotice && (
+        <p className="alert info" role="status">
+          The SSH config bundle address changed. This only affects the address
+          written into users' downloaded SSH config; if it points to the same
+          jump server as the admin config, no re-sync is needed.
         </p>
       )}
       <form className="create-form" onSubmit={onSubmit}>
@@ -203,6 +257,41 @@ function JumpServerCard(props: {
             ))}
           </select>
         </label>
+        <label className="checkbox-field">
+          <input
+            type="checkbox"
+            checked={useAdminConfig}
+            onChange={(e) => setUseAdminConfig(e.target.checked)}
+          />
+          <span>Use jumpserver admin config in SSH config bundle</span>
+        </label>
+        {!useAdminConfig && (
+          <div className="field-group">
+            <p className="hint">
+              The generated SSH config bundle will address the jump server at
+              this host/port instead of the admin config above. Use this when
+              the bastion is managed over a private interface but users connect
+              over a different (e.g. public) address.
+            </p>
+            <label className="field">
+              <span>Bundle host (IP or hostname)</span>
+              <input
+                value={bundleHost}
+                onChange={(e) => setBundleHost(e.target.value)}
+              />
+            </label>
+            <label className="field">
+              <span>Bundle SSH port</span>
+              <input
+                type="number"
+                min={1}
+                max={65535}
+                value={bundlePort}
+                onChange={(e) => setBundlePort(e.target.value)}
+              />
+            </label>
+          </div>
+        )}
         <div className="row-actions">
           <button type="submit" className="btn primary" disabled={busy}>
             {busy ? "Saving..." : "Save jump server"}

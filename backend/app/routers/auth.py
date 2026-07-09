@@ -519,6 +519,7 @@ def download_account_bundle(
         # Built-in SSH config: rendered dynamically from the user's servers
         # and the jump server (with ProxyJump when the jump server is enabled).
         jump = jumpserver.load_config(conn)
+        settings_row = repository.get_settings_row(conn)
         content = repository.render_builtin_ssh_config(
             user,
             _user_servers_with_main_user(conn, user["id"]),
@@ -527,6 +528,13 @@ def download_account_bundle(
                 "host": jump.host,
                 "user": jump.user,
                 "port": jump.port,
+                "bundle_override": bool(
+                    settings_row.get("jump_bundle_override", 0)
+                ),
+                "bundle_host": settings_row.get("jump_bundle_host", "") or "",
+                "bundle_port": int(
+                    settings_row.get("jump_bundle_port", 22) or 22
+                ),
             },
         )
     elif template["mappings"]:

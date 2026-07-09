@@ -294,6 +294,98 @@ def test_builtin_render_with_jump_server(admin, monkeypatch) -> None:
     assert "ProxyJump jumpserver" in text
 
 
+def _enable_jump(client, csrf, **over):
+    key = client.post(
+        "/api/settings/ssh-keys",
+        json={"name": "jk", "kind": "path", "path": "/k"},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    body = {"jump_enabled": True, "jump_host": "10.9.9.9",
+            "jump_user": "bastion", "jump_port": 2222,
+            "jump_ssh_key_id": key["id"]}
+    body.update(over)
+    r = client.patch(
+        "/api/settings/provisioning", json=body,
+        headers={"X-CSRF-Token": csrf},
+    )
+    return r
+
+
+def test_builtin_bundle_uses_override_address(admin) -> None:
+    """With the override on, the bundle jump block uses the bundle host/port."""
+    client, csrf, _ = admin
+    assert _enable_jump(
+        client, csrf,
+        jump_bundle_override=True,
+        jump_bundle_host="public.example.com",
+        jump_bundle_port=443,
+    ).status_code == 200
+    created = _create_member(client, csrf)
+    _seed_servers(created["user"]["id"], [
+        {"name": "cbox", "hostname": "cbox", "ip_address": "10.0.0.5"},
+    ])
+    member, _ = _login(client.app, "bt@example.com", created["password"])
+    builtin = next(
+        t for t in member.get("/api/account/bundles").json()
+        if t["name"] == "SSH Config Default"
+    )
+    text = member.get(f"/api/account/bundles/{builtin['id']}/download").text
+    # Bundle jump block uses the override address, not the management one.
+    assert "Hostname public.example.com" in text
+    assert "Port 443" in text
+    assert "10.9.9.9" not in text
+    assert "Port 2222" not in text
+    # Onboarding user + ProxyJump alias are unchanged.
+    assert "User bastion" in text
+    assert "ProxyJump jumpserver" in text
+
+
+def test_builtin_bundle_falls_back_when_override_off(admin) -> None:
+    """Override off (default) keeps using the management host/port."""
+    client, csrf, _ = admin
+    # Provide a bundle host but leave the override disabled: it is ignored.
+    assert _enable_jump(
+        client, csrf,
+        jump_bundle_override=False,
+        jump_bundle_host="public.example.com",
+        jump_bundle_port=443,
+    ).status_code == 200
+    created = _create_member(client, csrf)
+    _seed_servers(created["user"]["id"], [
+        {"name": "cbox", "hostname": "cbox", "ip_address": "10.0.0.5"},
+    ])
+    member, _ = _login(client.app, "bt@example.com", created["password"])
+    builtin = next(
+        t for t in member.get("/api/account/bundles").json()
+        if t["name"] == "SSH Config Default"
+    )
+    text = member.get(f"/api/account/bundles/{builtin['id']}/download").text
+    assert "Hostname 10.9.9.9" in text
+    assert "Port 2222" in text
+    assert "public.example.com" not in text
+
+
+def test_bundle_override_requires_host(admin) -> None:
+    """Enabling the override without a bundle host is rejected."""
+    client, csrf, _ = admin
+    r = _enable_jump(client, csrf, jump_bundle_override=True)
+    assert r.status_code == 400, r.text
+    assert "bundle host" in r.json()["detail"].lower()
+
+
+def test_bundle_override_settings_round_trip(admin) -> None:
+    client, csrf, _ = admin
+    assert _enable_jump(
+        client, csrf, jump_bundle_override=True,
+        jump_bundle_host="pub.example.com", jump_bundle_port=2020,
+    ).status_code == 200
+    got = client.get("/api/settings/provisioning").json()
+    assert got["jump_bundle_override"] is True
+    assert got["jump_bundle_host"] == "pub.example.com"
+    assert got["jump_bundle_port"] == 2020
+
+
+
 def test_server_user_uses_template_main_user(admin) -> None:
     """Template-scoped _user vars and builtin Host blocks use the main user."""
     client, csrf, _ = admin

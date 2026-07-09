@@ -600,6 +600,19 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     _add_column(conn, "settings", "jump_port", "INTEGER NOT NULL DEFAULT 22")
     _add_column(conn, "settings", "jump_ssh_key_id", "INTEGER")
 
+    # Jump server SSH-config-bundle address override (issue_015-r3). When the
+    # bastion is reachable at a different address in generated user SSH configs
+    # than the private address AppManager manages it over (e.g. public vs.
+    # private interface), the override supplies the bundle-facing host/port.
+    # Default off: bundles use the management jump_host/jump_port.
+    _add_column(
+        conn, "settings", "jump_bundle_override", "INTEGER NOT NULL DEFAULT 0"
+    )
+    _add_column(conn, "settings", "jump_bundle_host", "TEXT NOT NULL DEFAULT ''")
+    _add_column(
+        conn, "settings", "jump_bundle_port", "INTEGER NOT NULL DEFAULT 22"
+    )
+
     # Encrypt any per-user private keys still stored in plaintext, and import
     # already-configured key file paths into the registry (idempotent).
     _encrypt_existing_user_keys(conn)

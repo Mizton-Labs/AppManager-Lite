@@ -91,6 +91,9 @@ def _provisioning_out(row: dict[str, Any]) -> ProvisioningSettingsOut:
         jump_user=row.get("jump_user", "") or "",
         jump_port=int(row.get("jump_port", 22) or 22),
         jump_ssh_key_id=row.get("jump_ssh_key_id"),
+        jump_bundle_override=bool(row.get("jump_bundle_override", 0)),
+        jump_bundle_host=row.get("jump_bundle_host", "") or "",
+        jump_bundle_port=int(row.get("jump_bundle_port", 22) or 22),
     )
 
 
@@ -154,6 +157,23 @@ def update_provisioning_settings(
             raise HTTPException(
                 status_code=400,
                 detail="Enabling the jump server requires a host, user, and SSH key.",
+            )
+
+    # The bundle-address override needs its own host once enabled (this address
+    # is only written into user SSH configs; AppManager never dials it).
+    effective_bundle_override = changes.get(
+        "jump_bundle_override", bool(current.get("jump_bundle_override", 0))
+    )
+    if effective_bundle_override:
+        eff_bundle_host = changes.get(
+            "jump_bundle_host", current.get("jump_bundle_host", "")
+        )
+        if not eff_bundle_host:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Enabling the bundle address override requires a bundle host."
+                ),
             )
     row = repository.update_provisioning_settings(conn, **changes)
 

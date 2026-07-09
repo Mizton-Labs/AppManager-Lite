@@ -142,6 +142,9 @@ export interface ProvisioningSettings {
   jump_user: string;
   jump_port: number;
   jump_ssh_key_id: number | null;
+  jump_bundle_override: boolean;
+  jump_bundle_host: string;
+  jump_bundle_port: number;
 }
 
 export interface JumpSyncEntry {
@@ -170,6 +173,9 @@ export interface UpdateProvisioningSettingsInput {
   jump_user?: string;
   jump_port?: number;
   jump_ssh_key_id?: number | null;
+  jump_bundle_override?: boolean;
+  jump_bundle_host?: string;
+  jump_bundle_port?: number;
 }
 
 /** A VM/LXC entry read live from the provider. */

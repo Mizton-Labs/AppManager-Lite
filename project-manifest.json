@@ -324,7 +324,7 @@
       {
         "name": "settings",
         "description": "Single pinned row (id = 1) for reverse-proxy, branding, LXC/VM provider (Proxmox; API key stored write-only), and server-provisioning policy configuration.",
-        "columns": ["id", "nginx_host", "nginx_user", "nginx_conf_path", "ssh_key_path", "reverse_proxy_ssh_key_id", "appmanager_proxy_host", "appmanager_proxy_port", "alias_template", "app_name", "app_logo", "configured", "provider_type", "proxmox_url", "proxmox_token_name", "proxmox_api_key", "proxmox_template_filter", "proxmox_templates_only", "proxmox_verify_tls", "proxmox_conn_status", "proxmox_conn_log", "provisioning_self_service", "provisioning_max_servers", "provisioning_allow_resource_edit", "provisioning_max_cpus", "provisioning_max_memory_gb", "provisioning_max_disk_gb", "jump_enabled", "jump_host", "jump_user", "jump_port", "jump_ssh_key_id", "updated_at"],
+        "columns": ["id", "nginx_host", "nginx_user", "nginx_conf_path", "ssh_key_path", "reverse_proxy_ssh_key_id", "appmanager_proxy_host", "appmanager_proxy_port", "alias_template", "app_name", "app_logo", "configured", "provider_type", "proxmox_url", "proxmox_token_name", "proxmox_api_key", "proxmox_template_filter", "proxmox_templates_only", "proxmox_verify_tls", "proxmox_conn_status", "proxmox_conn_log", "provisioning_self_service", "provisioning_max_servers", "provisioning_allow_resource_edit", "provisioning_max_cpus", "provisioning_max_memory_gb", "provisioning_max_disk_gb", "jump_enabled", "jump_host", "jump_user", "jump_port", "jump_ssh_key_id", "jump_bundle_override", "jump_bundle_host", "jump_bundle_port", "updated_at"],
         "primaryKey": ["id"]
       },
       {

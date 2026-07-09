@@ -860,6 +860,10 @@ class ProvisioningSettingsOut(BaseModel):
     jump_user: str = ""
     jump_port: int = 22
     jump_ssh_key_id: int | None = None
+    # SSH-config-bundle address override (see UpdateProvisioningSettingsRequest).
+    jump_bundle_override: bool = False
+    jump_bundle_host: str = ""
+    jump_bundle_port: int = 22
 
 
 class UpdateProvisioningSettingsRequest(BaseModel):
@@ -882,8 +886,15 @@ class UpdateProvisioningSettingsRequest(BaseModel):
     jump_user: str | None = Field(default=None, max_length=64)
     jump_port: int | None = Field(default=None, ge=1, le=65535)
     jump_ssh_key_id: int | None = Field(default=None, ge=1)
+    # SSH-config-bundle address override: when enabled, the built-in SSH config
+    # bundle addresses the jump server at this host/port instead of the
+    # management jump_host/jump_port (for bastions with separate public/private
+    # interfaces). Off by default; onboarding/sync always use jump_host.
+    jump_bundle_override: bool | None = None
+    jump_bundle_host: str | None = Field(default=None, max_length=253)
+    jump_bundle_port: int | None = Field(default=None, ge=1, le=65535)
 
-    @field_validator("jump_host")
+    @field_validator("jump_host", "jump_bundle_host")
     @classmethod
     def _check_jump_host(cls, value: str | None) -> str | None:
         if value is None:
