@@ -687,6 +687,110 @@ def test_resource_quota_blocks_oversized_template(admin, monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Usage endpoint (issue_015-r4 F3) - quota bars data source
+# ---------------------------------------------------------------------------
+
+
+def test_server_usage_reports_committed_usage_and_limits(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)  # template default: 2 cores, 4 GB, 20 GB disk
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    client.patch(
+        "/api/settings/provisioning",
+        json={"provisioning_self_service": True,
+              "provisioning_max_servers": 5, "provisioning_max_cpus": 10,
+              "provisioning_max_memory_gb": 32, "provisioning_max_disk_gb": 100},
+        headers={"X-CSRF-Token": csrf},
+    )
+    created = _create_member(client, csrf, self_service=True)
+    user_id = created["user"]["id"]
+    member, member_csrf = _login(
+        client.app, "srvuser@example.com", created["password"]
+    )
+
+    # Before any server: zero usage, limits reflected.
+    usage = member.get(f"/api/users/{user_id}/servers/usage")
+    assert usage.status_code == 200, usage.text
+    body = usage.json()
+    assert body["unlimited"] is False
+    assert body["servers"] == {"used": 0, "limit": 5}
+    assert body["cpus"] == {"used": 0, "limit": 10}
+    assert body["memory_gb"] == {"used": 0, "limit": 32}
+    assert body["disk_gb"] == {"used": 0, "limit": 100}
+
+    # After creating one server, committed usage reflects the template footprint.
+    assert member.post(
+        f"/api/users/{user_id}/servers",
+        json={"template_id": template["id"], "name": "one"},
+        headers={"X-CSRF-Token": member_csrf},
+    ).status_code == 201
+    body = member.get(f"/api/users/{user_id}/servers/usage").json()
+    assert body["servers"] == {"used": 1, "limit": 5}
+    assert body["cpus"] == {"used": 2, "limit": 10}
+    assert body["memory_gb"] == {"used": 4, "limit": 32}
+    assert body["disk_gb"] == {"used": 20, "limit": 100}
+
+
+def test_server_usage_unlimited_for_admin(admin) -> None:
+    client, csrf, _ = admin
+    # The admin views their own usage (admin user id is 1).
+    me = client.get("/api/session").json()["user"]
+    usage = client.get(f"/api/users/{me['id']}/servers/usage")
+    assert usage.status_code == 200, usage.text
+    body = usage.json()
+    assert body["unlimited"] is True
+    # Limits are reported as 0 (no cap) with committed usage still present.
+    assert body["servers"]["limit"] == 0
+    assert body["cpus"]["limit"] == 0
+
+
+def test_server_usage_admin_created_servers_excluded(admin, monkeypatch) -> None:
+    """Admin-set servers are quota-exempt, so they must not count in usage."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    client.patch(
+        "/api/settings/provisioning",
+        json={"provisioning_self_service": True},
+        headers={"X-CSRF-Token": csrf},
+    )
+    created = _create_member(client, csrf, self_service=True)
+    user_id = created["user"]["id"]
+    # Admin creates a server FOR the member (admin_modified -> quota-exempt).
+    assert client.post(
+        f"/api/users/{user_id}/servers",
+        json={"template_id": template["id"], "name": "admin-made"},
+        headers={"X-CSRF-Token": csrf},
+    ).status_code == 201
+
+    member, _ = _login(client.app, "srvuser@example.com", created["password"])
+    body = member.get(f"/api/users/{user_id}/servers/usage").json()
+    # The server counts toward the SERVER count but its resources are exempt.
+    assert body["servers"]["used"] == 1
+    assert body["cpus"]["used"] == 0
+    assert body["memory_gb"]["used"] == 0
+    assert body["disk_gb"]["used"] == 0
+
+
+def test_server_usage_authorization(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    created = _create_member(client, csrf, self_service=True)
+    user_id = created["user"]["id"]
+    other = _create_member(client, csrf, username="other@example.com")
+    member, _ = _login(client.app, "srvuser@example.com", created["password"])
+    # A user cannot read another user's usage.
+    assert member.get(
+        f"/api/users/{other['user']['id']}/servers/usage"
+    ).status_code == 403
+    # Admin can read any user's usage.
+    assert client.get(f"/api/users/{user_id}/servers/usage").status_code == 200
+
+
+# ---------------------------------------------------------------------------
 # Updates: manual IP (VM), resource changes, deletion
 # ---------------------------------------------------------------------------
 

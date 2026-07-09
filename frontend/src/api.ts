@@ -25,6 +25,7 @@ import type {
   ServerAccess,
   ServerTemplate,
   ServerTemplateOption,
+  ServerUsage,
   SshKey,
   SessionState,
   SshKeyInfo,
@@ -280,6 +281,10 @@ export const api = {
   /** Per-user servers (admin, or the user themself). */
   listUserServers: (userId: number) =>
     request<UserServer[]>(`users/${userId}/servers`),
+
+  /** Per-user provisioning usage vs. limits (create-form quota bars). */
+  getUserServerUsage: (userId: number) =>
+    request<ServerUsage>(`users/${userId}/servers/usage`),
 
   createUserServer: (userId: number, input: CreateUserServerInput) =>
     request<UserServer>(`users/${userId}/servers`, {

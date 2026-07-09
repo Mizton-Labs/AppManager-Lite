@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { api, ApiError } from "../api";
-import type { ServerTemplateOption, UserServer } from "../types";
+import type { ServerTemplateOption, ServerUsage, UserServer } from "../types";
 
 /**
  * Per-user server list + Add Server form (issue_015 phase 3).
@@ -16,6 +16,12 @@ export function UserServersPanel(props: {
   canCreate: boolean;
   /** Whether the caller may remove server records. */
   canDelete: boolean;
+  /**
+   * Whether the ACTOR using this panel is an administrator. Admin-initiated
+   * creates are exempt from per-user quotas, so the create form reflects that
+   * rather than the target user's standing limits.
+   */
+  isAdmin?: boolean;
   /** Prefill for the comma-separated OS users receiving the public key. */
   defaultPubkeyUser?: string;
 }) {
@@ -79,6 +85,7 @@ export function UserServersPanel(props: {
         <AddServerForm
           userId={props.userId}
           templates={templates}
+          isAdmin={props.isAdmin ?? false}
           defaultPubkeyUser={props.defaultPubkeyUser ?? ""}
           onCreated={async (server) => {
             setAdding(false);
@@ -119,9 +126,126 @@ export function UserServersPanel(props: {
   );
 }
 
+/** Colour band for a quota bar based on how much of the limit is committed. */
+export function quotaLevel(used: number, limit: number): "ok" | "warn" | "full" {
+  if (limit <= 0) return "ok";
+  const pct = (used / limit) * 100;
+  if (pct > 90) return "full";
+  if (pct >= 70) return "warn";
+  return "ok";
+}
+
+/**
+ * Small horizontal "resources left" indicator bars shown at the top of the
+ * create-server form (issue_015-r4 F3). Reflects the user's committed usage
+ * against their per-user limits; administrators are unrestricted and see a
+ * short note instead of bars.
+ */
+function QuotaBars(props: { userId: number; isAdmin: boolean }) {
+  const [usage, setUsage] = useState<ServerUsage | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    // An admin actor is not quota-gated, so the usage figures are not needed.
+    if (props.isAdmin) return;
+    let active = true;
+    setUsage(null);
+    setFailed(false);
+    api
+      .getUserServerUsage(props.userId)
+      .then((u) => {
+        if (active) setUsage(u);
+      })
+      .catch(() => {
+        if (active) setFailed(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [props.userId, props.isAdmin]);
+
+  // An admin acting here is exempt from per-user quotas (admin-created servers
+  // are quota-exempt), so the target user's standing limits do not gate this
+  // create. Say so instead of showing bars that could read "full" yet still
+  // allow the create.
+  if (props.isAdmin) {
+    return (
+      <p className="quota-unlimited muted">
+        Creating as administrator: per-user resource limits are not enforced.
+      </p>
+    );
+  }
+
+  // Fail quietly: the form must remain usable if usage can't be loaded.
+  if (failed) return null;
+  if (!usage) {
+    return (
+      <p className="quota-bars-loading muted" role="status">
+        Loading resource usage...
+      </p>
+    );
+  }
+  if (usage.unlimited) {
+    return (
+      <p className="quota-unlimited muted">No resource limits (administrator).</p>
+    );
+  }
+
+  const rows: { label: string; used: number; limit: number; unit?: string }[] = [
+    { label: "Servers", used: usage.servers.used, limit: usage.servers.limit },
+    { label: "CPUs", used: usage.cpus.used, limit: usage.cpus.limit },
+    {
+      label: "Memory",
+      used: usage.memory_gb.used,
+      limit: usage.memory_gb.limit,
+      unit: "GB",
+    },
+    {
+      label: "Disk",
+      used: usage.disk_gb.used,
+      limit: usage.disk_gb.limit,
+      unit: "GB",
+    },
+  ];
+
+  return (
+    <div className="quota-bars" aria-label="Resource usage">
+      {rows.map((r) => {
+        const level = quotaLevel(r.used, r.limit);
+        const pct =
+          r.limit > 0 ? Math.min(100, Math.round((r.used / r.limit) * 100)) : 0;
+        const unit = r.unit ? ` ${r.unit}` : "";
+        return (
+          <div className="quota-bar" key={r.label}>
+            <span className="quota-bar-label">{r.label}</span>
+            <span
+              className="quota-bar-track"
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={r.limit}
+              aria-valuenow={r.used}
+              aria-label={`${r.label}: ${r.used} of ${r.limit}${unit} used`}
+            >
+              <span
+                className={`quota-bar-fill quota-${level}`}
+                style={{ width: `${pct}%` }}
+              />
+            </span>
+            <span className="quota-bar-value">
+              {r.used}/{r.limit}
+              {unit}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function AddServerForm(props: {
   userId: number;
   templates: ServerTemplateOption[];
+  isAdmin: boolean;
   defaultPubkeyUser: string;
   onCreated: (server: UserServer) => void | Promise<void>;
   onFailed?: () => void | Promise<void>;
@@ -187,6 +311,7 @@ function AddServerForm(props: {
 
   return (
     <form className="create-form" onSubmit={onSubmit}>
+      <QuotaBars userId={props.userId} isAdmin={props.isAdmin} />
       {error && (
         <p className="alert error" role="alert">
           {error}{" "}

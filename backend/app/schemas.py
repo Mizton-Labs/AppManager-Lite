@@ -1171,6 +1171,29 @@ class ServerAccessOut(BaseModel):
     reason: str = ""
 
 
+class ResourceUsageOut(BaseModel):
+    """One resource dimension: how much of the per-user limit is committed."""
+
+    used: int = 0
+    limit: int = 0
+
+
+class ServerUsageOut(BaseModel):
+    """Per-user provisioning usage vs. limits, for the create-server form bars.
+
+    ``unlimited`` is true for administrators, who are exempt from per-user
+    caps; the individual dimensions are still populated with the committed
+    usage (limit 0) so callers can show a count without a cap. For non-admins
+    each dimension carries the committed usage and the applicable limit.
+    """
+
+    unlimited: bool = False
+    servers: ResourceUsageOut = Field(default_factory=ResourceUsageOut)
+    cpus: ResourceUsageOut = Field(default_factory=ResourceUsageOut)
+    memory_gb: ResourceUsageOut = Field(default_factory=ResourceUsageOut)
+    disk_gb: ResourceUsageOut = Field(default_factory=ResourceUsageOut)
+
+
 def _validate_admin_key_path(value: str) -> str:
     """Admin SSH key path: shell-metachar-free and absolute when present.
 
