@@ -22,6 +22,8 @@ export function UserServersPanel(props: {
    * rather than the target user's standing limits.
    */
   isAdmin?: boolean;
+  /** The target user's derived id; forms the static server-name prefix. */
+  userDerivedId?: string;
   /** Prefill for the comma-separated OS users receiving the public key. */
   defaultPubkeyUser?: string;
 }) {
@@ -86,6 +88,7 @@ export function UserServersPanel(props: {
           userId={props.userId}
           templates={templates}
           isAdmin={props.isAdmin ?? false}
+          userDerivedId={props.userDerivedId ?? props.defaultPubkeyUser ?? ""}
           defaultPubkeyUser={props.defaultPubkeyUser ?? ""}
           onCreated={async (server) => {
             setAdding(false);
@@ -247,6 +250,8 @@ function AddServerForm(props: {
   userId: number;
   templates: ServerTemplateOption[];
   isAdmin: boolean;
+  /** The target user's derived id, used to build the static server-name prefix. */
+  userDerivedId: string;
   defaultPubkeyUser: string;
   onCreated: (server: UserServer) => void | Promise<void>;
   onFailed?: () => void | Promise<void>;
@@ -268,8 +273,25 @@ function AddServerForm(props: {
     }
   }, [props.templates, templateId]);
 
-  const selectedKind =
-    props.templates.find((t) => String(t.id) === templateId)?.kind ?? "lxc";
+  const selectedTemplate = props.templates.find(
+    (t) => String(t.id) === templateId,
+  );
+  const selectedKind = selectedTemplate?.kind ?? "lxc";
+  // Server names always carry a static prefix "<template-slug>-<owner-id>-";
+  // the user only chooses the suffix. The backend composes and validates the
+  // full name (max 63), slugifying the template portion, so mirror that here to
+  // show the final name and the characters remaining.
+  const MAX_NAME = 63;
+  const templateSlug = (selectedTemplate?.name ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  const namePrefix =
+    selectedTemplate && props.userDerivedId
+      ? `${templateSlug || "server"}-${props.userDerivedId}-`
+      : "";
+  const suffixMax = Math.max(0, MAX_NAME - namePrefix.length);
+  const suffixLeft = Math.max(0, suffixMax - name.trim().length);
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -343,13 +365,36 @@ function AddServerForm(props: {
         </select>
       </label>
       <label className="field">
-        <span>Server name</span>
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          maxLength={40}
-          required
-        />
+        <span>Server name suffix</span>
+        <div className="prefixed-input">
+          {namePrefix && (
+            <span className="name-prefix" aria-hidden="true">
+              {namePrefix}
+            </span>
+          )}
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            maxLength={suffixMax || undefined}
+            disabled={!!namePrefix && suffixMax === 0}
+            aria-label="Server name suffix"
+            placeholder="e.g. test-1"
+            required
+          />
+        </div>
+        <span className="field-hint muted">
+          {namePrefix ? (
+            <>
+              Full name: <code>{namePrefix}{name.trim() || "…"}</code>
+              {" · "}
+              {suffixMax === 0
+                ? "the template name is too long; ask an administrator to shorten it"
+                : `${suffixLeft} of ${suffixMax} characters left`}
+            </>
+          ) : (
+            "Select a template to see the full server name."
+          )}
+        </span>
       </label>
       {selectedKind === "vm" ? (
         <p className="muted">

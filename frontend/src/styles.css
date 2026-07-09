@@ -502,6 +502,46 @@ textarea:focus,
   gap: 1rem;
 }
 
+/* Static server-name prefix + suffix input (issue_015-r5 F1). */
+.prefixed-input {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.prefixed-input .name-prefix {
+  display: flex;
+  align-items: center;
+  padding: 0 0.5rem;
+  background: rgba(148, 163, 184, 0.12);
+  color: #94a3b8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  white-space: nowrap;
+  border-right: 1px solid var(--border);
+}
+
+.prefixed-input input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+.field-hint {
+  font-size: 0.72rem;
+  margin-top: 0.15rem;
+}
+
+.field-hint code {
+  font-size: 0.72rem;
+  word-break: break-all;
+}
+
 /* Resource quota indicator bars at the top of the create-server form (F3). */
 .quota-bars {
   display: flex;

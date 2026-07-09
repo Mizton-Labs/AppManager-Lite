@@ -24,7 +24,11 @@ from .proxmox import ProxmoxResult
 
 _SSH_TIMEOUT = 20
 _OS_USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
-_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,39}$")
+# Server display names are capped at the DNS hostname length (63) so a fully
+# composed name (template-userid-suffix) still fits both the record and the
+# derived hostname.
+MAX_SERVER_NAME_LEN = 63
+_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,62}$")
 _IP_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
 
 # Login shells install_public_key is allowed to set/create an account with.
@@ -97,9 +101,23 @@ def validate_server_name(name: str) -> str:
         raise ServerError(
             "Server name must start with a letter or digit and may contain "
             "letters, digits, spaces, dots, dashes, and underscores "
-            "(max 40 characters)."
+            f"(max {MAX_SERVER_NAME_LEN} characters)."
         )
     return name
+
+
+def server_name_prefix(template_name: str, derived_uid: str) -> str:
+    """The static "<template>-<owner-id>-" prefix every server name carries.
+
+    The template portion is slugified to the server-name charset (lowercase
+    alphanumerics and dashes) so an arbitrarily-named template (spaces, unicode,
+    punctuation) can never compose an invalid full name. The derived user id is
+    already slug-safe. The exact same construction is mirrored in the frontend
+    so the live preview matches what is stored.
+    """
+    tpl_slug = re.sub(r"[^a-z0-9]+", "-", (template_name or "").lower()).strip("-")
+    uid = (derived_uid or "").strip()
+    return f"{tpl_slug or 'server'}-{uid}-"
 
 
 def hostname_for(name: str) -> str:

@@ -536,6 +536,7 @@ function UserRow(props: {
           canCreate
           canDelete
           isAdmin
+          userDerivedId={user.user_id}
           defaultPubkeyUser={user.user_id}
         />
       )}

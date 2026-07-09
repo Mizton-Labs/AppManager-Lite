@@ -415,5 +415,5 @@ def test_vm_joins_mesh_on_ip_entry(admin, monkeypatch) -> None:
     keygen = [c for c in ssh.commands if "ssh-keygen" in c[-1]]
     assert len(keygen) == 2  # both VM and peer keyed
     updated = client.get(f"/api/users/{uid}/servers").json()
-    vm_row = [s for s in updated if s["name"] == "winbox"][0]
+    vm_row = [s for s in updated if s["name"] == vm["name"]][0]
     assert "trusted access" in vm_row["last_log"].lower()

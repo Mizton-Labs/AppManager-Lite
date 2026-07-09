@@ -151,7 +151,14 @@ describe("UserServersPanel", () => {
     expect(screen.getByLabelText(/os users receiving the key/i)).toHaveValue(
       "john-doe",
     );
+    // The static name prefix "<template-slug>-<owner-id>-" is shown; the input
+    // is only the suffix.
+    expect(screen.getByText("debian-coder-john-doe-")).toBeInTheDocument();
     await userEvent.type(screen.getByLabelText(/server name/i), "coder box");
+    // The live preview shows the composed full name.
+    expect(
+      screen.getByText(/debian-coder-john-doe-coder box/),
+    ).toBeInTheDocument();
     await userEvent.click(
       screen.getByRole("button", { name: /^create server$/i }),
     );
@@ -164,6 +171,7 @@ describe("UserServersPanel", () => {
         /\/api\/users\/7\/servers$/.test(String(url)) &&
         (init as RequestInit | undefined)?.method === "POST",
     );
+    // The request carries only the suffix; the backend composes the full name.
     expect(JSON.parse((createCall![1] as RequestInit).body as string)).toMatchObject(
       {
         template_id: 1,
@@ -172,6 +180,61 @@ describe("UserServersPanel", () => {
         pubkey_users: "john-doe",
       },
     );
+  });
+
+  it("shows remaining suffix characters and surfaces a name conflict", async () => {
+    const fetchMock = stubServers();
+    // Make the create endpoint reject with a 409 conflict.
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      const json = (payload: unknown, status = 200) =>
+        ({ ok: status < 400, status, json: async () => payload }) as Response;
+      if (url.endsWith("/api/account/server-templates")) {
+        return json([{ id: 1, name: "Debian Coder", kind: "lxc" }]);
+      }
+      if (/\/api\/users\/7\/servers\/usage$/.test(url)) {
+        return json({
+          unlimited: false,
+          servers: { used: 0, limit: 3 },
+          cpus: { used: 0, limit: 12 },
+          memory_gb: { used: 0, limit: 24 },
+          disk_gb: { used: 0, limit: 200 },
+        });
+      }
+      if (/\/api\/users\/7\/servers$/.test(url) && method === "GET") {
+        return json([]);
+      }
+      if (/\/api\/users\/7\/servers$/.test(url) && method === "POST") {
+        return json(
+          { detail: "A server named 'X' already exists. Choose a different name suffix." },
+          409,
+        );
+      }
+      return json({ detail: "unexpected" }, 500);
+    });
+    render(
+      <UserServersPanel
+        userId={7}
+        canCreate
+        canDelete
+        defaultPubkeyUser="john-doe"
+      />,
+    );
+    await userEvent.click(
+      await screen.findByRole("button", { name: /add server/i }),
+    );
+    // Prefix "debian-coder-john-doe-" is 22 chars -> 41 suffix chars available.
+    expect(screen.getByText(/41 of 41 characters left/i)).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText(/server name/i), "dup");
+    expect(screen.getByText(/38 of 41 characters left/i)).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: /^create server$/i }),
+    );
+    // The backend's global-uniqueness 409 is shown inline.
+    expect(
+      await screen.findByText(/choose a different name suffix/i),
+    ).toBeInTheDocument();
   });
 
   it("guides VM servers to manual IP entry and saves it", async () => {
