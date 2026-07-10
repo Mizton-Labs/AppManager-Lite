@@ -298,9 +298,12 @@ add/edit card). The Account page's **Bundle Downloads** card downloads a
 **zip** ready to unzip into `~/.ssh`: the personal SSH config, the user's
 private key (filename with no extension) and public key, and a
 `connect_server_<name>.sh` helper script per server so the user can connect
-without typing the full `ssh` command. The scripts follow the config's options
-(user, `IdentityFile`, and `ProxyJump`/jump server); because the zip contains
-the private key the download is audited and never cached. Templates with
+without typing the full `ssh` command. The scripts run **in place from the
+unzipped directory** — each points `ssh` at the bundled `config` and the
+private key sitting beside it — and also work once the files are copied into
+`~/.ssh`. The scripts follow the config's options (user and `ProxyJump`/jump
+server); because the zip contains the private key the download is audited and
+never cached. Templates with
 field mappings are rendered from account details;
 mapping sources include the username, the derived **user ID**, apps server
 host/IP, role, and **per-template variables** (`server_<slug>_name`,
@@ -692,7 +695,9 @@ manually on the server card. An optional toggle installs the owner's SSH
 public key on the new server for a comma-separated list of OS users (default:
 the owner's user ID), connecting with the template's admin SSH key; only the
 public key ever leaves this host. Every creation stores a timestamped,
-secret-free transcript on the server record (**View log**), successes show a
+secret-free transcript on the server record (**View log**, admin-only — the
+provisioning log is hidden from non-admin users in both the UI and the API),
+successes show a
 green confirmation, and everything is audited. A record is marked `failed`
 only when no guest was produced; if the clone succeeded but a later step
 errored (IP discovery, key installation), the record stays `created` — with
@@ -764,21 +769,21 @@ to, so it is clear where a tool comes from.
 
 ## Themes
 
-The portal includes four visual themes, chosen by each user from the
-**Appearance** card in the **Account** section:
+The portal includes four visual themes, chosen by each user from the compact
+theme selector in the **Profile** card of the **Account** section:
 
 - **Dark modern** — the default layered dark theme.
 - **Light** — a clear light interface for bright environments.
 - **Energy** — a neutral dark-grey theme with brighter borders and an amber accent.
 - **Classic** — the original portal appearance.
 
-A user's preference is stored locally in the browser, applies immediately, and
-is restored on the next visit. An administrator sets the deployment's **Default
-theme** in **General Settings**; it is delivered with the session (even before
-sign-in) and applied to users who have not chosen their own theme — an explicit
-user choice always takes precedence. The initial document applies the stored
-value before React loads, so a saved theme does not flash the default palette on
-startup.
+A user's theme is **saved to their account** (per user, not per browser), so it
+follows them across devices and does not affect other users who sign in on the
+same browser. An administrator sets the deployment's **Default theme** in
+**General Settings**; it is delivered with the session (even before sign-in, so
+the login form uses it) and applied to users who have not chosen their own —
+an explicit user choice always takes precedence, and signing out returns the
+interface to the admin default.
 
 ## About
 

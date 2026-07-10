@@ -224,6 +224,7 @@
       { "method": "GET", "path": "/api/auth/saml/metadata", "auth": "anonymous", "csrf": false, "summary": "Expose SAML service-provider metadata." },
       { "method": "POST", "path": "/api/auth/logout", "auth": "user", "csrf": true, "summary": "End the current session." },
       { "method": "POST", "path": "/api/account/password", "auth": "user", "csrf": true, "summary": "Change the signed-in user's own password." },
+      { "method": "PATCH", "path": "/api/account/theme", "auth": "user", "csrf": true, "summary": "Set the signed-in user's own UI theme (self-only; validated to the four theme ids; empty resets to the deployment default)." },
       { "method": "GET", "path": "/api/account/ssh-key", "auth": "user", "csrf": false, "summary": "The signed-in user's SSH public key, derived user-id, and generation time (never the private key)." },
       { "method": "GET", "path": "/api/account/ssh-key/download", "auth": "user", "csrf": false, "summary": "Download the signed-in user's own SSH key; requires part=private|public. Private downloads are audited (metadata only)." },
       { "method": "POST", "path": "/api/account/ssh-key/regenerate", "auth": "user", "csrf": true, "summary": "Replace the signed-in user's SSH keypair and rotate it on their servers (remove old public key, install new), and on the jump server using the account for the configured jump account model (the shared jumper account in shared mode, the user's own account otherwise); returns a per-server summary (audited, no key material)." },
@@ -285,7 +286,7 @@
       {
         "name": "users",
         "description": "Accounts with role, status, self-service flag, per-user apps server/port, and a per-user Ed25519 SSH keypair (generated at creation, backfilled by migration; key material is served only to the owning user).",
-        "columns": ["id", "username", "password_hash", "role", "is_active", "must_change_password", "self_service", "apps_server", "apps_server_ip", "apps_port", "ssh_private_key", "ssh_public_key", "ssh_key_generated_at", "created_at", "updated_at"],
+        "columns": ["id", "username", "password_hash", "role", "is_active", "must_change_password", "self_service", "apps_server", "apps_server_ip", "apps_port", "ssh_private_key", "ssh_public_key", "ssh_key_generated_at", "theme", "created_at", "updated_at"],
         "primaryKey": ["id"]
       },
       {
