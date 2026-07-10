@@ -81,6 +81,7 @@
         { "path": "frontend/src/components/AuditView.tsx", "role": "Admin audit-log viewer." },
         { "path": "frontend/src/components/AboutView.tsx", "role": "Build metadata, canonical linked GitHub development-team handles, and runtime collaborators." },
         { "path": "frontend/src/components/ServersView.tsx", "role": "Servers section: create and manage servers grouped by owner with compact usage charts; per-server Change resources / Reboot / Delete (self-service owner within quota, or admin on any server). Create is collapsed behind an Add server button; a filter searches name/hostname/ip/template/kind/status/owner; admins see their own servers first (My servers) then Users' servers." },
+        { "path": "frontend/src/components/UserGuideView.tsx", "role": "In-app User Guide (route /user-guide, sidebar link below Servers, all users): hand-authored task-oriented walkthrough with labeled administrator sections and inline-SVG flow diagrams; no markdown/mermaid dependency." },
         { "path": "frontend/src/components/Sparkline.tsx", "role": "Dependency-free compact SVG sparkline used by the server usage charts." },
         { "path": "frontend/src/lib", "role": "Helpers: links, image resize, clipboard, password." },
         { "path": "frontend/public/team-icons", "role": "Bundled team-icon SVG catalogue (generic-IT and cybersecurity sets)." },
@@ -253,8 +254,9 @@
       { "method": "DELETE", "path": "/api/settings/teams/{team_id}", "auth": "admin", "csrf": true, "summary": "Delete a team." },
       { "method": "POST", "path": "/api/settings/teams/reorder", "auth": "admin", "csrf": true, "summary": "Set the sidebar order of all teams." },
       { "method": "GET", "path": "/api/settings/provisioning", "auth": "admin", "csrf": false, "summary": "Read LXC/VM provider and provisioning-policy settings (the Proxmox API key is never returned; only a presence flag)." },
-      { "method": "PATCH", "path": "/api/settings/provisioning", "auth": "admin", "csrf": true, "summary": "Update provider/policy settings; touching provider connection fields runs a Proxmox connection test and stores its status and log." },
+      { "method": "PATCH", "path": "/api/settings/provisioning", "auth": "admin", "csrf": true, "summary": "Update provider/policy settings (incl. selected Proxmox realms, user-pool prefix, and the add-to-pool toggle); touching provider connection fields runs a Proxmox connection test and stores its status and log." },
       { "method": "GET", "path": "/api/settings/provisioning/provider-templates", "auth": "admin", "csrf": false, "summary": "Live template/VM list from the provider, honoring the name filter and templates-only toggle." },
+      { "method": "GET", "path": "/api/settings/provisioning/realms", "auth": "admin", "csrf": false, "summary": "Live Proxmox authentication realms (GET /access/domains) for the admin realm multi-select; empty list when the provider is unconfigured or unreachable." },
       { "method": "POST", "path": "/api/settings/jump-server/sync", "auth": "admin", "csrf": true, "summary": "Onboard every active user to the configured jump server (idempotent); returns a per-user summary." },
       { "method": "POST", "path": "/api/settings/jump-server/account-mode", "auth": "admin", "csrf": true, "summary": "Switch the jump account model (per_user/shared); requires acknowledgment, re-syncs all users, and reverts on any failure." },
       { "method": "GET", "path": "/api/settings/ssh-keys", "auth": "admin", "csrf": false, "summary": "List registered SSH keys (registry; no private material returned)." },
@@ -335,14 +337,14 @@
       },
       {
         "name": "audit_log",
-        "description": "Audit trail of actions, grouped by category (application, user, system). User-category server actions include server_create, server_update, server_reboot, server_delete/cancel, and server_mesh (trusted SSH mesh outcome: established/skipped/failed with the reason).",
+        "description": "Audit trail of actions, grouped by category (application, user, system). User-category server actions include server_create, server_update, server_reboot, server_delete/cancel, server_mesh (trusted SSH mesh outcome), and server_pool_add (Proxmox user-pool assignment outcome: ok/failed with the pool id).",
         "columns": ["id", "created_at", "category", "action", "actor_id", "actor_username", "target_type", "target_id", "target_name", "detail"],
         "primaryKey": ["id"]
       },
       {
         "name": "settings",
-        "description": "Single pinned row (id = 1) for reverse-proxy, branding, LXC/VM provider (Proxmox; API key stored write-only), and server-provisioning policy configuration. provisioning_allow_resource_edit is retained read/write for backward compatibility but no longer consulted for authorization (any self-service user may edit their own non-admin-managed server's resources) and is no longer surfaced in the admin UI.",
-        "columns": ["id", "nginx_host", "nginx_user", "nginx_conf_path", "ssh_key_path", "reverse_proxy_ssh_key_id", "appmanager_proxy_host", "appmanager_proxy_port", "alias_template", "app_name", "app_logo", "collaborators", "default_theme", "configured", "provider_type", "proxmox_url", "proxmox_token_name", "proxmox_api_key", "proxmox_template_filter", "proxmox_templates_only", "proxmox_verify_tls", "proxmox_conn_status", "proxmox_conn_log", "provisioning_self_service", "provisioning_max_servers", "provisioning_allow_resource_edit", "provisioning_max_cpus", "provisioning_max_memory_gb", "provisioning_max_disk_gb", "jump_enabled", "jump_host", "jump_user", "jump_port", "jump_ssh_key_id", "jump_management_user", "jump_account_mode", "jump_jumper_user", "jump_bundle_override", "jump_bundle_host", "jump_bundle_port", "updated_at"],
+        "description": "Single pinned row (id = 1) for reverse-proxy, branding, LXC/VM provider (Proxmox; API key stored write-only), and server-provisioning policy configuration. proxmox_realms (JSON list) and proxmox_pool_prefix drive the Proxmox user-pool assignment; provisioning_add_to_pool (default on) enables adding each created guest to its owner's pool. provisioning_allow_resource_edit is retained read/write for backward compatibility but no longer consulted for authorization (any self-service user may edit their own non-admin-managed server's resources) and is no longer surfaced in the admin UI.",
+        "columns": ["id", "nginx_host", "nginx_user", "nginx_conf_path", "ssh_key_path", "reverse_proxy_ssh_key_id", "appmanager_proxy_host", "appmanager_proxy_port", "alias_template", "app_name", "app_logo", "collaborators", "default_theme", "configured", "provider_type", "proxmox_url", "proxmox_token_name", "proxmox_api_key", "proxmox_template_filter", "proxmox_templates_only", "proxmox_verify_tls", "proxmox_conn_status", "proxmox_conn_log", "proxmox_realms", "proxmox_pool_prefix", "provisioning_self_service", "provisioning_max_servers", "provisioning_allow_resource_edit", "provisioning_max_cpus", "provisioning_max_memory_gb", "provisioning_max_disk_gb", "provisioning_add_to_pool", "jump_enabled", "jump_host", "jump_user", "jump_port", "jump_ssh_key_id", "jump_management_user", "jump_account_mode", "jump_jumper_user", "jump_bundle_override", "jump_bundle_host", "jump_bundle_port", "updated_at"],
         "primaryKey": ["id"]
       },
       {

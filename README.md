@@ -269,9 +269,19 @@ list has a **filter** box (case-insensitive match across name, description, URL,
 teams, and owner). For an administrator, their own applications are shown first
 under **"My applications"**, then everyone else's under **"Other users'
 applications"**; the **move up/down** ordering controls act within each group
-and are hidden while a filter is active. The **User management** tab likewise
-collapses **Create user** behind an **Add user** button and offers a filter over
-username, user ID, role, and teams.
+and are hidden while a filter is active. When an approved alias application's
+reverse-proxy configuration is changed, saving surfaces the push outcome, and a
+highlighted **Push to reverse proxy** button appears next to Save whenever the
+change still needs applying — so it's clear a push is required. The **User
+management** tab likewise collapses **Create user** behind an **Add user**
+button and offers a filter over username, user ID, role, and teams; user cards
+are **collapsed by default** (identity + badges only) and expand on demand to
+show the user's teams and servers.
+
+A built-in **User guide** is available from the sidebar (below Servers, for all
+users): a task-oriented walkthrough of signing in, launching apps, the account
+and SSH bundle, and managing servers, with clearly labeled administrator
+sections and simple flow diagrams.
 
 When an administrator creates a user, the username must be an **email address**;
 it is the user's sign-in name. Each user also gets a derived **user ID** — the
@@ -594,14 +604,21 @@ Server**, and **Server Templates**.
   warning when disabled) supports self-signed lab instances. Saving runs a
   connection test; the result is shown with a **View connection log** toggle,
   and after a successful test a verification dropdown lists the matching
-  templates read live from Proxmox.
+  templates read live from Proxmox. After a successful connection the admin can
+  also select the provider's **realms** (multi-select, read live from
+  `/access/domains`) that apply to platform pool operations, and an optional
+  **user pool id prefix**.
 - **Provisioning policy** — enable/disable self-service server provisioning
   (self-service users and administrators; normal users cannot request their own
   servers), the maximum number of servers per user, and the per-user resource
   caps (defaults: 12 CPUs, 24 GB memory, 200 GB disk). Any self-service user
   may modify their own non-admin-managed server's resources within these caps
   — there is no separate opt-in toggle for this. Administrator-made resource
-  changes do not count against these limits.
+  changes do not count against these limits. **Add servers to User Pool** (on by
+  default) adds each created guest — whether created by an admin or a
+  self-service user — to its owner's Proxmox pool, creating the pool if missing.
+  The pool id is the owner's derived user id, optionally prefixed; the operation
+  is best-effort and never blocks server creation.
 - **Server templates** — register the Proxmox templates (LXC or VM, by VM ID)
   offered to users when creating a server, each with an app-facing name and an
   **SSH key** chosen from the registry (see Remote Access) for later
