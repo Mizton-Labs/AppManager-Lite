@@ -105,7 +105,8 @@
       "keyModules": [
         { "path": "scripts/check.sh", "role": "Backend byte-compile + frontend type-check." },
         { "path": "scripts/test.sh", "role": "Backend pytest + frontend vitest." },
-        { "path": "scripts/security-check.sh", "role": "Brand-genericization scan, ignore hygiene, dependency audits." }
+        { "path": "scripts/security-check.sh", "role": "Brand-genericization scan, ignore hygiene, dependency audits." },
+        { "path": "scripts/oneoff_backfill_apps_server.py", "role": "One-off migration: sets each alias application's apps_server to the owner's registered apps-server hostname when empty or custom (dry-run default; --apply updates, audits apps_server_backfill, and re-pushes). Idempotent; excludes a fixed app-id list." }
       ]
     }
   ],
