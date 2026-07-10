@@ -731,6 +731,7 @@ def create_server_template(
             main_os_user=payload.main_os_user,
             enable_sudo=payload.enable_sudo,
             enable_trusted_access=payload.enable_trusted_access,
+            is_apps_server=payload.is_apps_server,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -783,6 +784,7 @@ def update_server_template(
             main_os_user=payload.main_os_user,
             enable_sudo=payload.enable_sudo,
             enable_trusted_access=payload.enable_trusted_access,
+            is_apps_server=payload.is_apps_server,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -841,7 +843,12 @@ def list_account_server_templates(
 ) -> list[ServerTemplateOptionOut]:
     """Template options for the Add Server form (no vmid or key paths)."""
     return [
-        ServerTemplateOptionOut(id=t["id"], name=t["name"], kind=t["kind"])
+        ServerTemplateOptionOut(
+            id=t["id"],
+            name=t["name"],
+            kind=t["kind"],
+            is_apps_server=bool(t.get("is_apps_server", False)),
+        )
         for t in repository.list_server_templates(conn)
     ]
 
@@ -852,23 +859,37 @@ def get_account_server_access(
     conn: sqlite3.Connection = Depends(get_db),
 ) -> ServerAccessOut:
     row = repository.get_settings_row(conn)
+    # issue_017: a self-service user may edit their own servers' resources only
+    # when the admin has enabled it; admins may always edit.
+    allow_resource_edit = user.get("role") == "admin" or (
+        bool(user.get("self_service"))
+        and bool(row.get("provisioning_allow_resource_edit", 0))
+    )
     if not _provider_configured(row):
         return ServerAccessOut(
-            can_create=False, reason="The LXC/VM provider is not configured."
+            can_create=False,
+            reason="The LXC/VM provider is not configured.",
+            allow_resource_edit=allow_resource_edit,
         )
     if user.get("role") == "admin":
-        return ServerAccessOut(can_create=True)
+        return ServerAccessOut(
+            can_create=True, allow_resource_edit=allow_resource_edit
+        )
     if not user.get("self_service"):
         return ServerAccessOut(
             can_create=False,
             reason="Only self-service accounts may create servers.",
+            allow_resource_edit=allow_resource_edit,
         )
     if not bool(row.get("provisioning_self_service", 0)):
         return ServerAccessOut(
             can_create=False,
             reason="Self-service server provisioning is disabled.",
+            allow_resource_edit=allow_resource_edit,
         )
-    return ServerAccessOut(can_create=True)
+    return ServerAccessOut(
+        can_create=True, allow_resource_edit=allow_resource_edit
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1098,6 +1119,76 @@ def _run_deletion_sweep(conn: sqlite3.Connection) -> int:
     return actioned
 
 
+# issue_017: cap the number of inline provider reads performed while listing a
+# user's servers, so a large backlog of unrecorded specs cannot make one list
+# request issue an unbounded number of synchronous Proxmox calls.
+_MAX_BACKFILL_PER_REQUEST = 8
+
+
+def _backfill_server_resources(
+    conn: sqlite3.Connection,
+    user_id: int,
+    rows: list[dict[str, Any]],
+) -> None:
+    """Populate missing (0) CPU/memory/disk specs from the provider.
+
+    Best-effort and fully guarded. Only targets rows that have a vmid+node and
+    whose recorded cpus is 0; reference servers (no vmid) are left untouched.
+    Successful reads are persisted and the in-memory row dicts are updated so
+    the response reflects the refreshed values immediately.
+    """
+    candidates = [
+        r
+        for r in rows
+        if int(r.get("cpus") or 0) == 0
+        and r.get("vmid")
+        and (r.get("node") or "")
+        and r.get("kind") == "lxc"
+        and r.get("status") != "failed"
+    ]
+    if not candidates:
+        return
+    # Bound the synchronous provider work per request: at most a handful of
+    # reads run inline; the rest are picked up on subsequent list refreshes as
+    # earlier ones are persisted (and drop out of the candidate set).
+    candidates = candidates[:_MAX_BACKFILL_PER_REQUEST]
+    try:
+        row = repository.get_settings_row(conn)
+        if not _provider_configured(row):
+            return
+        config = _provider_config(row)
+    except Exception:  # noqa: BLE001
+        logger.exception("Resource backfill: could not load provider config")
+        return
+    for server in candidates:
+        try:
+            result = proxmox.ProxmoxResult()
+            specs = proxmox.get_guest_resources(
+                config,
+                server["node"],
+                int(server["vmid"]),
+                server["kind"],
+                result=result,
+            )
+            if not specs:
+                continue
+            repository.update_user_server(
+                conn,
+                user_id,
+                server["id"],
+                cpus=int(specs["cpus"]),
+                memory_gb=int(specs["memory_gb"]),
+                disk_gb=int(specs["disk_gb"]),
+            )
+            server["cpus"] = int(specs["cpus"])
+            server["memory_gb"] = int(specs["memory_gb"])
+            server["disk_gb"] = int(specs["disk_gb"])
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Resource backfill failed for server id=%s", server.get("id")
+            )
+
+
 @router.get("/users/{user_id}/servers", response_model=list[UserServerOut])
 def list_user_servers(
     user_id: int,
@@ -1112,6 +1203,12 @@ def list_user_servers(
     # caller sees an up-to-date view. Best-effort; never blocks the response.
     expire_pending_server_deletions(conn)
     rows = repository.list_user_servers(conn, user_id)
+    # issue_017: lazily backfill resource specs from the provider for any guest
+    # that has a vmid+node but whose recorded specs are 0 (e.g. older records or
+    # clones whose specs weren't reported at creation). Persist so the "always
+    # show resources" card is populated on subsequent loads. Fully guarded: a
+    # provider error must never fail or slow the list beyond the attempt.
+    _backfill_server_resources(conn, user_id, rows)
     if is_admin:
         # Admins see everything, including servers whose destroy failed, with
         # the failure detail for recovery.

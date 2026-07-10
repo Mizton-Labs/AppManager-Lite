@@ -137,6 +137,7 @@ CREATE TABLE IF NOT EXISTS server_templates (
     name               TEXT    NOT NULL UNIQUE,
     kind               TEXT    NOT NULL CHECK (kind IN ('lxc', 'vm')),
     admin_ssh_key_path TEXT    NOT NULL DEFAULT '',
+    is_apps_server     INTEGER NOT NULL DEFAULT 0,
     created_at         TEXT    NOT NULL DEFAULT (datetime('now')),
     updated_at         TEXT    NOT NULL DEFAULT (datetime('now'))
 );
@@ -601,6 +602,12 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         "server_templates",
         "enable_trusted_access",
         "INTEGER NOT NULL DEFAULT 1",
+    )
+    # issue_017: mark a template as a selectable "Apps server". Flagged
+    # templates' names are offered in the apps-server dropdowns for user
+    # creation and application management.
+    _add_column(
+        conn, "server_templates", "is_apps_server", "INTEGER NOT NULL DEFAULT 0"
     )
     _add_column(conn, "user_servers", "admin_ssh_key_id", "INTEGER")
 

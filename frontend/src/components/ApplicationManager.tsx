@@ -36,6 +36,20 @@ export function ApplicationManager(props: {
   const [pushBusy, setPushBusy] = useState<Record<number, boolean>>({});
   const [pushMessages, setPushMessages] = useState<Record<number, string>>({});
   const [ownerOptions, setOwnerOptions] = useState<ApiUser[]>([]);
+  // issue_017: names of templates flagged as "Apps server", offered as a
+  // dropdown for the alias upstream host (plus a "Custom" free-text option).
+  const [appsServers, setAppsServers] = useState<string[]>([]);
+
+  useEffect(() => {
+    api
+      .listAccountServerTemplates()
+      .then((templates) =>
+        setAppsServers(
+          templates.filter((t) => t.is_apps_server).map((t) => t.name),
+        ),
+      )
+      .catch(() => setAppsServers([]));
+  }, []);
 
   const reload = useCallback(async () => {
     const [nextApps, nextUsers] = await Promise.all([
@@ -161,6 +175,7 @@ export function ApplicationManager(props: {
         <CreateApplicationCard
           isAdmin={isAdmin}
           teamOptions={teamOptions}
+          appsServers={appsServers}
           defaultAppsServer={defaultAliasAppsServer(props.currentUser)}
           onCreated={(created) => {
             setCreating(false);
@@ -240,6 +255,7 @@ export function ApplicationManager(props: {
                 pushBusy={Boolean(pushBusy[app.id])}
                 pushMessage={pushMessages[app.id]}
                 ownerOptions={ownerOptions}
+                appsServers={appsServers}
                 initiallyEditing={editAppId === app.id}
                 onDelete={() =>
                   runAction(async () => {
@@ -362,11 +378,19 @@ function AliasUpstreamFields(props: {
   host: string;
   port: string;
   path: string;
+  appsServers: readonly string[];
   onProtocolChange: (value: "http" | "https") => void;
   onHostChange: (value: string) => void;
   onPortChange: (value: string) => void;
   onPathChange: (value: string) => void;
 }) {
+  const CUSTOM = "__custom__";
+  // The dropdown reflects a known apps server when the current host matches one;
+  // otherwise it falls back to Custom with a free-text field (also the default
+  // for an empty host, so manual entry stays available).
+  const isKnown = props.appsServers.includes(props.host);
+  const selectValue = isKnown ? props.host : CUSTOM;
+  const showCustom = !isKnown || props.appsServers.length === 0;
   return (
     <div className="field">
       <span>Alias upstream</span>
@@ -385,15 +409,31 @@ function AliasUpstreamFields(props: {
           </select>
         </label>
         <label className="field compact-field alias-upstream-host">
-          <span>Server host/IP</span>
-          <input
-            type="text"
-            value={props.host}
-            onChange={(e) => props.onHostChange(e.target.value)}
-            placeholder="apps.example.com"
-            aria-label="Alias upstream server host or IP"
-            required
-          />
+          <span>Apps server</span>
+          <select
+            value={selectValue}
+            onChange={(e) =>
+              props.onHostChange(e.target.value === CUSTOM ? "" : e.target.value)
+            }
+            aria-label="Alias upstream apps server"
+          >
+            {props.appsServers.map((name) => (
+              <option key={name} value={name}>
+                {name}
+              </option>
+            ))}
+            <option value={CUSTOM}>Custom…</option>
+          </select>
+          {showCustom && (
+            <input
+              type="text"
+              value={props.host}
+              onChange={(e) => props.onHostChange(e.target.value)}
+              placeholder="apps.example.com"
+              aria-label="Alias upstream server host or IP"
+              required
+            />
+          )}
         </label>
         <label className="field compact-field alias-upstream-port">
           <span>Port</span>
@@ -623,6 +663,7 @@ function CreateApplicationCard(props: {
   isAdmin: boolean;
   teamOptions: readonly string[];
   defaultAppsServer: string;
+  appsServers: readonly string[];
   onCreated: (created: Application) => void;
   onCancel: () => void;
   onError: (message: string) => void;
@@ -714,6 +755,7 @@ function CreateApplicationCard(props: {
             host={appsServer}
             port={appsPort}
             path={appsPath}
+            appsServers={props.appsServers}
             onProtocolChange={setAppsProtocol}
             onHostChange={setAppsServer}
             onPortChange={setAppsPort}
@@ -773,6 +815,7 @@ function ApplicationRow(props: {
   app: Application;
   isAdmin: boolean;
   defaultAppsServer: string;
+  appsServers: readonly string[];
   canMoveUp: boolean;
   canMoveDown: boolean;
   onMoveUp: () => void;
@@ -1149,6 +1192,7 @@ function ApplicationRow(props: {
               host={appsServer}
               port={appsPort}
               path={appsPath}
+              appsServers={props.appsServers}
               onProtocolChange={setAppsProtocol}
               onHostChange={setAppsServer}
               onPortChange={setAppsPort}

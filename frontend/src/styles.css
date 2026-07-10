@@ -73,14 +73,16 @@
 
 :root[data-theme="energy"] {
   color-scheme: dark;
-  --bg: #15120d;
-  --bg-elevated: #211d16;
-  --bg-card: #2a251d;
-  --panel: #242017;
-  --border: #514738;
-  --border-strong: #77664d;
-  --text: #fff6df;
-  --muted: #c6b89f;
+  /* Neutral charcoal-grey surfaces (issue_017): darker, less sepia, with
+     brighter stepped borders while keeping the energetic amber accent. */
+  --bg: #101216;
+  --bg-elevated: #171a1f;
+  --bg-card: #1f232a;
+  --panel: #191d23;
+  --border: #3a414d;
+  --border-strong: #5b6472;
+  --text: #f2f4f8;
+  --muted: #a9b2bf;
   --accent: #ffd447;
   --accent-hover: #f0b900;
   --danger: #ff6f61;
@@ -98,12 +100,12 @@
   --alert-error-bg: color-mix(in srgb, var(--danger) 13%, var(--bg-card));
   --alert-warn-bg: color-mix(in srgb, var(--warn) 13%, var(--bg-card));
   --alert-success-bg: color-mix(in srgb, var(--success) 13%, var(--bg-card));
-  --overlay: rgb(12 9 4 / 76%);
-  --shadow: rgb(0 0 0 / 38%);
-  --neutral-soft: #433a2d;
-  --neutral-text: #e5d9c2;
-  --code-bg: #17130e;
-  --spark-label: #d4c5a8;
+  --overlay: rgb(6 8 11 / 78%);
+  --shadow: rgb(0 0 0 / 42%);
+  --neutral-soft: #2c333d;
+  --neutral-text: #dbe1ea;
+  --code-bg: #14171c;
+  --spark-label: #aab3c0;
 }
 
 :root[data-theme="classic"] {
@@ -758,6 +760,30 @@ textarea:focus-visible,
 .quota-bars-loading {
   font-size: 0.75rem;
   margin: 0;
+}
+
+/* issue_017: inline self-service server resource editor (Account cards). */
+.resource-editor {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: flex-end;
+  margin: 0.4rem 0 0.6rem;
+  padding: 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+}
+
+.resource-editor .field {
+  min-width: 6.5rem;
+  flex: 1 1 6.5rem;
+}
+
+.btn-inline {
+  padding: 0 0.35rem;
+  font-size: 0.8rem;
+  line-height: 1.2;
 }
 
 /* Target-type radios + alias prefix */

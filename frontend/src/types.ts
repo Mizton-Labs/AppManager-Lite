@@ -248,6 +248,7 @@ export interface ServerTemplate {
   main_os_user: string;
   enable_sudo: boolean;
   enable_trusted_access: boolean;
+  is_apps_server: boolean;
 }
 
 /** A user's provisioned (or referenced) LXC/VM server. */
@@ -330,11 +331,13 @@ export interface ServerTemplateOption {
   id: number;
   name: string;
   kind: "lxc" | "vm";
+  is_apps_server: boolean;
 }
 
 export interface ServerAccess {
   can_create: boolean;
   reason: string;
+  allow_resource_edit: boolean;
 }
 
 /** One resource dimension for the create-form quota bars (issue_015-r4 F3). */
@@ -361,6 +364,7 @@ export interface CreateServerTemplateInput {
   main_os_user?: string;
   enable_sudo?: boolean;
   enable_trusted_access?: boolean;
+  is_apps_server?: boolean;
 }
 
 export interface UpdateServerTemplateInput {
@@ -369,6 +373,7 @@ export interface UpdateServerTemplateInput {
   kind?: "lxc" | "vm";
   admin_ssh_key_path?: string;
   admin_ssh_key_id?: number | null;
+  is_apps_server?: boolean;
 }
 
 export interface CreateBundleTemplateInput {

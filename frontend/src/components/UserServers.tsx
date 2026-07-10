@@ -26,6 +26,12 @@ export function UserServersPanel(props: {
   userDerivedId?: string;
   /** Prefill for the comma-separated OS users receiving the public key. */
   defaultPubkeyUser?: string;
+  /**
+   * Whether the caller may edit their own servers' resources (self-service +
+   * admin-enabled). Only set from the Account page so the inline resource
+   * editor is Account-only.
+   */
+  allowResourceEdit?: boolean;
 }) {
   const [serversList, setServersList] = useState<UserServer[] | null>(null);
   const [templates, setTemplates] = useState<ServerTemplateOption[]>([]);
@@ -121,6 +127,8 @@ export function UserServersPanel(props: {
               server={server}
               canDelete={props.canDelete}
               isAdmin={props.isAdmin ?? false}
+              allowResourceEdit={props.allowResourceEdit ?? false}
+              userId={props.userId}
               onChanged={refresh}
             />
           ))}
@@ -441,6 +449,8 @@ function ServerCard(props: {
   server: UserServer;
   canDelete: boolean;
   isAdmin: boolean;
+  allowResourceEdit: boolean;
+  userId: number;
   onChanged: () => void | Promise<void>;
 }) {
   const { server } = props;
@@ -450,6 +460,7 @@ function ServerCard(props: {
   const [error, setError] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [confirmingForce, setConfirmingForce] = useState(false);
+  const [editingResources, setEditingResources] = useState(false);
 
   const needsIp = server.kind === "vm" && !server.ip_address &&
     server.status !== "failed";
@@ -518,6 +529,43 @@ function ServerCard(props: {
     }
   }
 
+  // issue_017: a self-service user may edit an LXC guest's resources when the
+  // admin has enabled it. Mirrors the backend's eligibility guard so the
+  // inline editor only appears when a save could actually succeed.
+  const canEditResources =
+    props.allowResourceEdit &&
+    server.kind === "lxc" &&
+    !!server.vmid &&
+    server.status !== "failed" &&
+    !server.deletion_pending &&
+    !server.admin_modified;
+
+  async function saveResources(next: {
+    cpus: number;
+    memory_gb: number;
+    disk_gb: number;
+  }) {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.updateUserServer(props.userId, server.id, {
+        cpus: next.cpus,
+        memory_gb: next.memory_gb,
+        disk_gb: next.disk_gb,
+      });
+      setEditingResources(false);
+      await props.onChanged();
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : "Unable to change resources.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const cardClass = server.deletion_failed
     ? "server-card deletion-failed"
     : server.deletion_pending
@@ -546,13 +594,35 @@ function ServerCard(props: {
       </div>
       <p className="muted server-meta">
         {server.template_name && <>Template: {server.template_name} · </>}
-        {server.cpus > 0 && (
+        {server.cpus > 0 || server.memory_gb > 0 || server.disk_gb > 0 ? (
           <>
             {server.cpus} CPU · {server.memory_gb} GB RAM · {server.disk_gb} GB
             disk
           </>
+        ) : (
+          <>Resources: not recorded</>
+        )}
+        {canEditResources && !editingResources && (
+          <>
+            {" · "}
+            <button
+              type="button"
+              className="btn ghost btn-inline"
+              onClick={() => setEditingResources(true)}
+            >
+              Edit
+            </button>
+          </>
         )}
       </p>
+      {canEditResources && editingResources && (
+        <ResourceEditor
+          server={server}
+          busy={busy}
+          onCancel={() => setEditingResources(false)}
+          onSave={saveResources}
+        />
+      )}
       {error && (
         <p className="alert error" role="alert">
           {error}
@@ -700,6 +770,95 @@ function ServerCard(props: {
 
       {showLog && <pre className="push-log">{server.last_log}</pre>}
     </article>
+  );
+}
+
+/** Inline editor for a self-service LXC guest's CPU/memory/disk (issue_017). */
+function ResourceEditor(props: {
+  server: UserServer;
+  busy: boolean;
+  onCancel: () => void;
+  onSave: (next: {
+    cpus: number;
+    memory_gb: number;
+    disk_gb: number;
+  }) => void | Promise<void>;
+}) {
+  const { server } = props;
+  const [cpus, setCpus] = useState(String(server.cpus || 1));
+  const [memoryGb, setMemoryGb] = useState(String(server.memory_gb || 1));
+  const [diskGb, setDiskGb] = useState(String(server.disk_gb || 1));
+
+  const parsed = {
+    cpus: Number(cpus),
+    memory_gb: Number(memoryGb),
+    disk_gb: Number(diskGb),
+  };
+  const valid =
+    Number.isFinite(parsed.cpus) &&
+    parsed.cpus >= 1 &&
+    Number.isFinite(parsed.memory_gb) &&
+    parsed.memory_gb >= 1 &&
+    Number.isFinite(parsed.disk_gb) &&
+    parsed.disk_gb >= 1 &&
+    // Disk can only be grown, not shrunk (Proxmox constraint).
+    parsed.disk_gb >= (server.disk_gb || 0);
+
+  return (
+    <div className="resource-editor" aria-label="Edit server resources">
+      <label className="field">
+        <span>CPUs</span>
+        <input
+          type="number"
+          min={1}
+          value={cpus}
+          onChange={(e) => setCpus(e.target.value)}
+          aria-label="CPUs"
+        />
+      </label>
+      <label className="field">
+        <span>Memory (GB)</span>
+        <input
+          type="number"
+          min={1}
+          value={memoryGb}
+          onChange={(e) => setMemoryGb(e.target.value)}
+          aria-label="Memory (GB)"
+        />
+      </label>
+      <label className="field">
+        <span>Disk (GB)</span>
+        <input
+          type="number"
+          min={server.disk_gb || 1}
+          value={diskGb}
+          onChange={(e) => setDiskGb(e.target.value)}
+          aria-label="Disk (GB)"
+        />
+        <span className="field-hint muted">
+          Disk can only be grown, not shrunk. Changes must stay within your
+          administrator's per-user limits.
+        </span>
+      </label>
+      <div className="row-actions">
+        <button
+          type="button"
+          className="btn primary"
+          disabled={props.busy || !valid}
+          onClick={() => props.onSave(parsed)}
+        >
+          {props.busy ? "Saving..." : "Save resources"}
+        </button>
+        <button
+          type="button"
+          className="btn ghost"
+          disabled={props.busy}
+          onClick={props.onCancel}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
   );
 }
 

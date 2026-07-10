@@ -140,6 +140,30 @@ def test_template_options_default_on_and_roundtrip(admin) -> None:
     assert upd.json()["enable_sudo"] is True
 
 
+def test_apps_server_flag_defaults_off_and_roundtrips(admin) -> None:
+    client, csrf, _ = admin
+    default = _add_template(client, csrf, name="PlainSrv")
+    assert default["is_apps_server"] is False
+
+    apps = _add_template(client, csrf, name="AppsSrv", is_apps_server=True)
+    assert apps["is_apps_server"] is True
+
+    # Exposed to non-admins via the account options endpoint.
+    options = client.get("/api/account/server-templates").json()
+    by_name = {o["name"]: o for o in options}
+    assert by_name["AppsSrv"]["is_apps_server"] is True
+    assert by_name["PlainSrv"]["is_apps_server"] is False
+
+    # Toggle off via PATCH.
+    upd = client.patch(
+        f"/api/settings/server-templates/{apps['id']}",
+        json={"is_apps_server": False},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert upd.status_code == 200
+    assert upd.json()["is_apps_server"] is False
+
+
 def test_invalid_main_os_user_rejected(admin) -> None:
     client, csrf, _ = admin
     r = client.post(

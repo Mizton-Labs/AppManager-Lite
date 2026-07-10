@@ -40,6 +40,12 @@ function stubBackend(initial: Application[]) {
     if (method === "GET" && /\/api\/applications\/(manage|mine)$/.test(url)) {
       return jsonResponse(store);
     }
+    if (method === "GET" && url.endsWith("/api/account/server-templates")) {
+      return jsonResponse([
+        { id: 1, name: "apps-lxc", kind: "lxc", is_apps_server: true },
+        { id: 2, name: "plain", kind: "lxc", is_apps_server: false },
+      ]);
+    }
     if (method === "GET" && url.endsWith("/api/users")) {
       return jsonResponse([
         {
@@ -159,9 +165,11 @@ describe("ApplicationManager", () => {
     expect(await screen.findByText("Hunt Workbench")).toBeInTheDocument();
     expect(screen.getByText("Retired Tool")).toBeInTheDocument();
     expect(screen.getByText("disabled")).toBeInTheDocument();
-    expect(String(fetchMock.mock.calls[0][0])).toContain(
-      "/api/applications/manage",
-    );
+    expect(
+      fetchMock.mock.calls.some((c) =>
+        String(c[0]).includes("/api/applications/manage"),
+      ),
+    ).toBe(true);
   });
 
   it("loads the personal endpoint for members", async () => {
@@ -170,9 +178,11 @@ describe("ApplicationManager", () => {
 
     expect(await screen.findByText("Hunt Workbench")).toBeInTheDocument();
     expect(screen.getByText("pending")).toBeInTheDocument();
-    expect(String(fetchMock.mock.calls[0][0])).toContain(
-      "/api/applications/mine",
-    );
+    expect(
+      fetchMock.mock.calls.some((c) =>
+        String(c[0]).includes("/api/applications/mine"),
+      ),
+    ).toBe(true);
   });
 
   it("creates an application behind the New application button and always sends url_type", async () => {
@@ -207,6 +217,37 @@ describe("ApplicationManager", () => {
         teams: [],
       },
     );
+  });
+
+  it("offers apps-server templates as a dropdown with a Custom fallback", async () => {
+    const fetchMock = stubBackend([]);
+    render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
+
+    await screen.findByText(/No applications yet/i);
+    await userEvent.click(
+      screen.getByRole("button", { name: /new application/i }),
+    );
+    await userEvent.type(screen.getByLabelText("Name"), "Aliased");
+
+    await userEvent.type(
+      screen.getByLabelText("Local alias relative path"),
+      "aliased",
+    );
+    const select = await screen.findByLabelText(/alias upstream apps server/i);
+    await userEvent.selectOptions(select, "apps-lxc");
+    await userEvent.type(screen.getByLabelText(/alias upstream port/i), "8080");
+    await userEvent.click(
+      screen.getByRole("button", { name: /create application/i }),
+    );
+
+    const postCall = fetchMock.mock.calls.find(
+      ([u, init]) =>
+        String(u).endsWith("/api/applications") &&
+        (init?.method ?? "GET") === "POST",
+    );
+    expect(
+      JSON.parse((postCall![1] as RequestInit).body as string),
+    ).toMatchObject({ apps_server: "apps-lxc" });
   });
 
   it("defaults new applications to the local-alias radio", async () => {

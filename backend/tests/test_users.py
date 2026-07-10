@@ -113,14 +113,18 @@ def test_create_user_rejects_duplicate_username(admin) -> None:
     assert _create(client, csrf, "carol").status_code == 409
 
 
-def test_create_user_requires_apps_server_host_or_ip(admin) -> None:
+def test_create_user_allows_empty_apps_server(admin) -> None:
+    # issue_017: an apps-server location is optional; a user may be created
+    # without one (they can still view applications).
     client, csrf, _ = admin
     resp = client.post(
         "/api/users",
         json={"username": "noserver@example.com", "role": "user", "teams": []},
         headers={"X-CSRF-Token": csrf},
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["user"]["apps_server"] == ""
+    assert resp.json()["user"]["apps_server_ip"] == ""
 
 
 def test_create_user_accepts_apps_server_ip(admin) -> None:

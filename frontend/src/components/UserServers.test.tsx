@@ -449,6 +449,123 @@ describe("UserServersPanel", () => {
     expect(await screen.findByText(/no resource limits/i)).toBeInTheDocument();
     expect(screen.queryByRole("progressbar")).toBeNull();
   });
+
+  it("always shows a resource line, marking unrecorded specs", async () => {
+    stubServers([
+      makeServer({ id: 9, name: "ref", cpus: 0, memory_gb: 0, disk_gb: 0,
+        status: "reference", vmid: null }),
+    ]);
+    render(<UserServersPanel userId={7} canCreate={false} canDelete={false} />);
+    expect(await screen.findByText(/Resources: not recorded/i)).toBeInTheDocument();
+  });
+
+  it("shows the resource editor only when editing is allowed", async () => {
+    stubServers([makeServer()]);
+    render(
+      <UserServersPanel
+        userId={7}
+        canCreate={false}
+        canDelete={false}
+        allowResourceEdit
+      />,
+    );
+    await screen.findByText("coder box - 10.0.7.42");
+    await userEvent.click(screen.getByRole("button", { name: /^Edit$/ }));
+    expect(screen.getByLabelText("CPUs")).toBeInTheDocument();
+    expect(screen.getByLabelText("Memory (GB)")).toBeInTheDocument();
+    expect(screen.getByLabelText("Disk (GB)")).toBeInTheDocument();
+  });
+
+  it("hides the editor for admin-managed or non-eligible servers", async () => {
+    stubServers([makeServer({ admin_modified: true })]);
+    render(
+      <UserServersPanel
+        userId={7}
+        canCreate={false}
+        canDelete={false}
+        allowResourceEdit
+      />,
+    );
+    await screen.findByText("coder box - 10.0.7.42");
+    expect(screen.queryByRole("button", { name: /^Edit$/ })).toBeNull();
+  });
+
+  it("hides the editor entirely when editing is not allowed", async () => {
+    stubServers([makeServer()]);
+    render(<UserServersPanel userId={7} canCreate={false} canDelete={false} />);
+    await screen.findByText("coder box - 10.0.7.42");
+    expect(screen.queryByRole("button", { name: /^Edit$/ })).toBeNull();
+  });
+
+  it("saves changed resources via the update endpoint", async () => {
+    const fetchMock = stubServers([makeServer()]);
+    render(
+      <UserServersPanel
+        userId={7}
+        canCreate={false}
+        canDelete={false}
+        allowResourceEdit
+      />,
+    );
+    await screen.findByText("coder box - 10.0.7.42");
+    await userEvent.click(screen.getByRole("button", { name: /^Edit$/ }));
+    const cpus = screen.getByLabelText("CPUs");
+    await userEvent.clear(cpus);
+    await userEvent.type(cpus, "4");
+    await userEvent.click(
+      screen.getByRole("button", { name: /save resources/i }),
+    );
+    const patch = fetchMock.mock.calls.find(
+      (c) =>
+        /\/api\/users\/7\/servers\/1$/.test(String(c[0])) &&
+        (c[1]?.method ?? "").toUpperCase() === "PATCH",
+    );
+    expect(patch).toBeTruthy();
+    expect(JSON.parse(patch![1]!.body as string)).toMatchObject({ cpus: 4 });
+  });
+
+  it("surfaces a backend error when a resource change is rejected", async () => {
+    let servers = [makeServer()];
+    const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      const json = (payload: unknown, status = 200) =>
+        ({ ok: status < 400, status, json: async () => payload }) as Response;
+      if (url.endsWith("/api/account/server-templates")) return json([]);
+      if (/\/servers\/usage$/.test(url)) {
+        return json({
+          unlimited: false,
+          servers: { used: 1, limit: 3 },
+          cpus: { used: 2, limit: 12 },
+          memory_gb: { used: 4, limit: 24 },
+          disk_gb: { used: 20, limit: 200 },
+        });
+      }
+      if (/\/api\/users\/7\/servers$/.test(url) && method === "GET")
+        return json(servers);
+      if (/\/api\/users\/7\/servers\/\d+$/.test(url) && method === "PATCH")
+        return json({ detail: "disk can only be grown, not shrunk" }, 502);
+      return json({ detail: "unexpected" }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    void servers;
+
+    render(
+      <UserServersPanel
+        userId={7}
+        canCreate={false}
+        canDelete={false}
+        allowResourceEdit
+      />,
+    );
+    await screen.findByText("coder box - 10.0.7.42");
+    await userEvent.click(screen.getByRole("button", { name: /^Edit$/ }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /save resources/i }),
+    );
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/disk can only be grown/i);
+  });
 });
 
 describe("quotaLevel", () => {

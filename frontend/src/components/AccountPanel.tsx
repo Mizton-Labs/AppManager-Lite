@@ -110,7 +110,7 @@ function MyServersCard(props: { user: ApiUser }) {
     api
       .getAccountServerAccess()
       .then(setAccess)
-      .catch(() => setAccess({ can_create: false, reason: "" }));
+      .catch(() => setAccess({ can_create: false, reason: "", allow_resource_edit: false }));
   }, []);
 
   return (
@@ -128,6 +128,7 @@ function MyServersCard(props: { user: ApiUser }) {
         canCreate={access?.can_create ?? false}
         canDelete={props.user.self_service || props.user.role === "admin"}
         isAdmin={props.user.role === "admin"}
+        allowResourceEdit={access?.allow_resource_edit ?? false}
         userDerivedId={props.user.user_id}
         defaultPubkeyUser={props.user.user_id}
       />

@@ -1428,6 +1428,73 @@ def test_deferred_deletion_no_vmid_row_honors_grace(admin, monkeypatch) -> None:
     assert not any(c.startswith("DELETE ") for c in fake.calls)
 
 
+def test_list_backfills_missing_resource_specs(admin, monkeypatch) -> None:
+    """issue_017: a guest with a vmid but 0 specs is backfilled from the
+    provider on list and persisted; a reference server (no vmid) stays 0."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch, template_resources={
+        "cores": 4, "memory": 8192, "rootfs": "local:120/x,size=40G",
+    })
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    created = _create_member(client, csrf)
+    user_id = created["user"]["id"]
+
+    from app.db import get_connection
+    from app import repository
+    with get_connection() as conn:
+        # A guest with a vmid+node but unrecorded (0) specs.
+        gap = repository.create_user_server(
+            conn, user_id=user_id, name="gap", kind="lxc", vmid=120,
+            node="pve1", status="created",
+        )
+        # A reference record with no vmid.
+        repository.create_user_server(
+            conn, user_id=user_id, name="ref", kind="lxc", status="reference",
+        )
+    assert gap["cpus"] == 0
+
+    listed = {s["name"]: s for s in
+              client.get(f"/api/users/{user_id}/servers").json()}
+    # Backfilled from the provider config (cores=4, memory=8GB, disk=40GB).
+    assert listed["gap"]["cpus"] == 4
+    assert listed["gap"]["memory_gb"] == 8
+    assert listed["gap"]["disk_gb"] == 40
+    # Reference server (no vmid) is left at 0.
+    assert listed["ref"]["cpus"] == 0
+
+    # Persisted: a second list returns the stored values (still populated).
+    listed2 = {s["name"]: s for s in
+               client.get(f"/api/users/{user_id}/servers").json()}
+    assert listed2["gap"]["cpus"] == 4
+
+
+def test_list_survives_backfill_provider_failure(admin, monkeypatch) -> None:
+    """A provider error during resource backfill never fails the list."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    created = _create_member(client, csrf)
+    user_id = created["user"]["id"]
+    from app.db import get_connection
+    from app import repository
+    with get_connection() as conn:
+        repository.create_user_server(
+            conn, user_id=user_id, name="gap", kind="lxc", vmid=120,
+            node="pve1", status="created",
+        )
+    import app.proxmox as proxmox
+
+    def _boom(*a, **k):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr(proxmox, "get_guest_resources", _boom)
+    resp = client.get(f"/api/users/{user_id}/servers")
+    assert resp.status_code == 200
+    assert {s["name"] for s in resp.json()} == {"gap"}
+
+
 def test_duplicate_server_name_rejected(admin, monkeypatch) -> None:
     client, csrf, _ = admin
     _FakeProxmox(monkeypatch)
@@ -1681,7 +1748,12 @@ def test_account_server_helpers(admin, monkeypatch) -> None:
     options = member.get("/api/account/server-templates")
     assert options.status_code == 200
     assert options.json() == [
-        {"id": template["id"], "name": "Debian Coder", "kind": "lxc"}
+        {
+            "id": template["id"],
+            "name": "Debian Coder",
+            "kind": "lxc",
+            "is_apps_server": False,
+        }
     ]
     assert "vmid" not in options.text
     assert "id_ed25519" not in options.text

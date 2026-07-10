@@ -170,21 +170,9 @@ def update_user(
         raise HTTPException(status_code=404, detail="User not found")
     if payload.teams is not None:
         _validate_teams(conn, payload.teams)
-    next_apps_server = (
-        target["apps_server"] if payload.apps_server is None else payload.apps_server
-    )
-    next_apps_server_ip = (
-        target["apps_server_ip"]
-        if payload.apps_server_ip is None
-        else payload.apps_server_ip
-    )
-    if (
-        payload.apps_server is not None or payload.apps_server_ip is not None
-    ) and not next_apps_server and not next_apps_server_ip:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Apps server hostname or IP is required",
-        )
+    # issue_017: an apps-server location is optional. A user may clear it (they
+    # keep view access to applications; a custom apps server is only needed to
+    # create applications).
 
     # Determine whether this change removes the last active admin.
     demoting = payload.role is not None and payload.role != "admin"

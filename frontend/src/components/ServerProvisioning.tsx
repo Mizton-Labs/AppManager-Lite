@@ -910,6 +910,7 @@ function AddServerTemplateCard(props: {
   const [mainUser, setMainUser] = useState("");
   const [enableSudo, setEnableSudo] = useState(true);
   const [enableTrusted, setEnableTrusted] = useState(true);
+  const [isAppsServer, setIsAppsServer] = useState(false);
   const [busy, setBusy] = useState(false);
 
   async function onAdd(event: FormEvent) {
@@ -925,6 +926,7 @@ function AddServerTemplateCard(props: {
         main_os_user: mainUser.trim(),
         enable_sudo: enableSudo,
         enable_trusted_access: enableTrusted,
+        is_apps_server: isAppsServer,
       });
       setVmid("");
       setName("");
@@ -932,6 +934,7 @@ function AddServerTemplateCard(props: {
       setMainUser("");
       setEnableSudo(true);
       setEnableTrusted(true);
+      setIsAppsServer(false);
       await props.onAdded();
     } catch (err) {
       props.onError(
@@ -1042,6 +1045,17 @@ function AddServerTemplateCard(props: {
             Enable trusted SSH access (the user's servers can reach each other)
           </span>
         </label>
+        <label className="checkbox-field">
+          <input
+            type="checkbox"
+            checked={isAppsServer}
+            onChange={(e) => setIsAppsServer(e.target.checked)}
+          />
+          <span>
+            Apps server (offer this template's name as an apps-server option
+            when creating users and applications)
+          </span>
+        </label>
         <div className="row-actions">
           <button
             type="submit"
@@ -1137,6 +1151,9 @@ function ServerTemplatesListCard(props: {
                   >
                     Trusted SSH: {template.enable_trusted_access ? "on" : "off"}
                   </span>
+                  {template.is_apps_server && (
+                    <span className="status-badge ok">Apps server</span>
+                  )}
                 </div>
                 <p className="muted">
                   Admin key: {adminKey ?? "None"}

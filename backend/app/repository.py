@@ -1680,6 +1680,7 @@ def _row_to_server_template(row: sqlite3.Row) -> dict[str, Any]:
         "main_os_user": row["main_os_user"],
         "enable_sudo": bool(row["enable_sudo"]),
         "enable_trusted_access": bool(row["enable_trusted_access"]),
+        "is_apps_server": bool(row["is_apps_server"]),
     }
 
 
@@ -1710,18 +1711,20 @@ def create_server_template(
     main_os_user: str = "",
     enable_sudo: bool = True,
     enable_trusted_access: bool = True,
+    is_apps_server: bool = False,
 ) -> dict[str, Any]:
     try:
         cur = conn.execute(
             """
             INSERT INTO server_templates
                 (vmid, name, kind, admin_ssh_key_path, admin_ssh_key_id,
-                 main_os_user, enable_sudo, enable_trusted_access)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 main_os_user, enable_sudo, enable_trusted_access,
+                 is_apps_server)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (vmid, name.strip(), kind, admin_ssh_key_path.strip(),
              admin_ssh_key_id, main_os_user.strip(), int(enable_sudo),
-             int(enable_trusted_access)),
+             int(enable_trusted_access), int(is_apps_server)),
         )
     except sqlite3.IntegrityError as exc:
         raise ValueError(
@@ -1745,6 +1748,7 @@ def update_server_template(
     main_os_user: str | None = None,
     enable_sudo: bool | None = None,
     enable_trusted_access: bool | None = None,
+    is_apps_server: bool | None = None,
 ) -> dict[str, Any] | None:
     if get_server_template(conn, template_id) is None:
         return None
@@ -1767,6 +1771,8 @@ def update_server_template(
         columns["enable_sudo"] = int(enable_sudo)
     if enable_trusted_access is not None:
         columns["enable_trusted_access"] = int(enable_trusted_access)
+    if is_apps_server is not None:
+        columns["is_apps_server"] = int(is_apps_server)
     if columns:
         assignments = ", ".join(f"{col} = ?" for col in columns)
         try:

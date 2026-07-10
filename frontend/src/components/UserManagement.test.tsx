@@ -44,7 +44,7 @@ function stubUsers() {
         { id: 7, vmid: 9001, name: "Debian Coder", kind: "lxc",
           admin_ssh_key_path: "", admin_ssh_key_id: null,
           main_os_user: "coder", enable_sudo: true,
-          enable_trusted_access: true },
+          enable_trusted_access: true, is_apps_server: false },
       ]);
     }
     if (method === "POST" && url.endsWith("/api/settings/bundle-templates")) {
@@ -239,5 +239,77 @@ describe("UserManagement credential copy", () => {
     );
     expect(analystCard).toBeDefined();
     expect(within(analystCard!).getByText("analyst-one")).toBeInTheDocument();
+  });
+});
+
+describe("UserManagement apps-server selection (issue_017)", () => {
+  function stubWithAppsServer() {
+    const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      const json = (payload: unknown) =>
+        ({ ok: true, status: 200, json: async () => payload }) as Response;
+      if (method === "GET" && url.endsWith("/api/users")) return json([]);
+      if (method === "GET" && url.endsWith("/api/teams")) return json([]);
+      if (method === "GET" && url.endsWith("/api/settings/bundle-templates"))
+        return json([]);
+      if (method === "GET" && url.endsWith("/api/account/server-templates"))
+        return json([]);
+      if (method === "GET" && url.endsWith("/api/settings/server-templates"))
+        return json([
+          { id: 7, vmid: 9001, name: "apps-lxc", kind: "lxc",
+            admin_ssh_key_path: "", admin_ssh_key_id: null, main_os_user: "",
+            enable_sudo: true, enable_trusted_access: true,
+            is_apps_server: true },
+        ]);
+      if (method === "POST" && url.endsWith("/api/users"))
+        return json({ user: makeUser({ id: 2 }), password: "P", provisioning: [] });
+      return { ok: false, status: 500, json: async () => ({}) } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("requires selecting a default apps server when apps servers exist", async () => {
+    const fetchMock = stubWithAppsServer();
+    render(<UserManagement currentUser={makeUser({ id: 1, role: "admin" })} />);
+    await screen.findByRole("heading", { name: /create user/i });
+    await userEvent.type(
+      screen.getByLabelText(/username/i),
+      "newbie@example.com",
+    );
+    // Submit is blocked until an apps server is chosen.
+    expect(
+      screen.getByRole("button", { name: /^create user$/i }),
+    ).toBeDisabled();
+
+    await userEvent.selectOptions(
+      screen.getByLabelText(/default apps server/i),
+      "apps-lxc",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: /^create user$/i }),
+    );
+    const post = fetchMock.mock.calls.find(
+      (c) =>
+        String(c[0]).endsWith("/api/users") &&
+        (c[1]?.method ?? "").toUpperCase() === "POST",
+    );
+    expect(JSON.parse(post![1]!.body as string)).toMatchObject({
+      apps_server: "apps-lxc",
+    });
+  });
+
+  it("warns and stays optional when no apps servers exist", async () => {
+    // Default stubUsers returns only a non-apps-server template.
+    stubUsers();
+    render(<UserManagement currentUser={makeUser({ id: 1, role: "admin" })} />);
+    await screen.findByRole("heading", { name: /create user/i });
+    expect(
+      screen.getByText(/custom apps server is required to create/i),
+    ).toBeInTheDocument();
+    // No dropdown; the custom hostname field is present.
+    expect(screen.queryByLabelText(/default apps server/i)).toBeNull();
+    expect(screen.getByLabelText(/apps server hostname/i)).toBeInTheDocument();
   });
 });

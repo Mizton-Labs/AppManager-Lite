@@ -305,11 +305,9 @@ class CreateUserRequest(BaseModel):
     def _check_apps_server_ip(cls, value: str) -> str:
         return _validate_apps_server_ip(value)
 
-    @model_validator(mode="after")
-    def _check_server_location(self) -> "CreateUserRequest":
-        if not self.apps_server and not self.apps_server_ip:
-            raise ValueError("Apps server hostname or IP is required.")
-        return self
+    # issue_017: an apps-server location is no longer mandatory. Accounts may
+    # exist solely to view applications; a custom apps server is only required
+    # to create applications, which the UI warns about at creation time.
 
 
 class UpdateUserRequest(BaseModel):
@@ -1143,6 +1141,7 @@ class ServerTemplateOut(BaseModel):
     main_os_user: str = ""
     enable_sudo: bool = True
     enable_trusted_access: bool = True
+    is_apps_server: bool = False
 
 
 def _validate_main_os_user(value: str) -> str:
@@ -1162,6 +1161,7 @@ class ServerTemplateOptionOut(BaseModel):
     id: int
     name: str
     kind: str
+    is_apps_server: bool = False
 
 
 class ServerAccessOut(BaseModel):
@@ -1169,6 +1169,9 @@ class ServerAccessOut(BaseModel):
 
     can_create: bool = False
     reason: str = ""
+    # issue_017: whether the caller may edit their own servers' resources
+    # (self-service + admin-enabled, or admin actor).
+    allow_resource_edit: bool = False
 
 
 class ResourceUsageOut(BaseModel):
@@ -1216,6 +1219,7 @@ class CreateServerTemplateRequest(BaseModel):
     main_os_user: str = Field(default="", max_length=32)
     enable_sudo: bool = True
     enable_trusted_access: bool = True
+    is_apps_server: bool = False
 
     @field_validator("main_os_user")
     @classmethod
@@ -1348,6 +1352,7 @@ class UpdateServerTemplateRequest(BaseModel):
     main_os_user: str | None = Field(default=None, max_length=32)
     enable_sudo: bool | None = None
     enable_trusted_access: bool | None = None
+    is_apps_server: bool | None = None
 
     @field_validator("kind")
     @classmethod

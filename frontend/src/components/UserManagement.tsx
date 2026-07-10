@@ -248,7 +248,17 @@ function CreateUserCard(props: {
   // enabled by default so a new user gets one server per template.
   const [provisionIds, setProvisionIds] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState(false);
-  const hasServerLocation = Boolean(appsServer.trim() || appsServerIp.trim());
+  // issue_017: apps-server templates offered as the default apps server. When
+  // any exist, a selection (a template name, or "Custom") is required. When
+  // none exist, the custom host/IP is optional with a warning.
+  const appsServerTemplates = serverTemplates.filter((t) => t.is_apps_server);
+  const CUSTOM = "__custom__";
+  const [appsServerChoice, setAppsServerChoice] = useState("");
+  const useCustomAppsServer =
+    appsServerTemplates.length === 0 || appsServerChoice === CUSTOM;
+  // A default apps server is required only when apps-server templates exist.
+  const appsServerSatisfied =
+    appsServerTemplates.length === 0 || appsServerChoice !== "";
 
   useEffect(() => {
     api
@@ -287,8 +297,10 @@ function CreateUserCard(props: {
         role,
         teams: selectedTeams,
         self_service: selfService,
-        apps_server: appsServer.trim(),
-        apps_server_ip: appsServerIp.trim(),
+        apps_server: useCustomAppsServer
+          ? appsServer.trim()
+          : appsServerChoice,
+        apps_server_ip: useCustomAppsServer ? appsServerIp.trim() : "",
         provision_templates: serverTemplates
           .filter((t) => provisionIds.has(t.id))
           .map((t) => t.id),
@@ -305,6 +317,7 @@ function CreateUserCard(props: {
       setSelfService(false);
       setAppsServer("");
       setAppsServerIp("");
+      setAppsServerChoice("");
       setProvisionIds(new Set(serverTemplates.map((t) => t.id)));
     } catch (err) {
       props.onError(
@@ -351,31 +364,68 @@ function CreateUserCard(props: {
           onToggle={toggleTeam}
         />
 
-        <label className="field">
-          <span>Apps server hostname</span>
-          <input
-            type="text"
-            value={appsServer}
-            onChange={(e) => setAppsServer(e.target.value)}
-            placeholder="apps.example.com"
-          />
-          <span className="muted logo-hint">
-            Preferred hostname where this user's applications run.
-          </span>
-        </label>
+        {appsServerTemplates.length > 0 && (
+          <label className="field">
+            <span>Default apps server</span>
+            <select
+              value={appsServerChoice}
+              onChange={(e) => setAppsServerChoice(e.target.value)}
+              required
+            >
+              <option value="" disabled>
+                Select an apps server…
+              </option>
+              {appsServerTemplates.map((t) => (
+                <option key={t.id} value={t.name}>
+                  {t.name} ({t.kind.toUpperCase()})
+                </option>
+              ))}
+              <option value={CUSTOM}>Custom…</option>
+            </select>
+            <span className="muted logo-hint">
+              Where this user's applications run. Choose an apps server, or
+              Custom to enter a hostname/IP directly.
+            </span>
+          </label>
+        )}
 
-        <label className="field">
-          <span>Apps server IP</span>
-          <input
-            type="text"
-            value={appsServerIp}
-            onChange={(e) => setAppsServerIp(e.target.value)}
-            placeholder="10.0.0.8"
-          />
-          <span className="muted logo-hint">
-            Used when a module needs an IP, or as the fallback when no hostname is set.
-          </span>
-        </label>
+        {appsServerTemplates.length === 0 && (
+          <p className="muted logo-hint">
+            No apps servers are configured. You can optionally set a custom apps
+            server below; without one, this account can view applications but a
+            custom apps server is required to create them.
+          </p>
+        )}
+
+        {useCustomAppsServer && (
+          <>
+            <label className="field">
+              <span>Apps server hostname</span>
+              <input
+                type="text"
+                value={appsServer}
+                onChange={(e) => setAppsServer(e.target.value)}
+                placeholder="apps.example.com"
+              />
+              <span className="muted logo-hint">
+                Preferred hostname where this user's applications run.
+              </span>
+            </label>
+
+            <label className="field">
+              <span>Apps server IP</span>
+              <input
+                type="text"
+                value={appsServerIp}
+                onChange={(e) => setAppsServerIp(e.target.value)}
+                placeholder="10.0.0.8"
+              />
+              <span className="muted logo-hint">
+                Used when a module needs an IP, or as the fallback when no hostname is set.
+              </span>
+            </label>
+          </>
+        )}
 
         <label className="checkbox">
           <input
@@ -414,7 +464,7 @@ function CreateUserCard(props: {
         <button
           type="submit"
           className="btn primary"
-          disabled={busy || username.trim().length === 0 || !hasServerLocation}
+          disabled={busy || username.trim().length === 0 || !appsServerSatisfied}
         >
           {busy ? "Creating…" : "Create user"}
         </button>

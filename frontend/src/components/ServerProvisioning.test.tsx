@@ -137,6 +137,34 @@ async function openTab(label: RegExp) {
   await userEvent.click(await screen.findByRole("button", { name: label }));
 }
 
+describe("ServerProvisioning apps-server flag (issue_017)", () => {
+  it("creates an apps-server template and shows the badge", async () => {
+    const fetchMock = stubProvisioning();
+    render(<ServerProvisioning />);
+    await openTab(/Server Templates/i);
+
+    await screen.findByRole("heading", { name: /add server template/i });
+    await userEvent.type(screen.getByLabelText(/LXC\/VM ID/i), "9001");
+    await userEvent.type(screen.getByLabelText(/Template name/i), "apps-lxc");
+    await userEvent.click(
+      screen.getByRole("checkbox", { name: /apps server/i }),
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: /add template/i }),
+    );
+
+    const post = fetchMock.mock.calls.find(
+      (c) =>
+        String(c[0]).endsWith("/api/settings/server-templates") &&
+        (c[1]?.method ?? "GET").toUpperCase() === "POST",
+    );
+    expect(JSON.parse(post![1]!.body as string)).toMatchObject({
+      is_apps_server: true,
+    });
+    expect(await screen.findByText("Apps server")).toBeInTheDocument();
+  });
+});
+
 describe("ServerProvisioning", () => {
   it("saves the provider, shows the test result, and lists found templates", async () => {
     const fetchMock = stubProvisioning();
