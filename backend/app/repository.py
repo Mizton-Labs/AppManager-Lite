@@ -745,8 +745,24 @@ def render_bundle_template(
     return rendered
 
 
+def appmanager_key_name(app_name: str) -> str:
+    """Filename for a user's downloaded SSH key, tagged with the app name.
+
+    Produces ``id_ed25519_appmanager_<slug>`` where ``<slug>`` is the configured
+    application name lowercased with runs of non-alphanumerics collapsed to
+    dashes (e.g. "Morris application X" -> "morris-application-x"). When the app
+    name is blank the suffix is just ``id_ed25519_appmanager``. The same name is
+    referenced by the generated SSH config's ``IdentityFile`` lines so the
+    downloaded key and the config agree.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", (app_name or "").lower()).strip("-")
+    return f"id_ed25519_appmanager_{slug}" if slug else "id_ed25519_appmanager"
+
+
 def render_generic_ssh_config(
-    user: dict[str, Any], user_servers: list[dict[str, Any]]
+    user: dict[str, Any],
+    user_servers: list[dict[str, Any]],
+    key_name: str = "id_ed25519",
 ) -> str:
     """A generic SSH config built from the user's servers.
 
@@ -768,7 +784,7 @@ def render_generic_ssh_config(
             f"Host {host}\n"
             f"    HostName {server['ip_address']}\n"
             + (f"    User {user_id}\n" if user_id else "")
-            + "    IdentityFile ~/.ssh/id_ed25519\n"
+            + f"    IdentityFile ~/.ssh/{key_name}\n"
         )
     if not blocks:
         return (
@@ -782,6 +798,7 @@ def render_builtin_ssh_config(
     user: dict[str, Any],
     user_servers: list[dict[str, Any]],
     jump: dict[str, Any] | None = None,
+    key_name: str = "id_ed25519",
 ) -> str:
     """Render the built-in SSH config (issue_015-r2).
 
@@ -815,7 +832,7 @@ def render_builtin_ssh_config(
             f"    Hostname {bundle_host}\n"
             f"    User {jump.get('jump_user', '') or user_id}\n"
             f"    Port {bundle_port}\n"
-            "    IdentityFile ~/.ssh/id_ed25519\n"
+            f"    IdentityFile ~/.ssh/{key_name}\n"
         )
     for server in user_servers:
         if server.get("status") == "failed" or not server.get("ip_address"):
@@ -828,7 +845,7 @@ def render_builtin_ssh_config(
             f"    Hostname {server['ip_address']}\n"
             + (f"    User {srv_user}\n" if srv_user else "")
             + ("    ProxyJump jumpserver\n" if jump_enabled else "")
-            + "    IdentityFile ~/.ssh/id_ed25519\n"
+            + f"    IdentityFile ~/.ssh/{key_name}\n"
         )
         parts.append(block)
     return "\n".join(parts)
@@ -1899,8 +1916,11 @@ def sum_user_server_resources(
 ) -> dict[str, int]:
     """Total resources counted against the user's quota.
 
-    Servers whose resources were last set by an administrator
-    (``admin_modified``) are exempt, as are failed creation records.
+    Counts every non-failed server the user owns (including admin-created and
+    account-creation auto-provisioned servers, which carry ``admin_modified``);
+    only records that never produced a guest (failed with no vmid) are excluded.
+    This keeps the usage figures consistent with ``count_user_servers`` so the
+    quota bars reflect the resources actually committed by existing servers.
     """
     row = conn.execute(
         """
@@ -1908,7 +1928,7 @@ def sum_user_server_resources(
                COALESCE(SUM(memory_gb), 0) AS memory_gb,
                COALESCE(SUM(disk_gb), 0) AS disk_gb
         FROM user_servers
-        WHERE user_id = ? AND admin_modified = 0
+        WHERE user_id = ?
           AND (status != 'failed' OR vmid IS NOT NULL)
         """,
         (user_id,),

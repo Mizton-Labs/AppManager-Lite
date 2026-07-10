@@ -994,8 +994,9 @@ def test_server_usage_unlimited_for_admin(admin) -> None:
     assert body["cpus"]["limit"] == 0
 
 
-def test_server_usage_admin_created_servers_excluded(admin, monkeypatch) -> None:
-    """Admin-set servers are quota-exempt, so they must not count in usage."""
+def test_server_usage_admin_created_servers_counted(admin, monkeypatch) -> None:
+    """issue_018: all non-failed servers (including admin-created ones) count in
+    usage so the quota bars reflect real committed resources."""
     client, csrf, _ = admin
     _FakeProxmox(monkeypatch)
     _FakeSsh(monkeypatch)
@@ -1008,7 +1009,7 @@ def test_server_usage_admin_created_servers_excluded(admin, monkeypatch) -> None
     )
     created = _create_member(client, csrf, self_service=True)
     user_id = created["user"]["id"]
-    # Admin creates a server FOR the member (admin_modified -> quota-exempt).
+    # Admin creates a server FOR the member (admin_modified).
     assert client.post(
         f"/api/users/{user_id}/servers",
         json={"template_id": template["id"], "name": "admin-made"},
@@ -1017,11 +1018,11 @@ def test_server_usage_admin_created_servers_excluded(admin, monkeypatch) -> None
 
     member, _ = _login(client.app, "srvuser@example.com", created["password"])
     body = member.get(f"/api/users/{user_id}/servers/usage").json()
-    # The server counts toward the SERVER count but its resources are exempt.
+    # The server counts toward both the count AND the resource sums now.
     assert body["servers"]["used"] == 1
-    assert body["cpus"]["used"] == 0
-    assert body["memory_gb"]["used"] == 0
-    assert body["disk_gb"]["used"] == 0
+    assert body["cpus"]["used"] == 2
+    assert body["memory_gb"]["used"] == 4
+    assert body["disk_gb"]["used"] == 20
 
 
 def test_server_usage_authorization(admin, monkeypatch) -> None:

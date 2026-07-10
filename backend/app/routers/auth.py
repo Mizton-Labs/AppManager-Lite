@@ -515,6 +515,11 @@ def download_account_bundle(
         raise HTTPException(status_code=404, detail="Bundle template not found")
     if not template.get("enabled", True):
         raise HTTPException(status_code=404, detail="Bundle template not found")
+    # The downloaded key filename (and thus the config's IdentityFile) is tagged
+    # with the application name so users can identify it in ~/.ssh (issue_018).
+    key_name = repository.appmanager_key_name(
+        repository.get_settings_row(conn).get("app_name", "")
+    )
     if template["is_builtin"]:
         # Built-in SSH config: rendered dynamically from the user's servers
         # and the jump server (with ProxyJump when the jump server is enabled).
@@ -539,6 +544,7 @@ def download_account_bundle(
                     settings_row.get("jump_bundle_port", 22) or 22
                 ),
             },
+            key_name=key_name,
         )
     elif template["mappings"]:
         content = repository.render_bundle_template(
@@ -550,7 +556,7 @@ def download_account_bundle(
     else:
         # No mappings and not builtin: generic per-server config fallback.
         content = repository.render_generic_ssh_config(
-            user, _user_servers_with_main_user(conn, user["id"])
+            user, _user_servers_with_main_user(conn, user["id"]), key_name=key_name
         )
     safe_name = "".join(
         ch if ch.isalnum() or ch in ("-", "_") else "-" for ch in template["name"].lower()
@@ -603,12 +609,15 @@ def download_account_ssh_key(
         ) from exc
     if key is None:
         raise HTTPException(status_code=404, detail="SSH key not available")
+    key_name = repository.appmanager_key_name(
+        repository.get_settings_row(conn).get("app_name", "")
+    )
     if part == "public":
         content = key["public_key"] + "\n"
-        filename = "id_ed25519.pub"
+        filename = key_name + ".pub"
     else:
         content = key["private_key"]
-        filename = "id_ed25519"
+        filename = key_name
         audit.record(
             conn,
             category=audit.CATEGORY_USER,

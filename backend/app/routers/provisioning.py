@@ -1231,9 +1231,10 @@ def get_user_server_usage(
     """Per-user provisioning usage vs. limits (for the create-form quota bars).
 
     Self-or-admin. The committed usage mirrors quota enforcement exactly
-    (``count_user_servers`` and ``sum_user_server_resources``, which exclude
-    admin-set servers and never-cloned failures). Administrators are exempt
-    from per-user caps, so their result is flagged ``unlimited``.
+    (``count_user_servers`` and ``sum_user_server_resources``, which count all
+    non-failed servers the user owns, including admin-created and
+    account-creation auto-provisioned ones). Administrators are exempt from
+    per-user caps, so their result is flagged ``unlimited``.
     """
     _require_self_or_admin(actor, user_id)
     target = repository.get_user_by_id(conn, user_id)

@@ -156,13 +156,62 @@ def test_download_private_and_public_key(admin) -> None:
     private = member.get("/api/account/ssh-key/download?part=private")
     assert private.status_code == 200
     assert private.text.startswith("-----BEGIN OPENSSH PRIVATE KEY-----")
-    assert 'filename="id_ed25519"' in private.headers["content-disposition"]
+    # issue_018: with no application name set, the key is tagged generically.
+    assert (
+        'filename="id_ed25519_appmanager"' in private.headers["content-disposition"]
+    )
     assert private.headers["cache-control"] == "no-store"
 
     public = member.get("/api/account/ssh-key/download?part=public")
     assert public.status_code == 200
     assert public.text.startswith("ssh-ed25519 ")
-    assert 'filename="id_ed25519.pub"' in public.headers["content-disposition"]
+    assert (
+        'filename="id_ed25519_appmanager.pub"'
+        in public.headers["content-disposition"]
+    )
+
+
+def test_download_key_filename_uses_app_name_slug(admin) -> None:
+    """issue_018: the downloaded key name carries an app-name slug suffix."""
+    client, csrf, _ = admin
+    assert client.patch(
+        "/api/settings/branding",
+        json={"app_name": "Morris application X"},
+        headers={"X-CSRF-Token": csrf},
+    ).status_code == 200
+    created = _create_member(client, csrf, username="sluguser@example.com")
+    member, _ = _login(client.app, "sluguser@example.com", created["password"])
+
+    private = member.get("/api/account/ssh-key/download?part=private")
+    assert (
+        'filename="id_ed25519_appmanager_morris-application-x"'
+        in private.headers["content-disposition"]
+    )
+    public = member.get("/api/account/ssh-key/download?part=public")
+    assert (
+        'filename="id_ed25519_appmanager_morris-application-x.pub"'
+        in public.headers["content-disposition"]
+    )
+
+
+def test_download_key_filename_sanitizes_hostile_app_name(admin) -> None:
+    """issue_018: the slug allowlist strips quotes/CRLF/path chars so the app
+    name can never inject into the Content-Disposition header."""
+    client, csrf, _ = admin
+    assert client.patch(
+        "/api/settings/branding",
+        json={"app_name": 'x"\r\nEvil: 1/../y'},
+        headers={"X-CSRF-Token": csrf},
+    ).status_code == 200
+    created = _create_member(client, csrf, username="eviluser@example.com")
+    member, _ = _login(client.app, "eviluser@example.com", created["password"])
+
+    resp = member.get("/api/account/ssh-key/download?part=private")
+    cd = resp.headers["content-disposition"]
+    assert 'filename="id_ed25519_appmanager_x-evil-1-y"' in cd
+    # No raw quote/CRLF/path characters leaked into the header.
+    assert "\r" not in cd and "\n" not in cd
+    assert "/" not in cd.split("filename=")[1]
 
     # ``part`` must be explicit; there is no implicit private-key download.
     missing = member.get("/api/account/ssh-key/download")

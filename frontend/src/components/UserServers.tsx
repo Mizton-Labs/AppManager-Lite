@@ -176,10 +176,10 @@ function QuotaBars(props: { userId: number; isAdmin: boolean }) {
     };
   }, [props.userId, props.isAdmin]);
 
-  // An admin acting here is exempt from per-user quotas (admin-created servers
-  // are quota-exempt), so the target user's standing limits do not gate this
-  // create. Say so instead of showing bars that could read "full" yet still
-  // allow the create.
+  // An admin acting here bypasses per-user quotas entirely (admin-initiated
+  // creates are not quota-gated), so the target user's standing limits do not
+  // gate this create. Say so instead of showing bars that could read "full"
+  // yet still allow the create.
   if (props.isAdmin) {
     return (
       <p className="quota-unlimited muted">
