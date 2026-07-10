@@ -70,8 +70,14 @@ function stubUsers() {
   return fetchMock;
 }
 
-async function createUserAndOpenBanner() {
+/** issue_024: the create-user card is collapsed behind an "Add user" button. */
+async function openCreate() {
+  await userEvent.click(await screen.findByRole("button", { name: /add user/i }));
   await screen.findByRole("heading", { name: /create user/i });
+}
+
+async function createUserAndOpenBanner() {
+  await openCreate();
   await userEvent.type(screen.getByLabelText(/username/i), "newbie@example.com");
   await userEvent.type(screen.getByLabelText(/apps server hostname/i), "apps.example.com");
   await userEvent.click(screen.getByRole("button", { name: /^create user$/i }));
@@ -171,7 +177,7 @@ describe("UserManagement credential copy", () => {
     const fetchMock = stubUsers();
     render(<UserManagement currentUser={makeUser({ id: 99, role: "admin" })} />);
 
-    await screen.findByRole("heading", { name: /create user/i });
+    await openCreate();
     await userEvent.type(screen.getByLabelText(/username/i), "ipuser@example.com");
     await userEvent.type(screen.getByLabelText(/apps server ip/i), "10.0.0.8");
     await userEvent.click(screen.getByRole("button", { name: /^create user$/i }));
@@ -191,7 +197,7 @@ describe("UserManagement credential copy", () => {
     const fetchMock = stubUsers();
     render(<UserManagement currentUser={makeUser({ id: 99, role: "admin" })} />);
 
-    await screen.findByRole("heading", { name: /create user/i });
+    await openCreate();
     // The template toggle is pre-selected (default ON).
     const toggle = await screen.findByLabelText(/Debian Coder \(LXC\)/i);
     expect(toggle).toBeChecked();
@@ -273,7 +279,7 @@ describe("UserManagement apps-server selection (issue_017)", () => {
   it("requires selecting a default apps server when apps servers exist", async () => {
     const fetchMock = stubWithAppsServer();
     render(<UserManagement currentUser={makeUser({ id: 1, role: "admin" })} />);
-    await screen.findByRole("heading", { name: /create user/i });
+    await openCreate();
     await userEvent.type(
       screen.getByLabelText(/username/i),
       "newbie@example.com",
@@ -304,7 +310,7 @@ describe("UserManagement apps-server selection (issue_017)", () => {
     // Default stubUsers returns only a non-apps-server template.
     stubUsers();
     render(<UserManagement currentUser={makeUser({ id: 1, role: "admin" })} />);
-    await screen.findByRole("heading", { name: /create user/i });
+    await openCreate();
     expect(
       screen.getByText(/custom apps server is required to create/i),
     ).toBeInTheDocument();
@@ -345,7 +351,7 @@ describe("UserManagement provisioning progress (issue_018)", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<UserManagement currentUser={makeUser({ id: 1, role: "admin" })} />);
-    await screen.findByRole("heading", { name: /create user/i });
+    await openCreate();
     await userEvent.type(
       screen.getByLabelText(/username/i),
       "newbie@example.com",

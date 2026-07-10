@@ -237,7 +237,7 @@ describe("ServersView", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows a Create server card when the user may create", async () => {
+  it("shows a Create server card behind the Add server button", async () => {
     stubServersView(
       {
         is_admin: false,
@@ -254,6 +254,12 @@ describe("ServersView", () => {
       { can_create: true, reason: "", allow_resource_edit: true },
     );
     render(<ServersView currentUser={SELF} isAdmin={false} />);
+    // Collapsed by default: only the Add server button, no form yet.
+    const addBtn = await screen.findByRole("button", { name: /add server/i });
+    expect(
+      screen.queryByRole("heading", { name: /create server/i }),
+    ).toBeNull();
+    await userEvent.click(addBtn);
     expect(
       await screen.findByRole("heading", { name: /create server/i }),
     ).toBeInTheDocument();
@@ -419,5 +425,81 @@ describe("ServersView", () => {
     ).toBeInTheDocument();
     // The charts sit in the inline top row, not a separate wrapper.
     expect(card!.querySelector(".server-card-top .stats-cards")).not.toBeNull();
+  });
+
+  it("shows the admin's own servers first, then other users' (issue_024)", async () => {
+    stubServersView(
+      {
+        is_admin: true,
+        owners: [
+          {
+            user_id: 8,
+            username: "nadia@example.com",
+            derived_user_id: "nadia",
+            servers: [server({ id: 2, user_id: 8, name: "nadia-box" })],
+          },
+          {
+            // The signed-in admin is id 99.
+            user_id: 99,
+            username: "admin@example.com",
+            derived_user_id: "admin",
+            servers: [server({ id: 3, user_id: 99, name: "admin-box" })],
+          },
+        ],
+      },
+      STATS_OK,
+      { can_create: true, reason: "", allow_resource_edit: true },
+    );
+    render(<ServersView currentUser={ADMIN} isAdmin />);
+    await screen.findByRole("heading", { name: /^My servers$/ });
+    const heads = screen.getAllByRole("heading");
+    const texts = heads.map((h) => h.textContent);
+    const myIdx = texts.findIndex((t) => t === "My servers");
+    const usersIdx = texts.findIndex((t) => t === "Users' servers");
+    expect(myIdx).toBeGreaterThanOrEqual(0);
+    expect(usersIdx).toBeGreaterThan(myIdx);
+    // The admin's own group (admin@example.com) renders before nadia's.
+    const adminOwnerIdx = texts.findIndex((t) => t?.includes("admin@example.com"));
+    const nadiaOwnerIdx = texts.findIndex((t) => t?.includes("nadia@example.com"));
+    expect(adminOwnerIdx).toBeGreaterThan(myIdx);
+    expect(nadiaOwnerIdx).toBeGreaterThan(usersIdx);
+  });
+
+  it("filters servers by the search box and hides non-matching owner groups (issue_024)", async () => {
+    stubServersView(
+      {
+        is_admin: true,
+        owners: [
+          {
+            user_id: 99,
+            username: "admin@example.com",
+            derived_user_id: "admin",
+            servers: [server({ id: 3, user_id: 99, name: "alpha-server" })],
+          },
+          {
+            user_id: 8,
+            username: "nadia@example.com",
+            derived_user_id: "nadia",
+            servers: [server({ id: 2, user_id: 8, name: "beta-server" })],
+          },
+        ],
+      },
+      STATS_OK,
+      { can_create: false, reason: "", allow_resource_edit: true },
+    );
+    render(<ServersView currentUser={ADMIN} isAdmin />);
+    await screen.findByText("alpha-server - 10.0.7.42");
+    expect(screen.getByText("beta-server - 10.0.7.42")).toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText(/filter servers/i), "alpha");
+    expect(screen.getByText("alpha-server - 10.0.7.42")).toBeInTheDocument();
+    expect(screen.queryByText("beta-server - 10.0.7.42")).toBeNull();
+    // nadia's group has no match and is hidden entirely.
+    expect(screen.queryByText(/nadia@example.com/)).toBeNull();
+
+    // A query that matches nothing shows an explicit no-match message.
+    await userEvent.clear(screen.getByLabelText(/filter servers/i));
+    await userEvent.type(screen.getByLabelText(/filter servers/i), "zzzznope");
+    expect(await screen.findByText(/no servers match the filter/i)).toBeInTheDocument();
   });
 });

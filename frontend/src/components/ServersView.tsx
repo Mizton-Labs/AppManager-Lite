@@ -11,6 +11,32 @@ import type {
 } from "../types";
 import { Sparkline } from "./Sparkline";
 import { CreateServerCard, ServerCard } from "./UserServers";
+import { PlusIcon } from "./icons";
+
+/** Case-insensitive substring match of a server against a query, across its
+ * searchable fields plus the owning group's identity. */
+function serverMatches(
+  server: UserServer,
+  owner: OwnerServers,
+  query: string,
+): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  const hay = [
+    server.name,
+    server.hostname,
+    server.ip_address,
+    server.template_name,
+    server.kind,
+    server.status,
+    owner.username,
+    owner.derived_user_id,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return hay.includes(q);
+}
 
 const TIMEFRAMES: { id: StatsTimeframe; label: string }[] = [
   { id: "hour", label: "Last hour" },
@@ -168,6 +194,7 @@ function OwnerGroup(props: {
   isAdmin: boolean;
   currentUser: ApiUser;
   access: ServerAccess | null;
+  filter: string;
   onChanged: () => void | Promise<void>;
 }) {
   const { owner } = props;
@@ -180,6 +207,11 @@ function OwnerGroup(props: {
   // this too); an admin may delete any server.
   const canDelete =
     props.isAdmin || (isOwnGroup && props.currentUser.self_service);
+  const visible = owner.servers.filter((s) =>
+    serverMatches(s, owner, props.filter),
+  );
+  // With an active filter, a group with no matching servers is hidden entirely.
+  if (props.filter.trim() && visible.length === 0) return null;
   return (
     <section className="overview-owner">
       <h3 className="overview-owner-head">
@@ -189,14 +221,14 @@ function OwnerGroup(props: {
         )}
         <span className="muted overview-owner-count">
           {" · "}
-          {owner.servers.length} server{owner.servers.length === 1 ? "" : "s"}
+          {visible.length} server{visible.length === 1 ? "" : "s"}
         </span>
       </h3>
-      {owner.servers.length === 0 ? (
+      {visible.length === 0 ? (
         <p className="muted">No servers.</p>
       ) : (
         <div className="overview-server-list">
-          {owner.servers.map((s) => (
+          {visible.map((s) => (
             <ServerRow
               key={s.id}
               ownerId={owner.user_id}
@@ -228,6 +260,8 @@ export function ServersView(props: { currentUser: ApiUser; isAdmin: boolean }) {
   const [timeframe, setTimeframe] = useState<StatsTimeframe>("hour");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState("");
+  const [creating, setCreating] = useState(false);
 
   const loadOverview = useCallback(async () => {
     try {
@@ -263,39 +297,99 @@ export function ServersView(props: { currentUser: ApiUser; isAdmin: boolean }) {
   const owners = overview?.owners ?? [];
   const hasServers = owners.some((o) => o.servers.length > 0);
   const canCreate = access?.can_create ?? false;
+  // How many servers survive the active filter (for a no-match message).
+  const visibleCount = owners.reduce(
+    (n, o) => n + o.servers.filter((s) => serverMatches(s, o, filter)).length,
+    0,
+  );
+  const filtering = filter.trim().length > 0;
+
+  // issue_024: for an admin, surface the signed-in user's own servers first
+  // ("My servers"), then everyone else's ("Users' servers"). Non-admins only
+  // ever have their own group, so the split collapses to a single section.
+  const groupVisibleCount = (o: OwnerServers) =>
+    o.servers.filter((s) => serverMatches(s, o, filter)).length;
+  const myGroups = owners.filter((o) => o.user_id === props.currentUser.id);
+  const otherGroups = owners.filter((o) => o.user_id !== props.currentUser.id);
+  const showSubsectionHeadings = props.isAdmin && otherGroups.length > 0;
+  // With an active filter, only show a subsection heading when that subsection
+  // actually has a matching server.
+  const myVisible = myGroups.some((o) => groupVisibleCount(o) > 0);
+  const othersVisible = otherGroups.some((o) => groupVisibleCount(o) > 0);
+
+  const renderGroups = (groups: OwnerServers[]) =>
+    groups.map((o) => (
+      <OwnerGroup
+        key={o.user_id}
+        owner={o}
+        timeframe={timeframe}
+        isAdmin={props.isAdmin}
+        currentUser={props.currentUser}
+        access={access}
+        filter={filter}
+        onChanged={loadOverview}
+      />
+    ));
 
   return (
     <div className="view servers-view">
       <div className="view-head">
         <h2>Servers</h2>
-        <label className="timeframe-select">
-          <span className="muted">Timeframe</span>
-          <select
-            value={timeframe}
-            onChange={(e) => setTimeframe(e.target.value as StatsTimeframe)}
-            aria-label="Stats timeframe"
-          >
-            {TIMEFRAMES.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="view-head-controls">
+          <input
+            type="search"
+            className="list-filter"
+            placeholder="Filter servers…"
+            aria-label="Filter servers"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+          />
+          <label className="timeframe-select">
+            <span className="muted">Timeframe</span>
+            <select
+              value={timeframe}
+              onChange={(e) => setTimeframe(e.target.value as StatsTimeframe)}
+              aria-label="Stats timeframe"
+            >
+              {TIMEFRAMES.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
       </div>
 
       {access && !canCreate && access.reason && (
         <p className="muted">{access.reason}</p>
       )}
-      {canCreate && (
-        <CreateServerCard
-          userId={props.currentUser.id}
-          isAdmin={props.isAdmin}
-          userDerivedId={props.currentUser.user_id}
-          defaultPubkeyUser={props.currentUser.user_id}
-          onCreated={loadOverview}
-        />
-      )}
+      {canCreate &&
+        (creating ? (
+          <CreateServerCard
+            userId={props.currentUser.id}
+            isAdmin={props.isAdmin}
+            userDerivedId={props.currentUser.user_id}
+            defaultPubkeyUser={props.currentUser.user_id}
+            /* Keep the card open after a create so its success/warning notice
+               (incl. VM "enter its IP" guidance) stays readable; the refreshed
+               server appears in the list below. The user collapses via Cancel
+               (labeled Close once something has been created). */
+            onCreated={loadOverview}
+            onCancel={() => setCreating(false)}
+          />
+        ) : (
+          <div className="manager-toolbar">
+            <button
+              type="button"
+              className="btn accent"
+              onClick={() => setCreating(true)}
+            >
+              <PlusIcon />
+              <span className="btn-label">Add server</span>
+            </button>
+          </div>
+        ))}
 
       {error && (
         <p className="alert error" role="alert">
@@ -306,19 +400,32 @@ export function ServersView(props: { currentUser: ApiUser; isAdmin: boolean }) {
         <p role="status">Loading servers...</p>
       ) : !hasServers ? (
         <p className="muted">No servers to show.</p>
+      ) : filtering && visibleCount === 0 ? (
+        <p className="muted">No servers match the filter.</p>
       ) : (
         <div className="overview-owners">
-          {owners.map((o) => (
-            <OwnerGroup
-              key={o.user_id}
-              owner={o}
-              timeframe={timeframe}
-              isAdmin={props.isAdmin}
-              currentUser={props.currentUser}
-              access={access}
-              onChanged={loadOverview}
-            />
-          ))}
+          {showSubsectionHeadings ? (
+            <>
+              {(!filtering || myVisible) && (
+                <>
+                  <h3 className="servers-subhead">My servers</h3>
+                  {myGroups.length ? (
+                    renderGroups(myGroups)
+                  ) : (
+                    <p className="muted">You have no servers.</p>
+                  )}
+                </>
+              )}
+              {(!filtering || othersVisible) && (
+                <>
+                  <h3 className="servers-subhead">Users' servers</h3>
+                  {renderGroups(otherGroups)}
+                </>
+              )}
+            </>
+          ) : (
+            renderGroups([...myGroups, ...otherGroups])
+          )}
         </div>
       )}
     </div>

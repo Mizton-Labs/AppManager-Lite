@@ -11,6 +11,18 @@ import { copyToClipboard } from "../lib/clipboard";
 import { BundleTemplateManagement } from "./BundleTemplateManagement";
 import { UserServersPanel } from "./UserServers";
 import { SubTabs } from "./SubTabs";
+import { PlusIcon } from "./icons";
+
+/** Case-insensitive substring match of a user against a query. */
+function userMatches(user: ApiUser, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  const hay = [user.username, user.user_id, user.role, ...user.teams]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return hay.includes(q);
+}
 
 const ROLES: Role[] = ["admin", "user"];
 
@@ -30,6 +42,10 @@ export function UserManagement(props: { currentUser: ApiUser | null }) {
   // issue_018: while a create-user request is in flight, show an indeterminate
   // progress card listing the servers being provisioned. `null` = idle.
   const [provisioning, setProvisioning] = useState<string[] | null>(null);
+  // issue_024: the create-user card is collapsed behind an "Add user" button,
+  // and the user list has a client-side filter.
+  const [creating, setCreating] = useState(false);
+  const [filter, setFilter] = useState("");
 
   const reload = useCallback(async () => {
     const [nextUsers, nextTeams] = await Promise.all([
@@ -92,48 +108,88 @@ export function UserManagement(props: { currentUser: ApiUser | null }) {
                 {provisioning !== null && (
                   <ProvisioningProgressCard templateNames={provisioning} />
                 )}
-                <CreateUserCard
-                  teams={teams}
-                  onCreatingChange={setProvisioning}
-                  onCreated={(cred) => {
-                    setCredential(cred);
-                    void reload();
-                  }}
-                  onError={setError}
-                />
+                {creating ? (
+                  <CreateUserCard
+                    teams={teams}
+                    onCreatingChange={setProvisioning}
+                    onCreated={(cred) => {
+                      setCredential(cred);
+                      setCreating(false);
+                      void reload();
+                    }}
+                    onCancel={() => setCreating(false)}
+                    onError={setError}
+                  />
+                ) : (
+                  <div className="manager-toolbar">
+                    <button
+                      type="button"
+                      className="btn accent"
+                      onClick={() => {
+                        setError(null);
+                        setCreating(true);
+                      }}
+                    >
+                      <PlusIcon />
+                      <span className="btn-label">Add user</span>
+                    </button>
+                  </div>
+                )}
                 <section className="card">
-                  <h2>Users</h2>
+                  <div className="card-head-row">
+                    <h2>Users</h2>
+                    <input
+                      type="search"
+                      className="list-filter"
+                      placeholder="Filter users…"
+                      aria-label="Filter users"
+                      value={filter}
+                      onChange={(e) => setFilter(e.target.value)}
+                    />
+                  </div>
                   <div className="user-list">
-                    {users.map((user) => (
-                      <UserRow
-                        key={user.id}
-                        user={user}
-                        teams={teams}
-                        isSelf={props.currentUser?.id === user.id}
-                        onSave={(input) =>
-                          runAction(async () => {
-                            await api.updateUser(user.id, input);
-                          })
-                        }
-                        onResetPassword={() =>
-                          runAction(async () => {
-                            const result = await api.resetPassword(user.id);
-                            setCredential({
-                              username: result.user.username,
-                              password: result.password,
-                              note: "Password reset. Share securely; the user must change it at next sign-in.",
-                            });
-                          })
-                        }
-                        onDelete={(deleteApps) =>
-                          runAction(async () => {
-                            await api.deleteUser(user.id, {
-                              delete_apps: deleteApps,
-                            });
-                          })
-                        }
-                      />
-                    ))}
+                    {(() => {
+                      const shown = users.filter((u) => userMatches(u, filter));
+                      if (shown.length === 0) {
+                        return (
+                          <p className="muted">
+                            {filter.trim()
+                              ? "No users match the filter."
+                              : "No users."}
+                          </p>
+                        );
+                      }
+                      return shown.map((user) => (
+                        <UserRow
+                          key={user.id}
+                          user={user}
+                          teams={teams}
+                          isSelf={props.currentUser?.id === user.id}
+                          onSave={(input) =>
+                            runAction(async () => {
+                              await api.updateUser(user.id, input);
+                            })
+                          }
+                          onResetPassword={() =>
+                            runAction(async () => {
+                              const result = await api.resetPassword(user.id);
+                              setCredential({
+                                username: result.user.username,
+                                password: result.password,
+                                note: "Password reset. Share securely; the user must change it at next sign-in.",
+                              });
+                            })
+                          }
+                          onDelete={(deleteApps) =>
+                            runAction(async () => {
+                              await api.deleteUser(user.id, {
+                                delete_apps: deleteApps,
+                              });
+                            })
+                          }
+                        />
+                      ));
+                    })()}
                   </div>
                 </section>
               </div>
@@ -270,6 +326,7 @@ function CreateUserCard(props: {
   onCreated: (credential: Credential) => void;
   onError: (message: string) => void;
   onCreatingChange: (templateNames: string[] | null) => void;
+  onCancel?: () => void;
 }) {
   const [username, setUsername] = useState("");
   const [role, setRole] = useState<Role>("user");
@@ -372,7 +429,14 @@ function CreateUserCard(props: {
 
   return (
     <section className="card">
-      <h2>Create user</h2>
+      <div className="card-head-row">
+        <h2>Create user</h2>
+        {props.onCancel && (
+          <button type="button" className="btn ghost" onClick={props.onCancel}>
+            Cancel
+          </button>
+        )}
+      </div>
       <form className="create-form" onSubmit={onSubmit}>
         <div className="form-row">
           <label className="field">

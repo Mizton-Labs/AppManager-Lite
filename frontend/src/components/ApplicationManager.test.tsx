@@ -270,7 +270,8 @@ describe("ApplicationManager", () => {
       />,
     );
 
-    await screen.findByText(/No applications yet/i);
+    // Admin with a known identity: the grouped "My applications" section shows.
+    await screen.findByRole("heading", { name: /my applications/i });
     await userEvent.click(
       screen.getByRole("button", { name: /new application/i }),
     );
@@ -866,5 +867,98 @@ describe("ApplicationManager", () => {
         expect.objectContaining({ url: expect.stringContaining("/api/applications/1"), body: { sort_order: 1 } }),
       ]),
     );
+  });
+
+  it("reorders within the admin's own group, skipping other users' apps (issue_024)", async () => {
+    // Global order interleaves mine/other/mine by sort_order.
+    const fetchMock = stubBackend([
+      makeApp({ id: 1, name: "Mine A", sort_order: 0, created_by_id: 1, created_by: "admin@x" }),
+      makeApp({ id: 2, name: "Other B", sort_order: 1, created_by_id: 2, created_by: "user@x" }),
+      makeApp({ id: 3, name: "Mine C", sort_order: 2, created_by_id: 1, created_by: "admin@x" }),
+    ]);
+    render(
+      <ApplicationManager
+        isAdmin
+        teamOptions={ALL_TEAMS}
+        currentUser={makeUser({ id: 1, role: "admin", username: "admin@x" })}
+      />,
+    );
+    await screen.findByText("Mine A");
+    // Move "Mine A" down: it should swap with "Mine C" (skipping "Other B").
+    await userEvent.click(screen.getByRole("button", { name: /move mine a down/i }));
+
+    const orderUpdates = fetchMock.mock.calls
+      .filter(
+        ([url, init]) =>
+          String(url).includes("/api/applications/") &&
+          (init?.method ?? "GET") === "PATCH" &&
+          JSON.parse((init?.body ?? "{}") as string).sort_order !== undefined,
+      )
+      .map(([url, init]) => ({
+        url: String(url),
+        body: JSON.parse((init!.body ?? "{}") as string),
+      }));
+    // Mine C -> 0, Mine A -> 2; Other B (id 2) stays at 1 (untouched).
+    expect(orderUpdates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ url: expect.stringContaining("/api/applications/3"), body: { sort_order: 0 } }),
+        expect.objectContaining({ url: expect.stringContaining("/api/applications/1"), body: { sort_order: 2 } }),
+      ]),
+    );
+    expect(
+      orderUpdates.some((u) => u.url.includes("/api/applications/2")),
+    ).toBe(false);
+  });
+
+  it("shows the admin's own apps first, then other users' (issue_024)", async () => {
+    stubBackend([
+      makeApp({ id: 1, name: "Other App", created_by_id: 2, created_by: "user@x" }),
+      makeApp({ id: 2, name: "My App", created_by_id: 1, created_by: "admin@x" }),
+    ]);
+    render(
+      <ApplicationManager
+        isAdmin
+        teamOptions={ALL_TEAMS}
+        currentUser={makeUser({ id: 1, role: "admin", username: "admin@x" })}
+      />,
+    );
+    await screen.findByRole("heading", { name: /my applications/i });
+    const headings = screen.getAllByRole("heading").map((h) => h.textContent);
+    const mineIdx = headings.findIndex((t) => t === "My applications");
+    const othersIdx = headings.findIndex((t) => t === "Other users' applications");
+    expect(mineIdx).toBeGreaterThanOrEqual(0);
+    expect(othersIdx).toBeGreaterThan(mineIdx);
+    // "My App" (owned by the admin) appears before "Other App" in the DOM.
+    const myPos = screen.getByText("My App").compareDocumentPosition(
+      screen.getByText("Other App"),
+    );
+    // FOLLOWING (4) means "Other App" comes after "My App".
+    expect(myPos & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("filters apps and hides reorder arrows while filtering (issue_024)", async () => {
+    stubBackend([
+      makeApp({ id: 1, name: "Alpha Tool", created_by_id: 1, created_by: "admin@x" }),
+      makeApp({ id: 2, name: "Beta Tool", created_by_id: 1, created_by: "admin@x" }),
+    ]);
+    render(
+      <ApplicationManager
+        isAdmin
+        teamOptions={ALL_TEAMS}
+        currentUser={makeUser({ id: 1, role: "admin", username: "admin@x" })}
+      />,
+    );
+    await screen.findByText("Alpha Tool");
+    // Reorder arrows present when not filtering.
+    expect(
+      screen.queryAllByRole("button", { name: /move .* down/i }).length,
+    ).toBeGreaterThan(0);
+
+    await userEvent.type(screen.getByLabelText(/filter applications/i), "beta");
+    expect(screen.queryByText("Alpha Tool")).toBeNull();
+    expect(screen.getByText("Beta Tool")).toBeInTheDocument();
+    // Arrows hidden while a filter is active.
+    expect(screen.queryAllByRole("button", { name: /move .* up/i })).toHaveLength(0);
+    expect(screen.queryAllByRole("button", { name: /move .* down/i })).toHaveLength(0);
   });
 });

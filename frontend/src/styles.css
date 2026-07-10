@@ -1383,6 +1383,46 @@ textarea:focus-visible,
   justify-content: flex-start;
 }
 
+/* issue_024: a header row that pairs a card/section title with a control on
+   the right (a Cancel button or a filter input). */
+.card-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.card-head-row h2,
+.card-head-row h3 {
+  margin: 0;
+}
+
+/* Client-side list filter input (Servers, Users, Applications). */
+.list-filter {
+  min-width: 12rem;
+  max-width: 22rem;
+  flex: 1 1 14rem;
+}
+
+.list-filter-row {
+  justify-content: flex-start;
+}
+
+.view-head-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+/* "My servers" / "Users' servers" subsection headings in the Servers view. */
+.servers-subhead {
+  margin: 1rem 0 0.25rem;
+  font-size: 0.95rem;
+  color: var(--text-muted, inherit);
+}
+
 .approval-actions {
   border-top: 1px dashed var(--border);
   padding-top: 0.6rem;

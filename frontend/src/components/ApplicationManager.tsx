@@ -12,6 +12,23 @@ import { fileToLogoDataUrl } from "../lib/image";
 import { defaultLogoFor } from "../logos";
 import { CheckIcon, PlusIcon, XIcon } from "./icons";
 
+/** Case-insensitive substring match of an application against a query. */
+function appMatches(app: Application, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  const hay = [
+    app.name,
+    app.description,
+    app.url,
+    app.created_by ?? "",
+    ...app.teams,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return hay.includes(q);
+}
+
 /**
  * Application Manager. Every signed-in user manages the applications they have
  * submitted (in any approval state); administrators manage every application and
@@ -36,6 +53,8 @@ export function ApplicationManager(props: {
   const [pushBusy, setPushBusy] = useState<Record<number, boolean>>({});
   const [pushMessages, setPushMessages] = useState<Record<number, string>>({});
   const [ownerOptions, setOwnerOptions] = useState<ApiUser[]>([]);
+  // issue_024: client-side filter over the loaded applications.
+  const [filter, setFilter] = useState("");
 
   const reload = useCallback(async () => {
     const [nextApps, nextUsers] = await Promise.all([
@@ -74,11 +93,31 @@ export function ApplicationManager(props: {
     [reload],
   );
 
+  const currentUserId = props.currentUser?.id ?? null;
+
   const moveApp = useCallback(
     async (appId: number, direction: -1 | 1) => {
       const index = apps.findIndex((app) => app.id === appId);
-      const targetIndex = index + direction;
-      if (index < 0 || targetIndex < 0 || targetIndex >= apps.length) return;
+      if (index < 0) return;
+      // issue_024: reorder only within the same ownership group (an admin's own
+      // apps vs. other users' apps), so the two subsections stay disjoint. The
+      // target is the nearest neighbor in the chosen direction that belongs to
+      // the same group; for a non-admin every app is in one group.
+      const groupOf = (app: Application) =>
+        isAdmin && currentUserId != null
+          ? app.created_by_id === currentUserId
+          : true;
+      const myGroup = groupOf(apps[index]);
+      let targetIndex = index + direction;
+      while (
+        targetIndex >= 0 &&
+        targetIndex < apps.length &&
+        groupOf(apps[targetIndex]) !== myGroup
+      ) {
+        targetIndex += direction;
+      }
+      if (targetIndex < 0 || targetIndex >= apps.length) return;
+      if (groupOf(apps[targetIndex]) !== myGroup) return;
       const next = [...apps];
       [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
       setApps(next);
@@ -97,7 +136,7 @@ export function ApplicationManager(props: {
         await reload();
       }
     },
-    [apps, reload],
+    [apps, reload, isAdmin, currentUserId],
   );
 
   // Run an action that returns the affected application, then surface its push
@@ -192,66 +231,134 @@ export function ApplicationManager(props: {
         </div>
       )}
 
-      <section className="card">
-        <h2>{isAdmin ? "All applications" : "Your applications"}</h2>
-        {apps.length === 0 ? (
-          <p className="muted">
-            {isAdmin
-              ? "No applications yet. Create one above."
-              : "You have not submitted any applications yet."}
-          </p>
-        ) : (
-          <div className="user-list">
-            {apps.map((app, index) => (
-              <ApplicationRow
-                key={app.id}
-                app={app}
-                isAdmin={isAdmin}
-                defaultAppsServer={defaultAliasAppsServer(props.currentUser)}
-                canMoveUp={index > 0}
-                canMoveDown={index < apps.length - 1}
-                onMoveUp={() => void moveApp(app.id, -1)}
-                onMoveDown={() => void moveApp(app.id, 1)}
-                teamOptions={teamOptions}
-                onSave={(input) =>
-                  runAction(async () => {
-                    await api.updateApplication(app.id, input);
-                  })
-                }
-                onToggleActive={() =>
-                  runAction(async () => {
-                    await api.updateApplication(app.id, {
-                      is_active: !app.is_active,
-                    });
-                  })
-                }
-                onSetApproval={(status) =>
-                  runPushAction(app.id, async () => {
-                    return await api.updateApplication(app.id, {
-                      approval_status: status,
-                    });
-                  })
-                }
-                onRetryPush={() =>
-                  runPushAction(app.id, async () => {
-                    return await api.retryApplicationPush(app.id);
-                  })
-                }
-                pushNotice={pushNotices[app.id]}
-                pushBusy={Boolean(pushBusy[app.id])}
-                pushMessage={pushMessages[app.id]}
-                ownerOptions={ownerOptions}
-                initiallyEditing={editAppId === app.id}
-                onDelete={() =>
-                  runAction(async () => {
-                    await api.deleteApplication(app.id);
-                  })
-                }
-              />
-            ))}
-          </div>
-        )}
-      </section>
+      <div className="manager-toolbar list-filter-row">
+        <input
+          type="search"
+          className="list-filter"
+          placeholder="Filter applications…"
+          aria-label="Filter applications"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+        />
+      </div>
+
+      {(() => {
+        const filtering = filter.trim().length > 0;
+        // Reordering is only meaningful over the full list; hide the arrows
+        // while a filter is active (a filtered subset would move ambiguously).
+        const renderRow = (
+          app: Application,
+          group: Application[],
+          index: number,
+        ) => (
+          <ApplicationRow
+            key={app.id}
+            app={app}
+            isAdmin={isAdmin}
+            defaultAppsServer={defaultAliasAppsServer(props.currentUser)}
+            showReorder={!filtering}
+            canMoveUp={index > 0}
+            canMoveDown={index < group.length - 1}
+            onMoveUp={() => void moveApp(app.id, -1)}
+            onMoveDown={() => void moveApp(app.id, 1)}
+            teamOptions={teamOptions}
+            onSave={(input) =>
+              runAction(async () => {
+                await api.updateApplication(app.id, input);
+              })
+            }
+            onToggleActive={() =>
+              runAction(async () => {
+                await api.updateApplication(app.id, {
+                  is_active: !app.is_active,
+                });
+              })
+            }
+            onSetApproval={(status) =>
+              runPushAction(app.id, async () => {
+                return await api.updateApplication(app.id, {
+                  approval_status: status,
+                });
+              })
+            }
+            onRetryPush={() =>
+              runPushAction(app.id, async () => {
+                return await api.retryApplicationPush(app.id);
+              })
+            }
+            pushNotice={pushNotices[app.id]}
+            pushBusy={Boolean(pushBusy[app.id])}
+            pushMessage={pushMessages[app.id]}
+            ownerOptions={ownerOptions}
+            initiallyEditing={editAppId === app.id}
+            onDelete={() =>
+              runAction(async () => {
+                await api.deleteApplication(app.id);
+              })
+            }
+          />
+        );
+
+        const renderList = (group: Application[], emptyText: string) => {
+          const shown = group.filter((a) => appMatches(a, filter));
+          if (shown.length === 0) {
+            return <p className="muted">{emptyText}</p>;
+          }
+          // Move arrows are computed against the FULL group (not the filtered
+          // subset); while filtering they're hidden anyway.
+          return (
+            <div className="user-list">
+              {shown.map((app) =>
+                renderRow(app, group, group.indexOf(app)),
+              )}
+            </div>
+          );
+        };
+
+        // issue_024: for an admin whose identity is known, show their own
+        // applications first, then everyone else's; each keeps its sort_order
+        // and reorders in-group.
+        if (isAdmin && currentUserId != null) {
+          const mine = apps.filter((a) => a.created_by_id === currentUserId);
+          const others = apps.filter((a) => a.created_by_id !== currentUserId);
+          return (
+            <>
+              <section className="card">
+                <h2>My applications</h2>
+                {mine.length === 0 ? (
+                  <p className="muted">You have not created any applications.</p>
+                ) : (
+                  renderList(mine, "No applications match the filter.")
+                )}
+              </section>
+              <section className="card">
+                <h2>Other users' applications</h2>
+                {others.length === 0 ? (
+                  <p className="muted">No other applications.</p>
+                ) : (
+                  renderList(others, "No applications match the filter.")
+                )}
+              </section>
+            </>
+          );
+        }
+
+        // Admin without a known identity (e.g. in isolation), or non-admin.
+        return (
+          <section className="card">
+            <h2>{isAdmin ? "All applications" : "Your applications"}</h2>
+            {apps.length === 0 ? (
+              <p className="muted">
+                {isAdmin
+                  ? "No applications yet. Create one above."
+                  : "You have not submitted any applications yet."}
+              </p>
+            ) : (
+              renderList(apps, "No applications match the filter.")
+            )}
+          </section>
+        );
+      })()}
     </div>
   );
 }
@@ -879,6 +986,9 @@ function ApplicationRow(props: {
   defaultAppsServer: string;
   canMoveUp: boolean;
   canMoveDown: boolean;
+  /** issue_024: when false, the reorder arrows are omitted (e.g. while a
+   * filter is active, since reordering a filtered subset is ambiguous). */
+  showReorder?: boolean;
   onMoveUp: () => void;
   onMoveDown: () => void;
   teamOptions: readonly string[];
@@ -1144,26 +1254,30 @@ function ApplicationRow(props: {
           )}
         </div>
         <div className="row-actions">
-          <button
-            type="button"
-            className="btn ghost btn-sm"
-            onClick={props.onMoveUp}
-            disabled={!props.canMoveUp}
-            title="Move up"
-            aria-label={`Move ${app.name} up`}
-          >
-            ↑
-          </button>
-          <button
-            type="button"
-            className="btn ghost btn-sm"
-            onClick={props.onMoveDown}
-            disabled={!props.canMoveDown}
-            title="Move down"
-            aria-label={`Move ${app.name} down`}
-          >
-            ↓
-          </button>
+          {props.showReorder !== false && (
+            <>
+              <button
+                type="button"
+                className="btn ghost btn-sm"
+                onClick={props.onMoveUp}
+                disabled={!props.canMoveUp}
+                title="Move up"
+                aria-label={`Move ${app.name} up`}
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                className="btn ghost btn-sm"
+                onClick={props.onMoveDown}
+                disabled={!props.canMoveDown}
+                title="Move down"
+                aria-label={`Move ${app.name} down`}
+              >
+                ↓
+              </button>
+            </>
+          )}
           <button
             type="button"
             className="btn ghost"

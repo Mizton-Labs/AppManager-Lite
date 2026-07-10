@@ -151,6 +151,8 @@ export function CreateServerCard(props: {
   userDerivedId?: string;
   defaultPubkeyUser?: string;
   onCreated: () => void | Promise<void>;
+  /** When provided, renders a Cancel button that collapses the card. */
+  onCancel?: () => void;
 }) {
   const [templates, setTemplates] = useState<ServerTemplateOption[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
@@ -172,7 +174,14 @@ export function CreateServerCard(props: {
 
   return (
     <section className="card create-server-card">
-      <h3>Create server</h3>
+      <div className="card-head-row">
+        <h3>Create server</h3>
+        {props.onCancel && (
+          <button type="button" className="btn ghost" onClick={props.onCancel}>
+            Cancel
+          </button>
+        )}
+      </div>
       {notice && (
         <p className="alert success" role="status">
           {notice}
