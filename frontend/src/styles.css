@@ -1314,6 +1314,25 @@ textarea:focus-visible,
   font-size: 0.82rem;
 }
 
+/* issue_023: Servers-section compact card. The name/specs and the usage
+   charts sit in one row; the action buttons wrap beneath. */
+.server-card-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+}
+
+.server-card-top .server-card-main {
+  min-width: 12rem;
+  flex: 1 1 12rem;
+}
+
+.server-card-top .server-meta {
+  margin: 0.2rem 0 0;
+}
+
 /* Account SSH key card */
 .ssh-public-key {
   margin: 0;
@@ -2088,23 +2107,6 @@ textarea:focus-visible,
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
-}
-
-.overview-server {
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-}
-
-/* Inside the Servers section, the full management ServerCard carries its own
-   border; the wrapping article is just a layout container. The card and its
-   usage charts stack vertically. */
-.overview-server > .server-card {
-  margin: 0;
-}
-
-.overview-server .stats-cards {
-  padding: 0 0.2rem 0.2rem;
 }
 
 /* The four compact charts, side by side; wraps on narrow screens. */

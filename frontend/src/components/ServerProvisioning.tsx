@@ -1035,6 +1035,13 @@ function AddServerTemplateCard(props: {
             Enable trusted SSH access (the user's servers can reach each other)
           </span>
         </label>
+        {enableTrusted && !mainUser.trim() && (
+          <p className="alert warn" role="status">
+            Set a <strong>Main user</strong> above: trusted access needs a shared
+            OS account, so with no main user no SSH mesh will be formed between
+            the user's servers.
+          </p>
+        )}
         <label className="checkbox-field">
           <input
             type="checkbox"
@@ -1311,6 +1318,13 @@ function EditServerTemplateForm(props: {
           Enable trusted SSH access (the user's servers can reach each other)
         </span>
       </label>
+      {enableTrusted && !mainUser.trim() && (
+        <p className="alert warn" role="status">
+          Set a <strong>Main user</strong> above: trusted access needs a shared
+          OS account, so with no main user no SSH mesh will be formed between the
+          user's servers.
+        </p>
+      )}
       <label className="checkbox-field">
         <input
           type="checkbox"

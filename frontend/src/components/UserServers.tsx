@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, ReactNode, useEffect, useState } from "react";
 import { api, ApiError } from "../api";
 import type { ServerTemplateOption, ServerUsage, UserServer } from "../types";
 
@@ -521,6 +521,13 @@ export function ServerCard(props: {
   allowResourceEdit: boolean;
   userId: number;
   onChanged: () => void | Promise<void>;
+  /**
+   * issue_023: optional usage charts rendered inline beside the server's
+   * name/specs (used by the Servers section so a card shows info + charts in
+   * one row, with the action buttons beneath). When omitted the card is the
+   * plain list form used by User Management.
+   */
+  charts?: ReactNode;
 }) {
   const { server } = props;
   const [showLog, setShowLog] = useState(false);
@@ -600,17 +607,18 @@ export function ServerCard(props: {
     }
   }
 
-  // issue_021: any self-service owner (or admin) may change resources on
-  // their own LXC/VM guest, as long as it isn't admin-managed. Mirrors the
-  // backend's eligibility guard so the editor only appears when a save could
-  // actually succeed. VM disk is intentionally excluded (see ResourceEditor).
+  // issue_021/023: any self-service owner (or admin) may change resources on
+  // their own LXC/VM guest. The editor mirrors the backend's eligibility guard
+  // so it only appears when a save could actually succeed. admin_modified is
+  // NOT a gate here (issue_023): it only marks an admin-sized server; the owner
+  // may still resize their own server (quota-enforced by the backend). VM disk
+  // is intentionally excluded (see ResourceEditor).
   const canEditResources =
     props.allowResourceEdit &&
     (server.kind === "lxc" || server.kind === "vm") &&
     !!server.vmid &&
     server.status !== "failed" &&
-    !server.deletion_pending &&
-    !server.admin_modified;
+    !server.deletion_pending;
 
   // issue_021: reboot is a plain power operation (no resource change), so it
   // is available whenever the caller is the self-service owner or an admin,
@@ -678,33 +686,38 @@ export function ServerCard(props: {
 
   return (
     <article className={cardClass}>
-      <div className="server-card-head">
-        <span className="server-name">
-          {server.name}
-          {server.ip_address ? ` - ${server.ip_address}` : ""}
-        </span>
-        <span className="role-badge">{server.kind.toUpperCase()}</span>
-        {server.deletion_failed ? (
-          <span className="status-badge rejected">deletion failed</span>
-        ) : server.deletion_pending ? (
-          <span className="status-badge warn">deletion pending</span>
-        ) : server.status === "failed" ? (
-          <span className="status-badge warn">failed</span>
-        ) : server.status === "reference" ? (
-          <span className="status-badge ok">reference</span>
-        ) : null}
+      <div className={props.charts ? "server-card-top" : undefined}>
+        <div className="server-card-main">
+          <div className="server-card-head">
+            <span className="server-name">
+              {server.name}
+              {server.ip_address ? ` - ${server.ip_address}` : ""}
+            </span>
+            <span className="role-badge">{server.kind.toUpperCase()}</span>
+            {server.deletion_failed ? (
+              <span className="status-badge rejected">deletion failed</span>
+            ) : server.deletion_pending ? (
+              <span className="status-badge warn">deletion pending</span>
+            ) : server.status === "failed" ? (
+              <span className="status-badge warn">failed</span>
+            ) : server.status === "reference" ? (
+              <span className="status-badge ok">reference</span>
+            ) : null}
+          </div>
+          <p className="muted server-meta">
+            {server.template_name && <>Template: {server.template_name} · </>}
+            {server.cpus > 0 || server.memory_gb > 0 || server.disk_gb > 0 ? (
+              <>
+                {server.cpus} CPU · {server.memory_gb} GB RAM · {server.disk_gb}{" "}
+                GB disk
+              </>
+            ) : (
+              <>Resources: not recorded</>
+            )}
+          </p>
+        </div>
+        {props.charts}
       </div>
-      <p className="muted server-meta">
-        {server.template_name && <>Template: {server.template_name} · </>}
-        {server.cpus > 0 || server.memory_gb > 0 || server.disk_gb > 0 ? (
-          <>
-            {server.cpus} CPU · {server.memory_gb} GB RAM · {server.disk_gb} GB
-            disk
-          </>
-        ) : (
-          <>Resources: not recorded</>
-        )}
-      </p>
       {canEditResources && editingResources && (
         <ResourceEditor
           server={server}

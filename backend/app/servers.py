@@ -16,6 +16,7 @@ import re
 import shlex
 import subprocess  # noqa: S404 - argv arrays only, shell=False
 import sqlite3
+import time
 from typing import Any
 
 from . import keystore, proxmox, repository, sshkeys
@@ -23,6 +24,11 @@ from .config import get_settings
 from .proxmox import ProxmoxResult
 
 _SSH_TIMEOUT = 20
+# Mesh SSH retry (issue_023): a freshly booted guest's sshd may not accept
+# connections within the first connect window. Retry a bounded number of times
+# with a short backoff so provisioning never hangs, then defer/fail clearly.
+_MESH_SSH_ATTEMPTS = 3
+_MESH_SSH_BACKOFF_SECONDS = 2.0
 _OS_USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 # Server display names are capped at the DNS hostname length (63) so a fully
 # composed name (template-userid-suffix) still fits both the record and the
@@ -185,6 +191,56 @@ def _ssh_argv(key_path: str, ip: str, remote_command: str) -> list[str]:
     ]
 
 
+# Mesh SSH outcome classification (issue_023). Distinguishes a genuine auth
+# rejection (the admin key is not trusted as root -> operator must fix the
+# template image) from a transient "sshd not ready yet" condition (worth a
+# retry), so failures are actionable rather than a silent rc!=0.
+_AUTH_FAIL_MARKERS = (
+    "permission denied",
+    "publickey",
+    "authentication failed",
+    "no supported authentication",
+)
+_NOT_READY_MARKERS = (
+    "connection refused",
+    "connection reset",
+    "connection closed",
+    "timed out",
+    "timeout",
+    "no route to host",
+    "operation timed out",
+    "network is unreachable",
+)
+
+
+def _classify_ssh_failure(proc: "subprocess.CompletedProcess[str]") -> str:
+    """Return 'auth', 'not_ready', or 'other' for a failed mesh SSH result."""
+    text = ((proc.stderr or "") + "\n" + (proc.stdout or "")).lower()
+    if any(m in text for m in _AUTH_FAIL_MARKERS):
+        return "auth"
+    if proc.returncode == 124 or any(m in text for m in _NOT_READY_MARKERS):
+        return "not_ready"
+    return "other"
+
+
+def _run_mesh_ssh(key_path: str, ip: str, remote_command: str):
+    """Run a mesh SSH command, retrying transient sshd-not-ready failures.
+
+    Auth failures (untrusted admin key for root) are NOT retried -- they will
+    not resolve on their own and retrying only delays the actionable error.
+    Returns the final CompletedProcess.
+    """
+    proc = _run(_ssh_argv(key_path, ip, remote_command))
+    attempt = 1
+    while proc.returncode != 0 and attempt < _MESH_SSH_ATTEMPTS:
+        if _classify_ssh_failure(proc) != "not_ready":
+            break
+        time.sleep(_MESH_SSH_BACKOFF_SECONDS)
+        attempt += 1
+        proc = _run(_ssh_argv(key_path, ip, remote_command))
+    return proc
+
+
 def install_public_key(
     *,
     ip: str,
@@ -195,6 +251,7 @@ def install_public_key(
     enable_sudo: bool = False,
     marker: str = "",
     ensure_account_shell: str | None = None,
+    retry: bool = False,
 ) -> bool:
     """Append ``public_key`` to authorized_keys for each OS user on the host.
 
@@ -308,7 +365,11 @@ def install_public_key(
                 + "true"
             )
         )
-        proc = _run(_ssh_argv(admin_key_path, ip, remote))
+        proc = (
+            _run_mesh_ssh(admin_key_path, ip, remote)
+            if retry
+            else _run(_ssh_argv(admin_key_path, ip, remote))
+        )
         if proc.returncode == 0:
             msg = f"Installed public key for OS user '{os_user}'"
             if enable_sudo:
@@ -320,10 +381,18 @@ def install_public_key(
             result.log(msg)
         else:
             detail = (proc.stderr or proc.stdout or "").strip()[:200]
-            result.fail(
-                f"key installation for OS user '{os_user}' failed "
-                f"(rc={proc.returncode}): {detail}"
-            )
+            kind = _classify_ssh_failure(proc) if retry else "other"
+            if kind == "auth":
+                result.fail(
+                    f"{ip}: cannot SSH as root with the template admin key "
+                    "(ensure the template image authorizes it for root); "
+                    f"key install for '{os_user}' failed: {detail}"
+                )
+            else:
+                result.fail(
+                    f"key installation for OS user '{os_user}' failed "
+                    f"(rc={proc.returncode}): {detail}"
+                )
             ok = False
     return ok
 
@@ -358,10 +427,24 @@ def _ensure_local_key_and_read_pub(
         f'chown -R {quoted_user}: "$h/.ssh"; '
         'cat "$h/.ssh/id_ed25519.pub"'
     )
-    proc = _run(_ssh_argv(admin_key_path, ip, remote))
+    proc = _run_mesh_ssh(admin_key_path, ip, remote)
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()[:200]
-        result.fail(f"{ip}: keygen for '{os_user}' failed: {detail}")
+        kind = _classify_ssh_failure(proc)
+        if kind == "auth":
+            result.fail(
+                f"{ip}: cannot SSH as root with the template admin key "
+                "(ensure the template image authorizes it for root: "
+                f"PermitRootLogin + authorized_keys). Detail: {detail}"
+            )
+        elif kind == "not_ready":
+            result.fail(
+                f"{ip}: not reachable over SSH yet (sshd not ready after "
+                f"{_MESH_SSH_ATTEMPTS} attempts); mesh will re-run on the next "
+                f"reconcile. Detail: {detail}"
+            )
+        else:
+            result.fail(f"{ip}: keygen for '{os_user}' failed: {detail}")
         return None
     pub = (proc.stdout or "").strip().splitlines()
     pub = [ln for ln in pub if ln.startswith("ssh-")]
@@ -377,7 +460,7 @@ def reconcile_trusted_mesh(
     admin_key_path: str,
     os_user: str,
     result: ProxmoxResult,
-) -> bool:
+) -> str:
     """Establish a full SSH mesh across the user's trusted servers.
 
     For each server: ensure the main user has a locally-generated keypair and
@@ -386,27 +469,35 @@ def reconcile_trusted_mesh(
     on the servers; the app only relays public keys. Idempotent.
 
     ``servers`` is a list of dicts with an ``ip_address`` (reachable ones
-    only). Returns True when the mesh was fully applied.
+    only). Returns a status string (issue_023): ``"established"``,
+    ``"single_server"`` (fewer than two reachable -- nothing to mesh),
+    ``"invalid_user"``, or ``"failed"``.
     """
     reachable = [s for s in servers if s.get("ip_address")]
     if len(reachable) < 2:
         result.log(
             "Trusted access: fewer than two reachable servers; nothing to mesh"
         )
-        return True
+        return "single_server"
     if not _OS_USER_RE.match(os_user):
         result.fail(f"trusted mesh: invalid OS username {os_user!r}")
-        return False
+        return "invalid_user"
+
+    def _key_for(srv: dict[str, Any]) -> str:
+        # Each server is reached with ITS OWN admin key (templates sharing a
+        # main OS user may reference different admin keys); fall back to the
+        # caller-supplied key when a server carries none.
+        return (srv.get("admin_key_path") or "").strip() or admin_key_path
 
     # 1. Collect each server's public key (generating one if needed).
     pubkeys: dict[str, str] = {}
     for srv in reachable:
         ip = srv["ip_address"]
         pub = _ensure_local_key_and_read_pub(
-            ip=ip, admin_key_path=admin_key_path, os_user=os_user, result=result
+            ip=ip, admin_key_path=_key_for(srv), os_user=os_user, result=result
         )
         if pub is None:
-            return False
+            return "failed"
         pubkeys[ip] = pub
 
     # 2. Install every collected pubkey into every server's authorized_keys.
@@ -418,11 +509,12 @@ def reconcile_trusted_mesh(
                 continue  # a server does not need its own key installed
             if not install_public_key(
                 ip=ip,
-                admin_key_path=admin_key_path,
+                admin_key_path=_key_for(srv),
                 os_users=[os_user],
                 public_key=pub,
                 result=result,
                 marker=f"AppManager-trusted:{os_user}",
+                retry=True,
             ):
                 ok = False
     if ok:
@@ -430,7 +522,7 @@ def reconcile_trusted_mesh(
             f"Trusted access mesh established across {len(reachable)} servers "
             f"for OS user '{os_user}'"
         )
-    return ok
+    return "established" if ok else "failed"
 
 
 def rotate_public_key(

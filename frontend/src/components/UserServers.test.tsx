@@ -518,8 +518,26 @@ describe("UserServersPanel", () => {
     expect(screen.queryByLabelText("Disk (GB)")).toBeNull();
   });
 
-  it("hides the editor for admin-managed or non-eligible servers", async () => {
+  it("shows the editor on an admin_modified server the owner may edit (issue_023)", async () => {
     stubServers([makeServer({ admin_modified: true })]);
+    render(
+      <UserServersPanel
+        userId={7}
+        canCreate={false}
+        canDelete={false}
+        allowResourceEdit
+      />,
+    );
+    await screen.findByText("coder box - 10.0.7.42");
+    // admin_modified no longer hides the button; the owner may resize their
+    // own (admin/auto-provisioned) server.
+    expect(
+      screen.getByRole("button", { name: /^Change resources$/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("hides the editor for non-eligible servers (failed/no vmid/pending)", async () => {
+    stubServers([makeServer({ vmid: null })]);
     render(
       <UserServersPanel
         userId={7}

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ServersView } from "./ServersView";
 import type { ServerAccess, ServersOverview, UserServer } from "../types";
@@ -387,5 +387,37 @@ describe("ServersView", () => {
       await screen.findByRole("button", { name: /^Change resources$/ }),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Reboot$/ })).toBeInTheDocument();
+  });
+
+  it("renders the server info, usage charts and actions in one card (issue_023)", async () => {
+    stubServersView(
+      {
+        is_admin: false,
+        owners: [
+          {
+            user_id: 7,
+            username: "morris@example.com",
+            derived_user_id: "morris",
+            servers: [server()],
+          },
+        ],
+      },
+      STATS_OK,
+      { can_create: false, reason: "", allow_resource_edit: true },
+    );
+    render(<ServersView currentUser={SELF} isAdmin={false} />);
+    await screen.findByText(/morris@example.com/);
+    // A single .server-card holds the name/specs, the inline charts row, and
+    // the action buttons together (no separate wrapper card, charts inline).
+    const card = document.querySelector(".server-card");
+    expect(card).not.toBeNull();
+    const scoped = within(card as HTMLElement);
+    expect(scoped.getByText(/2 CPU · 4 GB RAM · 20 GB disk/)).toBeInTheDocument();
+    expect(scoped.getAllByRole("group", { name: "CPU" }).length).toBe(1);
+    expect(
+      scoped.getByRole("button", { name: /^Change resources$/ }),
+    ).toBeInTheDocument();
+    // The charts sit in the inline top row, not a separate wrapper.
+    expect(card!.querySelector(".server-card-top .stats-cards")).not.toBeNull();
   });
 });

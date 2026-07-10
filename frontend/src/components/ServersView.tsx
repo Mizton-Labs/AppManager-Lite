@@ -140,22 +140,25 @@ function ServerRow(props: {
   onChanged: () => void | Promise<void>;
 }) {
   const { server } = props;
+  // The ServerCard is itself the bordered card; its charts slot renders the
+  // usage sparklines inline (same row as the name/specs), and its action
+  // buttons appear beneath -- restoring the pre-issue_022 compact layout.
   return (
-    <article className="overview-server">
-      <ServerCard
-        server={server}
-        userId={props.ownerId}
-        isAdmin={props.isAdmin}
-        allowResourceEdit={props.allowResourceEdit}
-        canDelete={props.canDelete}
-        onChanged={props.onChanged}
-      />
-      <ServerStatsCards
-        userId={props.ownerId}
-        serverId={server.id}
-        timeframe={props.timeframe}
-      />
-    </article>
+    <ServerCard
+      server={server}
+      userId={props.ownerId}
+      isAdmin={props.isAdmin}
+      allowResourceEdit={props.allowResourceEdit}
+      canDelete={props.canDelete}
+      onChanged={props.onChanged}
+      charts={
+        <ServerStatsCards
+          userId={props.ownerId}
+          serverId={server.id}
+          timeframe={props.timeframe}
+        />
+      }
+    />
   );
 }
 

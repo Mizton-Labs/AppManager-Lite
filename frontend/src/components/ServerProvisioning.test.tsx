@@ -171,6 +171,31 @@ describe("ServerProvisioning apps-server flag (issue_017)", () => {
     expect(await screen.findByText("Apps server")).toBeInTheDocument();
   });
 
+  it("warns when trusted access is enabled with no main user (issue_023)", async () => {
+    stubProvisioning();
+    render(<ServerProvisioning />);
+    await openTab(/Server Templates/i);
+    await screen.findByRole("heading", { name: /add server template/i });
+
+    // Trusted access defaults on; with an empty main user the warning shows.
+    const trusted = screen.getByRole("checkbox", {
+      name: /enable trusted ssh access/i,
+    });
+    if (!(trusted as HTMLInputElement).checked) {
+      await userEvent.click(trusted);
+    }
+    expect(
+      await screen.findByText(/no ssh mesh will be formed/i),
+    ).toBeInTheDocument();
+
+    // Providing a main user clears the warning.
+    await userEvent.type(
+      screen.getByPlaceholderText(/blank = the user's own ID/i),
+      "coder",
+    );
+    expect(screen.queryByText(/no ssh mesh will be formed/i)).toBeNull();
+  });
+
   it("edits an existing template and PATCHes the changed fields", async () => {
     const fetchMock = stubProvisioning();
     render(<ServerProvisioning />);

@@ -1397,8 +1397,8 @@ def test_reboot_lxc_server_succeeds(admin, monkeypatch) -> None:
 def test_reboot_self_service_owner_allowed_on_admin_modified_server(
     admin, monkeypatch
 ) -> None:
-    """A reboot is a plain power operation -- unlike resource edits, it is
-    not blocked by admin_modified."""
+    """A reboot is a plain power operation; like resource edits (issue_023) it
+    is not blocked by admin_modified for the self-service owner."""
     client, csrf, _ = admin
     user_id, server, member, member_csrf, _fake = _create_vm_server(
         client, csrf, monkeypatch
@@ -1415,6 +1415,55 @@ def test_reboot_self_service_owner_allowed_on_admin_modified_server(
         headers={"X-CSRF-Token": member_csrf},
     )
     assert resp.status_code == 200, resp.text
+
+
+def test_self_service_owner_can_resize_admin_modified_server(
+    admin, monkeypatch
+) -> None:
+    """issue_023: admin_modified only marks an admin-sized server; it no longer
+    locks the self-service OWNER out of resizing their own server (quota still
+    applies)."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    client.patch(
+        "/api/settings/provisioning",
+        json={"provisioning_self_service": True},
+        headers={"X-CSRF-Token": csrf},
+    )
+    created = _create_member(client, csrf, self_service=True)
+    user_id = created["user"]["id"]
+    member, member_csrf = _login(
+        client.app, "srvuser@example.com", created["password"]
+    )
+    # Admin provisions the server for the member -> admin_modified=True.
+    server = client.post(
+        f"/api/users/{user_id}/servers",
+        json={"template_id": template["id"], "name": "mine",
+              "install_pubkey": False},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    assert server["admin_modified"] is True
+
+    # The owner may now resize it within quota (was a 403 before issue_023).
+    ok = member.patch(
+        f"/api/users/{user_id}/servers/{server['id']}",
+        json={"cpus": 3},
+        headers={"X-CSRF-Token": member_csrf},
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["cpus"] == 3
+
+    # Quota is still enforced for the owner.
+    too_big = member.patch(
+        f"/api/users/{user_id}/servers/{server['id']}",
+        json={"cpus": 50},
+        headers={"X-CSRF-Token": member_csrf},
+    )
+    assert too_big.status_code == 400
+    assert "limit exceeded" in too_big.json()["detail"]
 
 
 def test_reboot_proxmox_failure_returns_502(admin, monkeypatch) -> None:

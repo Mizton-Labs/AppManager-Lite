@@ -307,13 +307,13 @@ def test_trusted_mesh_established_on_second_server(admin, monkeypatch) -> None:
 def test_reconcile_trusted_mesh_unit(monkeypatch) -> None:
     ssh = _FakeSsh(monkeypatch)
     result = proxmox.ProxmoxResult()
-    ok = servers.reconcile_trusted_mesh(
+    status = servers.reconcile_trusted_mesh(
         servers=[{"ip_address": "10.0.0.1"}, {"ip_address": "10.0.0.2"}],
         admin_key_path="/keys/admin",
         os_user="coder",
         result=result,
     )
-    assert ok
+    assert status == "established"
     # 2 keygen reads + 2 cross-installs (each server gets the other's key).
     keygen = [c for c in ssh.commands if "ssh-keygen" in c[-1]]
     installs = [c for c in ssh.commands
@@ -327,11 +327,11 @@ def test_reconcile_trusted_mesh_unit(monkeypatch) -> None:
 def test_trusted_mesh_noop_single_server(monkeypatch) -> None:
     ssh = _FakeSsh(monkeypatch)
     result = proxmox.ProxmoxResult()
-    ok = servers.reconcile_trusted_mesh(
+    status = servers.reconcile_trusted_mesh(
         servers=[{"ip_address": "10.0.0.1"}],
         admin_key_path="/k", os_user="coder", result=result,
     )
-    assert ok
+    assert status == "single_server"
     assert ssh.commands == []
     assert "fewer than two" in result.transcript
 
@@ -348,7 +348,7 @@ def test_trusted_enabled_without_main_user_notes_and_skips(admin, monkeypatch) -
     uid = created["user"]["id"]
     _mk_server(client, csrf, uid, template["id"], "s1")
     s2 = _mk_server(client, csrf, uid, template["id"], "s2")
-    assert "no main user" in s2["last_log"].lower()
+    assert "no main os user" in s2["last_log"].lower()
     assert [c for c in ssh.commands if "ssh-keygen" in c[-1]] == []
 
 
@@ -441,3 +441,203 @@ def test_vm_joins_mesh_on_ip_entry(admin, monkeypatch) -> None:
     updated = client.get(f"/api/users/{uid}/servers").json()
     vm_row = [s for s in updated if s["name"] == vm["name"]][0]
     assert "trusted access" in vm_row["last_log"].lower()
+
+
+# ---------------------------------------------------------------------------
+# issue_023: mesh grouping, root-auth detection, deferred re-mesh, audit
+# ---------------------------------------------------------------------------
+
+
+class _AuthFailSsh:
+    """SSH seam where the mesh (root@) connections are rejected by auth, but the
+    initial provisioning key install (non-mesh) still succeeds."""
+
+    def __init__(self, monkeypatch):
+        self.commands: list[list[str]] = []
+        monkeypatch.setattr(servers, "_run", self)
+
+    def __call__(self, argv, *, timeout=20):
+        self.commands.append(argv)
+        remote = argv[-1]
+        # The mesh uses ssh-keygen (read pub) and installs AAAAMESHKEY; simulate
+        # a root-auth rejection for those, success otherwise.
+        if "ssh-keygen" in remote or "AAAAMESHKEY" in remote:
+            return subprocess.CompletedProcess(
+                argv, returncode=255,
+                stdout="", stderr="root@10.0.7.11: Permission denied (publickey).",
+            )
+        return subprocess.CompletedProcess(argv, returncode=0, stdout="", stderr="")
+
+
+def test_mesh_meshes_all_groups_sharing_a_main_user(admin, monkeypatch) -> None:
+    """issue_023: all of the user's reachable trusted servers that share a
+    main OS user are meshed together, even across different templates."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    ssh = _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    t1 = _add_template(client, csrf, name="A", main_os_user="coder",
+                       enable_sudo=False, enable_trusted_access=True)
+    # A second, different template that shares the same main OS user.
+    t2 = client.post(
+        "/api/settings/server-templates",
+        json={"vmid": 9001, "name": "B", "kind": "lxc",
+              "admin_ssh_key_path": "/keys/admin", "main_os_user": "coder",
+              "enable_sudo": False, "enable_trusted_access": True},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    created = _create_member(client, csrf)
+    uid = created["user"]["id"]
+
+    _mk_server(client, csrf, uid, t1["id"], "s1")
+    ssh.commands.clear()
+    # Second server from a DIFFERENT template but same main user -> meshed.
+    s2 = _mk_server(client, csrf, uid, t2["id"], "s2")
+    assert "mesh established" in s2["last_log"].lower()
+    installs = [
+        c for c in ssh.commands
+        if "authorized_keys" in c[-1] and "AAAAMESHKEY" in c[-1]
+    ]
+    assert len(installs) >= 2  # keys cross-installed across the two templates
+
+
+def test_mesh_root_auth_failure_is_actionable_and_audited(
+    admin, monkeypatch
+) -> None:
+    """issue_023: a root-auth failure produces an actionable message and a
+    server_mesh audit record (not a silent skip)."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _AuthFailSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf, name="Trust", main_os_user="coder",
+                             enable_sudo=False, enable_trusted_access=True)
+    created = _create_member(client, csrf)
+    uid = created["user"]["id"]
+    _mk_server(client, csrf, uid, template["id"], "s1")
+    s2 = _mk_server(client, csrf, uid, template["id"], "s2")
+
+    log = s2["last_log"].lower()
+    assert "cannot ssh as root" in log
+    assert "authorizes it for root" in log
+
+    events = client.get("/api/audit", params={"category": "user"}).json()
+    mesh_events = [e for e in events if e["action"] == "server_mesh"]
+    assert mesh_events, "expected a server_mesh audit event"
+    assert any("status=failed" in e.get("detail", "") for e in mesh_events)
+
+
+def test_mesh_records_no_main_user_audit(admin, monkeypatch) -> None:
+    """A trusted template with no main OS user records a clear skip reason."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf, name="T", main_os_user="",
+                             enable_trusted_access=True)
+    created = _create_member(client, csrf)
+    uid = created["user"]["id"]
+    _mk_server(client, csrf, uid, template["id"], "s1")
+    _mk_server(client, csrf, uid, template["id"], "s2")
+
+    events = client.get("/api/audit", params={"category": "user"}).json()
+    mesh_events = [e for e in events if e["action"] == "server_mesh"]
+    assert any(
+        "no_main_user" in e.get("detail", "") for e in mesh_events
+    )
+
+
+def _sync_remesh(monkeypatch):
+    """Run the deferred re-mesh inline (not in a background thread) and start
+    with a clean per-process signature cache so assertions are deterministic."""
+    from app.routers import provisioning
+    monkeypatch.setattr(provisioning, "_MESH_REMESH_ASYNC", False)
+    provisioning._mesh_signatures.clear()
+    provisioning._mesh_inflight.clear()
+
+
+def test_deferred_lxc_remesh_on_list_load(admin, monkeypatch) -> None:
+    """issue_023: an LXC that had no IP at creation (so it was never meshed) is
+    reconciled when the server list is next loaded once its IP is present."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    ssh = _FakeSsh(monkeypatch)
+    _sync_remesh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf, name="Trust", main_os_user="coder",
+                             enable_sudo=False, enable_trusted_access=True)
+    created = _create_member(client, csrf)
+    uid = created["user"]["id"]
+
+    # Seed two reachable trusted servers directly (as if their IPs were
+    # backfilled after creation, so no create-time mesh ran).
+    from app.db import get_connection
+    from app import repository
+    with get_connection() as conn:
+        for i, ip in enumerate(("10.0.5.1", "10.0.5.2"), start=1):
+            repository.create_user_server(
+                conn, user_id=uid, name=f"late{i}", kind="lxc",
+                ip_address=ip, status="created",
+                template_id=template["id"], admin_ssh_key_path="/keys/admin",
+            )
+
+    ssh.commands.clear()
+    # Listing triggers the lazy re-mesh (runs inline in tests).
+    r = client.get(f"/api/users/{uid}/servers")
+    assert r.status_code == 200
+    keygen = [c for c in ssh.commands if "ssh-keygen" in c[-1]]
+    assert len(keygen) == 2  # both late servers meshed on list load
+
+    # A second identical listing does not re-run the mesh (signature unchanged).
+    ssh.commands.clear()
+    client.get(f"/api/users/{uid}/servers")
+    assert [c for c in ssh.commands if "ssh-keygen" in c[-1]] == []
+
+
+def test_deferred_remesh_retries_after_transient_failure(
+    admin, monkeypatch
+) -> None:
+    """issue_023: a mesh that fails is NOT cached as done -- it re-runs on the
+    next list load (so a transient sshd-not-ready failure recovers)."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _sync_remesh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf, name="Trust", main_os_user="coder",
+                             enable_sudo=False, enable_trusted_access=True)
+    created = _create_member(client, csrf)
+    uid = created["user"]["id"]
+    from app.db import get_connection
+    from app import repository
+    with get_connection() as conn:
+        for i, ip in enumerate(("10.0.6.1", "10.0.6.2"), start=1):
+            repository.create_user_server(
+                conn, user_id=uid, name=f"late{i}", kind="lxc",
+                ip_address=ip, status="created",
+                template_id=template["id"], admin_ssh_key_path="/keys/admin",
+            )
+
+    # First: every mesh SSH fails transiently (connection refused).
+    class _FailingSsh:
+        def __init__(self):
+            self.commands: list[list[str]] = []
+
+        def __call__(self, argv, *, timeout=20):
+            self.commands.append(argv)
+            return subprocess.CompletedProcess(
+                argv, returncode=255, stdout="",
+                stderr="connect to host 10.0.6.1 port 22: Connection refused",
+            )
+
+    failing = _FailingSsh()
+    monkeypatch.setattr(servers, "_run", failing)
+    # Keep the mesh retry fast so the test doesn't sleep.
+    monkeypatch.setattr(servers, "_MESH_SSH_ATTEMPTS", 1)
+    client.get(f"/api/users/{uid}/servers")
+    assert any("ssh-keygen" in c[-1] for c in failing.commands)
+
+    # Next load: the failure was NOT cached, so the mesh re-runs -- and now the
+    # SSH succeeds.
+    ok = _FakeSsh(monkeypatch)
+    client.get(f"/api/users/{uid}/servers")
+    assert len([c for c in ok.commands if "ssh-keygen" in c[-1]]) == 2
