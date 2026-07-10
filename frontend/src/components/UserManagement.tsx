@@ -27,6 +27,9 @@ export function UserManagement(props: { currentUser: ApiUser | null }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [credential, setCredential] = useState<Credential | null>(null);
+  // issue_018: while a create-user request is in flight, show an indeterminate
+  // progress card listing the servers being provisioned. `null` = idle.
+  const [provisioning, setProvisioning] = useState<string[] | null>(null);
 
   const reload = useCallback(async () => {
     const [nextUsers, nextTeams] = await Promise.all([
@@ -86,8 +89,12 @@ export function UserManagement(props: { currentUser: ApiUser | null }) {
             label: "Users",
             render: () => (
               <div className="stack wide users-tab">
+                {provisioning !== null && (
+                  <ProvisioningProgressCard templateNames={provisioning} />
+                )}
                 <CreateUserCard
                   teams={teams}
+                  onCreatingChange={setProvisioning}
                   onCreated={(cred) => {
                     setCredential(cred);
                     void reload();
@@ -230,10 +237,39 @@ function CredentialBanner(props: { credential: Credential; onDismiss: () => void
   );
 }
 
+/** issue_018: indeterminate progress card shown at the top of the Users tab
+ * while a create-user request (and its synchronous server provisioning) is in
+ * flight. */
+function ProvisioningProgressCard(props: { templateNames: string[] }) {
+  const { templateNames } = props;
+  return (
+    <section className="card" aria-live="polite">
+      <h2>Creating user…</h2>
+      <div
+        className="progress-indeterminate"
+        role="progressbar"
+        aria-label="Creating user"
+      >
+        <span className="progress-indeterminate-bar" />
+      </div>
+      {templateNames.length > 0 ? (
+        <p className="muted">
+          Provisioning {templateNames.length} server
+          {templateNames.length === 1 ? "" : "s"}:{" "}
+          {templateNames.join(", ")}. This can take a minute; please wait.
+        </p>
+      ) : (
+        <p className="muted">Creating the account…</p>
+      )}
+    </section>
+  );
+}
+
 function CreateUserCard(props: {
   teams: string[];
   onCreated: (credential: Credential) => void;
   onError: (message: string) => void;
+  onCreatingChange: (templateNames: string[] | null) => void;
 }) {
   const [username, setUsername] = useState("");
   const [role, setRole] = useState<Role>("user");
@@ -291,6 +327,13 @@ function CreateUserCard(props: {
     event.preventDefault();
     props.onError("");
     setBusy(true);
+    const selectedTemplates = serverTemplates.filter((t) =>
+      provisionIds.has(t.id),
+    );
+    // Surface the in-flight provisioning to the parent so it can show the
+    // progress card above this form. Provisioning runs server-side as part of
+    // the (blocking) create request, so this reflects the request lifetime.
+    props.onCreatingChange(selectedTemplates.map((t) => t.name));
     try {
       const result = await api.createUser({
         username: username.trim(),
@@ -301,9 +344,7 @@ function CreateUserCard(props: {
           ? appsServer.trim()
           : appsServerChoice,
         apps_server_ip: useCustomAppsServer ? appsServerIp.trim() : "",
-        provision_templates: serverTemplates
-          .filter((t) => provisionIds.has(t.id))
-          .map((t) => t.id),
+        provision_templates: selectedTemplates.map((t) => t.id),
       });
       props.onCreated({
         username: result.user.username,
@@ -325,6 +366,7 @@ function CreateUserCard(props: {
       );
     } finally {
       setBusy(false);
+      props.onCreatingChange(null);
     }
   }
 

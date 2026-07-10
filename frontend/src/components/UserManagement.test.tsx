@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { UserManagement } from "./UserManagement";
 import { makeUser } from "../test/fixtures";
@@ -311,5 +311,61 @@ describe("UserManagement apps-server selection (issue_017)", () => {
     // No dropdown; the custom hostname field is present.
     expect(screen.queryByLabelText(/default apps server/i)).toBeNull();
     expect(screen.getByLabelText(/apps server hostname/i)).toBeInTheDocument();
+  });
+});
+
+describe("UserManagement provisioning progress (issue_018)", () => {
+  it("shows an indeterminate progress card while creating, then hides it", async () => {
+    let releasePost: (() => void) | null = null;
+    const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      const json = (payload: unknown) =>
+        ({ ok: true, status: 200, json: async () => payload }) as Response;
+      if (method === "GET" && url.endsWith("/api/users")) return json([]);
+      if (method === "GET" && url.endsWith("/api/teams")) return json([]);
+      if (method === "GET" && url.endsWith("/api/settings/bundle-templates"))
+        return json([]);
+      if (method === "GET" && url.endsWith("/api/account/server-templates"))
+        return json([]);
+      if (method === "GET" && url.endsWith("/api/settings/server-templates"))
+        return json([]);
+      if (method === "POST" && url.endsWith("/api/users")) {
+        await new Promise<void>((resolve) => {
+          releasePost = resolve;
+        });
+        return json({
+          user: makeUser({ id: 2, username: "newbie@example.com" }),
+          password: "P",
+          provisioning: [],
+        });
+      }
+      return { ok: false, status: 500, json: async () => ({}) } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<UserManagement currentUser={makeUser({ id: 1, role: "admin" })} />);
+    await screen.findByRole("heading", { name: /create user/i });
+    await userEvent.type(
+      screen.getByLabelText(/username/i),
+      "newbie@example.com",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: /^create user$/i }),
+    );
+
+    // While the POST is pending, the progress card is shown.
+    expect(
+      await screen.findByRole("progressbar", { name: /creating user/i }),
+    ).toBeInTheDocument();
+
+    // Release the request; the card disappears afterward.
+    await waitFor(() => expect(releasePost).not.toBeNull());
+    (releasePost as unknown as () => void)();
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("progressbar", { name: /creating user/i }),
+      ).toBeNull(),
+    );
   });
 });

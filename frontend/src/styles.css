@@ -786,6 +786,45 @@ textarea:focus-visible,
   line-height: 1.2;
 }
 
+/* issue_018: indeterminate progress bar for the user-creation card. */
+.progress-indeterminate {
+  position: relative;
+  height: 0.5rem;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--neutral-soft);
+  margin: 0.3rem 0 0.6rem;
+}
+
+.progress-indeterminate-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 40%;
+  border-radius: 999px;
+  background: var(--brand-primary);
+  animation: progress-indeterminate-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes progress-indeterminate-slide {
+  0% {
+    left: -40%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress-indeterminate-bar {
+    animation: none;
+    width: 100%;
+    opacity: 0.6;
+  }
+}
+
 /* Target-type radios + alias prefix */
 .url-fields {
   display: flex;
