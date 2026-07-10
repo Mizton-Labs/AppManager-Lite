@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import io
 import logging
 import secrets
 import sqlite3
+import stat
+import zipfile
 from typing import Any
 
 from fastapi import (
@@ -24,6 +27,7 @@ from .. import (
     jumpserver,
     keystore,
     repository,
+    schemas,
     security,
     servers,
     sessions,
@@ -142,6 +146,7 @@ def _branding(conn: sqlite3.Connection) -> dict[str, Any]:
         "collaborators": repository.parse_collaborators(
             row.get("collaborators", "[]")
         ),
+        "default_theme": schemas.normalize_theme(row.get("default_theme")),
         "configured": bool(row.get("configured", 0)),
     }
 
@@ -520,51 +525,101 @@ def download_account_bundle(
     key_name = repository.appmanager_key_name(
         repository.get_settings_row(conn).get("app_name", "")
     )
+    jump = jumpserver.load_config(conn)
+    settings_row = repository.get_settings_row(conn)
+    jump_dict = {
+        "enabled": jump.enabled,
+        "host": jump.host,
+        "jump_user": jumpserver.target_account(jump, user),
+        "port": jump.port,
+        "bundle_override": bool(settings_row.get("jump_bundle_override", 0)),
+        "bundle_host": settings_row.get("jump_bundle_host", "") or "",
+        "bundle_port": int(settings_row.get("jump_bundle_port", 22) or 22),
+    }
+    servers = _user_servers_with_main_user(conn, user["id"])
+    # Whether the connect scripts can rely on the bundled ``config`` (standard
+    # ssh config) or must be self-contained (mapping template text may not be a
+    # valid ssh config).
+    self_contained_scripts = False
     if template["is_builtin"]:
         # Built-in SSH config: rendered dynamically from the user's servers
         # and the jump server (with ProxyJump when the jump server is enabled).
-        jump = jumpserver.load_config(conn)
-        settings_row = repository.get_settings_row(conn)
-        # The account the user jumps THROUGH: the shared jumper account in
-        # shared mode, or their own per-user account otherwise.
-        jump_login = jumpserver.target_account(jump, user)
         content = repository.render_builtin_ssh_config(
-            user,
-            _user_servers_with_main_user(conn, user["id"]),
-            jump={
-                "enabled": jump.enabled,
-                "host": jump.host,
-                "jump_user": jump_login,
-                "port": jump.port,
-                "bundle_override": bool(
-                    settings_row.get("jump_bundle_override", 0)
-                ),
-                "bundle_host": settings_row.get("jump_bundle_host", "") or "",
-                "bundle_port": int(
-                    settings_row.get("jump_bundle_port", 22) or 22
-                ),
-            },
-            key_name=key_name,
+            user, servers, jump=jump_dict, key_name=key_name
         )
     elif template["mappings"]:
         content = repository.render_bundle_template(
             template,
             user,
-            _user_servers_with_main_user(conn, user["id"]),
+            servers,
             repository.list_server_templates(conn),
         )
+        self_contained_scripts = True
     else:
         # No mappings and not builtin: generic per-server config fallback.
         content = repository.render_generic_ssh_config(
-            user, _user_servers_with_main_user(conn, user["id"]), key_name=key_name
+            user, servers, key_name=key_name
         )
     safe_name = "".join(
         ch if ch.isalnum() or ch in ("-", "_") else "-" for ch in template["name"].lower()
     ).strip("-") or "bundle"
+
+    # Assemble a zip so the user gets a ready-to-use ~/.ssh directory: the SSH
+    # config, their private/public key (private key has NO extension so it can
+    # be dropped straight into ~/.ssh), and one connect_server_<name>.sh helper
+    # per server. The private key makes this effectively a key download, so it
+    # is audited and never cached.
+    try:
+        key = repository.get_user_ssh_key(conn, user["id"])
+    except keystore.MasterKeyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Server key store is misconfigured; contact an administrator.",
+        ) from exc
+    if key is None:
+        raise HTTPException(status_code=404, detail="SSH key not available")
+
+    scripts = repository.render_connect_scripts(
+        user,
+        servers,
+        jump=jump_dict,
+        key_name=key_name,
+        self_contained=self_contained_scripts,
+    )
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        def _write(name: str, data: str, mode: int) -> None:
+            info = zipfile.ZipInfo(name)
+            # Include the regular-file type bit so every extractor treats these
+            # as files (not directories) and preserves the permission bits.
+            info.external_attr = (stat.S_IFREG | mode) << 16
+            archive.writestr(info, data)
+
+        _write("config", content, 0o644)
+        _write(key_name, key["private_key"], 0o600)
+        _write(key_name + ".pub", key["public_key"] + "\n", 0o644)
+        for filename, script in scripts:
+            _write(filename, script, 0o755)
+
+    audit.record(
+        conn,
+        category=audit.CATEGORY_USER,
+        action="ssh_key_download",
+        actor=user,
+        target_type="user",
+        target_id=user["id"],
+        target_name=user["username"],
+        detail="part=private (bundle)",
+    )
+
     return Response(
-        content=content,
-        media_type="text/plain; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{safe_name}.txt"'},
+        content=buffer.getvalue(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_name}.zip"',
+            "Cache-Control": "no-store",
+        },
     )
 
 

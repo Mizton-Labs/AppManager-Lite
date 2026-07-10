@@ -94,7 +94,8 @@ describe("PortalShell", () => {
     expect(screen.queryByRole("link", { name: "Manage" })).toBeNull();
 
     const nav = screen.getByRole("navigation", { name: "Primary" });
-    expect(screen.getByLabelText("Theme")).toHaveValue("dark-modern");
+    // issue_019: the theme selector was removed from the top bar.
+    expect(screen.queryByLabelText("Theme")).toBeNull();
     expect(within(nav).getByRole("link", { name: "Home" })).toBeInTheDocument();
     // Team links are fetched from /api/teams and appear asynchronously.
     expect(

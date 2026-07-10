@@ -1,8 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render as rtlRender, screen } from "@testing-library/react";
+import type { ReactElement } from "react";
 import userEvent from "@testing-library/user-event";
 import { AccountPanel } from "./AccountPanel";
+import { ThemeProvider } from "../theme";
 import { makeUser } from "../test/fixtures";
+
+function render(ui: ReactElement) {
+  return rtlRender(<ThemeProvider>{ui}</ThemeProvider>);
+}
 
 function jsonResponse(payload: unknown): Response {
   return { ok: true, status: 200, json: async () => payload } as Response;
@@ -13,6 +19,18 @@ function textResponse(payload: string, filename: string): Response {
     ok: true,
     status: 200,
     text: async () => payload,
+    headers: new Headers({
+      "content-disposition": `attachment; filename="${filename}"`,
+    }),
+  } as Response;
+}
+
+function blobResponse(filename: string): Response {
+  return {
+    ok: true,
+    status: 200,
+    blob: async () =>
+      new Blob([new Uint8Array([1, 2, 3])], { type: "application/zip" }),
     headers: new Headers({
       "content-disposition": `attachment; filename="${filename}"`,
     }),
@@ -36,7 +54,7 @@ function stubAccount(overrides: {
       ]);
     }
     if (url.endsWith("/api/account/bundles/7/download")) {
-      return textResponse("personal bundle", "profile.txt");
+      return blobResponse("shell-profile.zip");
     }
     if (url.endsWith("/api/account/ssh-key/regenerate")) {
       const base = overrides.onRegenerate ? overrides.onRegenerate() : sshKey;
@@ -109,6 +127,11 @@ describe("AccountPanel", () => {
     expect(
       screen.getByRole("heading", { name: /change password/i }),
     ).toBeInTheDocument();
+    // issue_019: the theme selector now lives in the Account section.
+    expect(
+      screen.getByRole("heading", { name: /appearance/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Theme")).toBeInTheDocument();
   });
 
   it("lists and downloads account bundles", async () => {

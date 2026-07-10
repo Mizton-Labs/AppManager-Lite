@@ -77,6 +77,37 @@ def test_update_branding_round_trips_and_sets_configured(admin) -> None:
     assert session["configured"] is True
 
 
+def test_default_theme_round_trips_and_reaches_session(admin) -> None:
+    """issue_019: admin default theme persists and is delivered pre-auth."""
+    client, csrf, _ = admin
+    assert client.get("/api/settings/branding").json()["default_theme"] == (
+        "dark-modern"
+    )
+    assert client.get("/api/session").json()["default_theme"] == "dark-modern"
+
+    resp = client.patch(
+        "/api/settings/branding",
+        json={"default_theme": "energy"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["default_theme"] == "energy"
+    assert client.get("/api/settings/branding").json()["default_theme"] == (
+        "energy"
+    )
+    assert client.get("/api/session").json()["default_theme"] == "energy"
+
+
+def test_update_branding_rejects_unknown_theme(admin) -> None:
+    client, csrf, _ = admin
+    resp = client.patch(
+        "/api/settings/branding",
+        json={"default_theme": "neon"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 422
+
+
 def test_update_branding_accepts_raster_logo(admin) -> None:
     client, csrf, _ = admin
     # A 1x1 PNG data URI (tiny, well under the cap) is accepted.

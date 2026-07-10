@@ -15,6 +15,7 @@ function stubSettings(
     app_name: "",
     app_logo: "",
     collaborators: [],
+    default_theme: "dark-modern",
     configured: false,
   },
 ) {
@@ -151,6 +152,7 @@ describe("GeneralSettings", () => {
       app_name: "",
       app_logo: "",
       collaborators: ["Existing Person"],
+      default_theme: "dark-modern",
       configured: false,
     });
     render(<GeneralSettings />);
@@ -185,5 +187,26 @@ describe("GeneralSettings", () => {
     );
     const sent = JSON.parse((patch![1] as RequestInit).body as string);
     expect(sent).toEqual({ collaborators: ["New Person"] });
+  });
+
+  it("saves the admin default theme (issue_019)", async () => {
+    const fetchMock = stubSettings(SAMPLE);
+    render(<GeneralSettings />);
+    await openTab(/Basic Information/i);
+
+    await userEvent.selectOptions(
+      await screen.findByLabelText("Default theme"),
+      "energy",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: /save basic information/i }),
+    );
+    const patch = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        /branding/.test(String(url)) && (init?.method ?? "GET") === "PATCH",
+    );
+    expect(patch).toBeTruthy();
+    const sent = JSON.parse((patch![1] as RequestInit).body as string);
+    expect(sent.default_theme).toBe("energy");
   });
 });

@@ -8,10 +8,15 @@ import type {
   SshKeyInfo,
 } from "../types";
 import { ChangePasswordForm } from "./ChangePasswordForm";
+import { ThemePicker } from "./ThemePicker";
 import { UserServersPanel } from "./UserServers";
 
 function saveTextFile(content: string, filename: string) {
   const blob = new Blob([content], { type: "text/plain" });
+  saveBlob(blob, filename);
+}
+
+function saveBlob(blob: Blob, filename: string) {
   const href = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = href;
@@ -33,11 +38,25 @@ export function AccountPanel(props: {
         <ProfileCard user={user} onPasswordChanged={props.onPasswordChanged} />
         <SshKeyCard />
         <BundleDownloadCard />
+        <AppearanceCard />
       </div>
       <div className="account-row-servers">
         <MyServersCard user={user} />
       </div>
     </div>
+  );
+}
+
+function AppearanceCard() {
+  return (
+    <section className="card">
+      <h2>Appearance</h2>
+      <p className="muted">
+        Choose your interface theme. Your choice is saved in this browser and
+        overrides the deployment default.
+      </p>
+      <ThemePicker />
+    </section>
   );
 }
 
@@ -339,15 +358,7 @@ function BundleDownloadCard() {
     setBusy(true);
     try {
       const result = await api.downloadAccountBundle(Number(selectedId));
-      const blob = new Blob([result.content], { type: "text/plain" });
-      const href = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = href;
-      link.download = result.filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(href);
+      saveBlob(result.blob, result.filename);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Unable to download bundle.");
     } finally {
@@ -359,10 +370,10 @@ function BundleDownloadCard() {
     <section className="card">
       <h2>Bundle Downloads</h2>
       <p className="muted">
-        Download a personal SSH configuration file. Templates with field
-        mappings are filled in from your account details; templates without
-        mappings (such as "SSH Config Default") are generated dynamically
-        from your servers.
+        Download a zip with your personal SSH configuration, your private and
+        public keys, and a <code>connect_server_&lt;name&gt;.sh</code> script per
+        server. Unzip it into your <code>~/.ssh</code> directory and run a
+        connect script to reach a server without typing the full ssh command.
       </p>
       {error && (
         <p className="alert error" role="alert">

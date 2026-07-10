@@ -31,6 +31,8 @@ export interface SessionState {
   app_logo: string;
   /** Admin-managed About-page collaborators (separate from the dev team). */
   collaborators: string[];
+  /** Admin-selected default UI theme (fallback when the user has not chosen). */
+  default_theme?: string;
   /** One-time setup flag that drives the first-login wizard (admins only). */
   configured: boolean;
 }
@@ -462,6 +464,7 @@ export interface BrandingSettings {
   app_logo: string;
   /** Admin-managed About-page collaborators (separate from the dev team). */
   collaborators: string[];
+  default_theme: string;
   configured: boolean;
 }
 
@@ -469,6 +472,7 @@ export interface UpdateBrandingSettingsInput {
   app_name?: string;
   app_logo?: string;
   collaborators?: string[];
+  default_theme?: string;
   configured?: boolean;
 }
 

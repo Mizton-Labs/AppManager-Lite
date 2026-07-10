@@ -2,6 +2,19 @@
 
 from __future__ import annotations
 
+import io
+import zipfile
+
+
+def _zip_members(response) -> dict:
+    assert response.headers["content-type"] == "application/zip"
+    archive = zipfile.ZipFile(io.BytesIO(response.content))
+    return {name: archive.read(name) for name in archive.namelist()}
+
+
+def _config_text(response) -> str:
+    return _zip_members(response)["config"].decode()
+
 from fastapi.testclient import TestClient
 
 
@@ -133,7 +146,7 @@ def test_account_download_renders_bundle_for_current_user(admin) -> None:
         "Shell profile",
     }
     assert download.status_code == 200, download.text
-    assert download.text == "analyst@example.com runs on apps.example.com as user"
+    assert _config_text(download) == "analyst@example.com runs on apps.example.com as user"
     assert "attachment" in download.headers["content-disposition"]
 
 
@@ -156,7 +169,7 @@ def test_account_download_uses_ip_fallback_for_apps_server(admin) -> None:
         download = member.get(f"/api/account/bundles/{template['id']}/download")
 
     assert download.status_code == 200, download.text
-    assert download.text == "iponly@example.com runs on 10.0.0.8 as user"
+    assert _config_text(download) == "iponly@example.com runs on 10.0.0.8 as user"
 
 
 def test_account_download_renders_explicit_host_and_ip(admin) -> None:
@@ -189,4 +202,4 @@ def test_account_download_renders_explicit_host_and_ip(admin) -> None:
         download = member.get(f"/api/account/bundles/{template['id']}/download")
 
     assert download.status_code == 200, download.text
-    assert download.text == "HOST=apps.example.com\nIP=10.0.0.9"
+    assert _config_text(download) == "HOST=apps.example.com\nIP=10.0.0.9"

@@ -12,7 +12,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from .. import audit, repository, reverse_proxy
+from .. import audit, repository, reverse_proxy, schemas
 from ..deps import get_db, require_admin, verify_csrf
 from ..repository import TeamConflictError
 from ..schemas import (
@@ -63,6 +63,7 @@ def _branding_out(row: dict[str, Any]) -> BrandingSettingsOut:
         collaborators=repository.parse_collaborators(
             row.get("collaborators", "[]")
         ),
+        default_theme=schemas.normalize_theme(row.get("default_theme")),
         configured=bool(row.get("configured", 0)),
     )
 
@@ -158,11 +159,18 @@ def update_branding_settings(
             if payload.collaborators is None
             else json.dumps(payload.collaborators)
         ),
+        default_theme=payload.default_theme,
         configured=payload.configured,
     )
     changed = [
         name
-        for name in ("app_name", "app_logo", "collaborators", "configured")
+        for name in (
+            "app_name",
+            "app_logo",
+            "collaborators",
+            "default_theme",
+            "configured",
+        )
         if getattr(payload, name) is not None
     ]
     audit.record(

@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import io
 import subprocess
+import zipfile
 
 from fastapi.testclient import TestClient
 
 from app import proxmox, servers
+
+
+def _config_text(response) -> str:
+    assert response.headers["content-type"] == "application/zip"
+    archive = zipfile.ZipFile(io.BytesIO(response.content))
+    return archive.read("config").decode()
 
 
 _VERSION_OK = (200, {"data": {"version": "8.2.4"}})
@@ -462,7 +470,7 @@ def test_mapping_source_user_id(admin) -> None:
         f"/api/account/bundles/{template.json()['id']}/download"
     )
     assert download.status_code == 200
-    assert download.text == "id=john-doe"
+    assert _config_text(download) == "id=john-doe"
 
 
 def test_default_ssh_config_generated_from_servers(admin, monkeypatch) -> None:
@@ -477,7 +485,7 @@ def test_default_ssh_config_generated_from_servers(admin, monkeypatch) -> None:
     default = next(o for o in options if o["name"] == "SSH Config Default")
     download = member.get(f"/api/account/bundles/{default['id']}/download")
     assert download.status_code == 200
-    text = download.text
+    text = _config_text(download)
     # The Host alias is derived from the composed name "Tpl-rotuser-coder box".
     assert "Host tpl-rotuser-coder-box" in text
     assert "Hostname 10.0.7.42" in text
@@ -512,8 +520,8 @@ def test_any_mappingless_template_serves_generic_config(admin) -> None:
     member, _ = _login(client.app, "rotuser@example.com", created["password"])
     download = member.get(f"/api/account/bundles/{template['id']}/download")
     assert download.status_code == 200
-    assert "literal text" not in download.text
-    assert "No servers" in download.text
+    assert "literal text" not in _config_text(download)
+    assert "No servers" in _config_text(download)
 
 
 def test_default_ssh_config_without_servers(admin) -> None:
@@ -526,5 +534,5 @@ def test_default_ssh_config_without_servers(admin) -> None:
     assert download.status_code == 200
     # The built-in config always includes the Host * keepalive stanza, even
     # with no servers (no per-server Host blocks).
-    assert "Host *" in download.text
-    assert "ServerAliveInterval 60" in download.text
+    assert "Host *" in _config_text(download)
+    assert "ServerAliveInterval 60" in _config_text(download)

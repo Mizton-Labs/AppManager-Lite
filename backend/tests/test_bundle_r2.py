@@ -2,9 +2,24 @@
 
 from __future__ import annotations
 
+import io
+import zipfile
+
 from fastapi.testclient import TestClient
 
 from app import repository
+
+
+def _zip_members(response) -> dict[str, bytes]:
+    """Open a bundle-download zip response and return {name: bytes}."""
+    assert response.headers["content-type"] == "application/zip"
+    archive = zipfile.ZipFile(io.BytesIO(response.content))
+    return {name: archive.read(name) for name in archive.namelist()}
+
+
+def _config_text(response) -> str:
+    """The 'config' member of a bundle-download zip, decoded to text."""
+    return _zip_members(response)["config"].decode()
 
 
 def _create_member(client, csrf, username="bt@example.com"):
@@ -84,10 +99,11 @@ def test_per_template_bundle_variables_render(admin) -> None:
     member, _ = _login(client.app, "bt@example.com", created["password"])
     dl = member.get(f"/api/account/bundles/{template.json()['id']}/download")
     assert dl.status_code == 200
+    cfg = _config_text(dl)
     # web-box -> the user's first Web Box server; user falls back to user id.
-    assert "web=10.0.0.1" in dl.text
-    assert "user=bt" in dl.text
-    assert "db=10.0.0.2" in dl.text
+    assert "web=10.0.0.1" in cfg
+    assert "user=bt" in cfg
+    assert "db=10.0.0.2" in cfg
 
 
 def test_unknown_template_mapping_source_is_rejected(admin) -> None:
@@ -131,7 +147,7 @@ def test_stale_template_mapping_renders_empty(admin) -> None:
     dl = member.get(f"/api/account/bundles/{bundle.json()['id']}/download")
     assert dl.status_code == 200
     # The stale variable renders empty rather than erroring.
-    assert "ip=[]" in dl.text
+    assert "ip=[]" in _config_text(dl)
 
 
 def test_edit_bundle_grandfathers_stale_template_source(admin) -> None:
@@ -278,7 +294,7 @@ def test_builtin_render_with_jump_server(admin, monkeypatch) -> None:
         t for t in member.get("/api/account/bundles").json()
         if t["name"] == "SSH Config Default"
     )
-    text = member.get(f"/api/account/bundles/{builtin['id']}/download").text
+    text = _config_text(member.get(f"/api/account/bundles/{builtin['id']}/download"))
     assert "Host *" in text
     assert "ServerAliveInterval 60" in text
     assert "ServerAliveCountMax 3" in text
@@ -330,7 +346,7 @@ def test_builtin_bundle_uses_override_address(admin) -> None:
         t for t in member.get("/api/account/bundles").json()
         if t["name"] == "SSH Config Default"
     )
-    text = member.get(f"/api/account/bundles/{builtin['id']}/download").text
+    text = _config_text(member.get(f"/api/account/bundles/{builtin['id']}/download"))
     # Bundle jump block uses the override address, not the management one.
     assert "Hostname public.example.com" in text
     assert "Port 443" in text
@@ -361,7 +377,7 @@ def test_builtin_bundle_falls_back_when_override_off(admin) -> None:
         t for t in member.get("/api/account/bundles").json()
         if t["name"] == "SSH Config Default"
     )
-    text = member.get(f"/api/account/bundles/{builtin['id']}/download").text
+    text = _config_text(member.get(f"/api/account/bundles/{builtin['id']}/download"))
     assert "Hostname 10.9.9.9" in text
     assert "Port 2222" in text
     assert "public.example.com" not in text
@@ -414,14 +430,14 @@ def test_server_user_uses_template_main_user(admin) -> None:
         headers={"X-CSRF-Token": csrf},
     ).json()
     dl = member.get(f"/api/account/bundles/{per['id']}/download")
-    assert "u=ubuntu" in dl.text
+    assert "u=ubuntu" in _config_text(dl)
 
     # Builtin config's Host block uses the main user too.
     builtin = next(
         t for t in member.get("/api/account/bundles").json()
         if t["name"] == "SSH Config Default"
     )
-    text = member.get(f"/api/account/bundles/{builtin['id']}/download").text
+    text = _config_text(member.get(f"/api/account/bundles/{builtin['id']}/download"))
     assert "Host srv" in text
     assert "User ubuntu" in text
 
@@ -438,7 +454,7 @@ def test_builtin_render_without_jump_has_no_proxyjump(admin) -> None:
         t for t in member.get("/api/account/bundles").json()
         if t["name"] == "SSH Config Default"
     )
-    text = member.get(f"/api/account/bundles/{builtin['id']}/download").text
+    text = _config_text(member.get(f"/api/account/bundles/{builtin['id']}/download"))
     assert "Host solo" in text
     assert "ProxyJump" not in text
     assert "Host jumpserver" not in text
@@ -505,3 +521,87 @@ def test_disable_hides_from_account_downloads(admin) -> None:
     assert member.get(
         f"/api/account/bundles/{builtin['id']}/download"
     ).status_code == 404
+
+
+def test_bundle_zip_includes_key_and_connect_scripts(admin) -> None:
+    """issue_019: the download is a zip with config, keys (private key without a
+    file extension) and a connect script per server."""
+    client, csrf, _ = admin
+    created = _create_member(client, csrf)
+    uid = created["user"]["id"]
+    _seed_servers(uid, [
+        {"name": "alpha", "hostname": "alpha", "ip_address": "10.0.0.1"},
+        {"name": "beta", "hostname": "beta", "ip_address": "10.0.0.2"},
+    ])
+    member, _ = _login(client.app, "bt@example.com", created["password"])
+    builtin = next(
+        t for t in member.get("/api/account/bundles").json()
+        if t["name"] == "SSH Config Default"
+    )
+    dl = member.get(f"/api/account/bundles/{builtin['id']}/download")
+    assert dl.status_code == 200
+    assert dl.headers["content-type"] == "application/zip"
+    assert dl.headers["cache-control"] == "no-store"
+    archive = zipfile.ZipFile(io.BytesIO(dl.content))
+    members = {name: archive.read(name) for name in archive.namelist()}
+
+    # The private key entry has NO .txt/.pub extension so it drops into ~/.ssh.
+    key_name = "id_ed25519_appmanager"
+    assert key_name in members
+    assert members[key_name].decode().startswith(
+        "-----BEGIN OPENSSH PRIVATE KEY-----"
+    )
+    assert (key_name + ".pub") in members
+    assert members[key_name + ".pub"].decode().startswith("ssh-ed25519 ")
+
+    # File modes: private key 0600, public 0644, scripts 0755, config 0644.
+    def _mode(name: str) -> int:
+        return (archive.getinfo(name).external_attr >> 16) & 0o777
+
+    assert _mode(key_name) == 0o600
+    assert _mode(key_name + ".pub") == 0o644
+    assert _mode("config") == 0o644
+    assert _mode("connect_server_alpha.sh") == 0o755
+
+    # The config references the same key filename.
+    assert f"IdentityFile ~/.ssh/{key_name}" in members["config"].decode()
+
+    # One connect script per server, deferring to the bundled config.
+    assert "connect_server_alpha.sh" in members
+    assert "connect_server_beta.sh" in members
+    script = members["connect_server_alpha.sh"].decode()
+    assert script.startswith("#!/bin/sh")
+    assert "ssh -F ./config alpha" in script
+
+    # The private-key-in-bundle download is audited.
+    audit_resp = client.get("/api/audit?category=user")
+    assert any(
+        e["action"] == "ssh_key_download" and "bundle" in e.get("detail", "")
+        for e in audit_resp.json()
+    )
+
+
+def test_bundle_zip_mapping_scripts_are_self_contained(admin) -> None:
+    """Mapping-template bundles get self-contained connect scripts (their
+    'config' text may not be a valid ssh config)."""
+    client, csrf, _ = admin
+    created = _create_member(client, csrf)
+    uid = created["user"]["id"]
+    _seed_servers(uid, [
+        {"name": "gamma", "hostname": "gamma", "ip_address": "10.0.0.9"},
+    ])
+    member, _ = _login(client.app, "bt@example.com", created["password"])
+    tpl = client.post(
+        "/api/settings/bundle-templates",
+        json={"name": "Plain", "content": "user=WHO",
+              "mappings": [{"field_name": "WHO", "source": "user_id"}]},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    dl = member.get(f"/api/account/bundles/{tpl['id']}/download")
+    members = _zip_members(dl)
+    assert members["config"].decode() == "user=bt"
+    script = members["connect_server_gamma.sh"].decode()
+    # Self-contained: uses the bundled key and the server IP directly.
+    assert "ssh -i" in script
+    assert "10.0.0.9" in script
+    assert "-F ./config" not in script

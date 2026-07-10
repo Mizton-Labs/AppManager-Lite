@@ -207,6 +207,7 @@ CREATE TABLE IF NOT EXISTS settings (
     app_name        TEXT    NOT NULL DEFAULT '',
     app_logo        TEXT    NOT NULL DEFAULT '',
     collaborators   TEXT    NOT NULL DEFAULT '[]',
+    default_theme   TEXT    NOT NULL DEFAULT 'dark-modern',
     configured      INTEGER NOT NULL DEFAULT 0,
     -- LXC/VM provider (Proxmox). The API key is write-only: stored here,
     -- never returned by any endpoint or written to logs/audit entries.
@@ -526,6 +527,11 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     # Admin-managed "Collaborators" shown on the About page, stored as a JSON
     # array of names (distinct from the git-derived development team).
     _add_column(conn, "settings", "collaborators", "TEXT NOT NULL DEFAULT '[]'")
+    # issue_019: admin-selected default UI theme, applied to users who have not
+    # chosen their own theme.
+    _add_column(
+        conn, "settings", "default_theme", "TEXT NOT NULL DEFAULT 'dark-modern'"
+    )
 
     _add_column(conn, "teams", "sort_order", "INTEGER NOT NULL DEFAULT 0")
     # Teams gained an optional small icon (a bundled catalogue path or a capped

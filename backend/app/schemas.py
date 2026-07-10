@@ -389,6 +389,9 @@ class SessionOut(BaseModel):
     # Admin-managed About-page collaborators (distinct from the git development
     # team); delivered with the session so the About page can render them.
     collaborators: list[str] = Field(default_factory=list)
+    # issue_019: admin-selected default UI theme (fallback when a user has not
+    # chosen their own), delivered pre-auth so the client can apply it.
+    default_theme: str = "dark-modern"
     # One-time setup flag that drives the first-login wizard (admins only).
     configured: bool = False
 
@@ -1386,7 +1389,20 @@ class BrandingSettingsOut(BaseModel):
     app_name: str = ""
     app_logo: str = ""
     collaborators: list[str] = Field(default_factory=list)
+    default_theme: str = "dark-modern"
     configured: bool = False
+
+
+# issue_019: the UI themes an admin may set as the deployment default. Kept in
+# sync with the frontend theme list (frontend/src/theme.tsx).
+VALID_THEMES = ("dark-modern", "light", "energy", "classic")
+DEFAULT_THEME = "dark-modern"
+
+
+def normalize_theme(value: str | None) -> str:
+    """Coerce a theme id to a known value, defaulting to dark-modern."""
+    v = (value or "").strip()
+    return v if v in VALID_THEMES else DEFAULT_THEME
 
 
 # Admin-managed "Collaborators" shown on the About page. Each is a free-text
@@ -1426,12 +1442,23 @@ class UpdateBrandingSettingsRequest(BaseModel):
     app_name: str | None = Field(default=None, max_length=128)
     app_logo: str | None = Field(default=None, max_length=ICON_FIELD_MAX_LEN)
     collaborators: list[str] | None = None
+    default_theme: str | None = Field(default=None, max_length=32)
     configured: bool | None = None
 
     @field_validator("app_name")
     @classmethod
     def _clean_name(cls, value: str | None) -> str | None:
         return None if value is None else value.strip()
+
+    @field_validator("default_theme")
+    @classmethod
+    def _check_theme(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        v = value.strip()
+        if v not in VALID_THEMES:
+            raise ValueError(f"Theme must be one of {VALID_THEMES}.")
+        return v
 
     @field_validator("app_logo")
     @classmethod

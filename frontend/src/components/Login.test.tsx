@@ -59,7 +59,8 @@ describe("Login", () => {
     const onAuthenticated = vi.fn();
     renderLogin(onAuthenticated);
 
-    expect(screen.getByLabelText("Theme")).toHaveValue("dark-modern");
+    // issue_019: the theme selector was removed from the login form.
+    expect(screen.queryByLabelText("Theme")).toBeNull();
     await userEvent.type(screen.getByLabelText("Username"), "admin");
     await userEvent.type(screen.getByLabelText("Password"), "supersecret1");
     await userEvent.click(screen.getByRole("button", { name: /sign in/i }));

@@ -3,6 +3,7 @@ import { api, ApiError } from "../api";
 import type { BrandingSettings, ReverseProxySettings, SshKey } from "../types";
 import { SubTabs } from "./SubTabs";
 import { setBranding } from "../branding";
+import { THEMES, setAdminDefaultTheme } from "../theme";
 import { fileToLogoDataUrl } from "../lib/image";
 import { resolveIconSrc } from "../lib/links";
 import { PlusIcon, XIcon } from "./icons";
@@ -88,6 +89,7 @@ function ApplicationBasicInformation(props: {
 
   const [appName, setAppName] = useState("");
   const [appLogo, setAppLogo] = useState("");
+  const [defaultTheme, setDefaultTheme] = useState("dark-modern");
   const [uploading, setUploading] = useState(false);
 
   useEffect(() => {
@@ -98,6 +100,7 @@ function ApplicationBasicInformation(props: {
         if (!active) return;
         setAppName(result.app_name);
         setAppLogo(result.app_logo);
+        setDefaultTheme(result.default_theme);
       })
       .catch((err) => {
         if (active) {
@@ -140,12 +143,16 @@ function ApplicationBasicInformation(props: {
       const result = await api.updateBrandingSettings({
         app_name: appName.trim(),
         app_logo: appLogo.trim(),
+        default_theme: defaultTheme,
         configured: props.markConfigured ? true : undefined,
       });
       setAppName(result.app_name);
       setAppLogo(result.app_logo);
+      setDefaultTheme(result.default_theme);
       // Reflect the new branding across the UI immediately.
       setBranding(result);
+      // Apply the new default live for viewers without an explicit choice.
+      setAdminDefaultTheme(result.default_theme);
       setSaved(true);
       props.onSaved?.();
     } catch (err) {
@@ -230,6 +237,24 @@ function ApplicationBasicInformation(props: {
             when left blank.
           </span>
         </div>
+
+        <label className="field">
+          <span>Default theme</span>
+          <select
+            aria-label="Default theme"
+            value={defaultTheme}
+            onChange={(e) => setDefaultTheme(e.target.value)}
+          >
+            {THEMES.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+          <span className="muted logo-hint">
+            Applied to users who have not chosen their own theme in Account.
+          </span>
+        </label>
 
         <div className="row-actions">
           <button type="submit" className="btn primary" disabled={busy}>

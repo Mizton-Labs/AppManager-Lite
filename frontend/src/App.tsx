@@ -5,8 +5,7 @@ import { getAppName, setBranding } from "./branding";
 import { Login } from "./components/Login";
 import { ChangePasswordForm } from "./components/ChangePasswordForm";
 import { PortalShell } from "./components/PortalShell";
-import { ThemePicker } from "./components/ThemePicker";
-import { ThemeProvider } from "./theme";
+import { ThemeProvider, setAdminDefaultTheme } from "./theme";
 
 export function App() {
   return (
@@ -24,6 +23,7 @@ function AppContent() {
     const next = await api.getSession();
     setCsrfToken(next.csrf_token);
     setBranding(next);
+    setAdminDefaultTheme(next.default_theme);
     setSession(next);
     return next;
   }, []);
@@ -37,6 +37,7 @@ function AppContent() {
   const handleAuthenticated = useCallback((next: SessionState) => {
     setCsrfToken(next.csrf_token);
     setBranding(next);
+    setAdminDefaultTheme(next.default_theme);
     setSession(next);
   }, []);
 
@@ -97,7 +98,6 @@ function ForcedChange(props: { username: string; onChanged: () => Promise<void> 
   return (
     <div className="center-page">
       <div className="card auth-card">
-        <ThemePicker />
         <h1 className="brand">{getAppName()}</h1>
         <h2>Update your password</h2>
         <p className="muted">

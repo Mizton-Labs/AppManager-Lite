@@ -121,6 +121,26 @@ async function requestText(path: string): Promise<BundleDownload> {
   return { content, filename: match?.[1] ?? "bundle.txt" };
 }
 
+async function requestBlob(
+  path: string,
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await fetch(apiBase() + path, {
+    method: "GET",
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new ApiError(
+      response.status,
+      detail || `Request failed (${response.status})`,
+    );
+  }
+  const blob = await response.blob();
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const match = disposition.match(/filename="?([^";]+)"?/i);
+  return { blob, filename: match?.[1] ?? "bundle.zip" };
+}
+
 export const api = {
   getSession: () => request<SessionState>("session"),
 
@@ -147,7 +167,7 @@ export const api = {
   listAccountBundles: () => request<BundleOption[]>("account/bundles"),
 
   downloadAccountBundle: (id: number) =>
-    requestText(`account/bundles/${id}/download`),
+    requestBlob(`account/bundles/${id}/download`),
 
   getAccountSshKey: () => request<SshKeyInfo>("account/ssh-key"),
 
