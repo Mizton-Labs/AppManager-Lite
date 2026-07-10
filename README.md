@@ -264,6 +264,15 @@ same area with every application (and its creator), a tab for user management, a
 **Teams** tab for managing teams, and a **General Settings** tab for branding
 (application name and logo) and reverse-proxy configuration.
 
+Creating an application is collapsed behind a **New application** button. The
+list has a **filter** box (case-insensitive match across name, description, URL,
+teams, and owner). For an administrator, their own applications are shown first
+under **"My applications"**, then everyone else's under **"Other users'
+applications"**; the **move up/down** ordering controls act within each group
+and are hidden while a filter is active. The **User management** tab likewise
+collapses **Create user** behind an **Add user** button and offers a filter over
+username, user ID, role, and teams.
+
 When an administrator creates a user, the username must be an **email address**;
 it is the user's sign-in name. Each user also gets a derived **user ID** — the
 email's local part, lowercased, with dots and underscores replaced by dashes
@@ -793,9 +802,15 @@ then **force-remove** the record even when the destroy could not be confirmed.
 ### Servers section
 
 The **Servers** entry in the sidebar (below Account) is where a user creates and
-manages their servers. A **Create server** card sits at the top (when the user
-may provision), followed by servers grouped by owner. Administrators see and
-manage every user's servers; a regular user sees and manages only their own.
+manages their servers. Creation is collapsed behind an **Add server** button
+(when the user may provision) that opens the create card; the card stays open
+after a create so its confirmation/warnings remain visible, and Cancel/Close
+collapses it. Servers are grouped by owner. Administrators see and manage every
+user's servers, with **their own servers shown first under "My servers"** and
+everyone else's under **"Users' servers"** for quick access; a regular user sees
+and manages only their own. A **filter** box narrows the list by a
+case-insensitive match across server name, hostname, IP, template, kind, status,
+and owner; owner groups with no matches are hidden.
 Each server card shows its assigned resources next to four compact usage charts
 — **CPU, memory, disk, and network** — drawn as small sparklines from Proxmox's
 historical `rrddata`, with a **timeframe** selector (last hour, day, or week).
