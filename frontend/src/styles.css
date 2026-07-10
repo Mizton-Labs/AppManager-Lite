@@ -1044,10 +1044,107 @@ textarea:focus-visible,
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 12%, transparent);
 }
 
+/* issue_025: the Push button shown next to Save when an approved alias still
+   needs applying to the reverse proxy. Highlighted with a gentle pulse so the
+   admin notices it's the next step after saving a config change. */
+.btn.push-apply {
+  font-weight: 700;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #3b82f6) 55%, transparent);
+  animation: push-apply-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes push-apply-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #3b82f6) 30%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent, #3b82f6) 65%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn.push-apply {
+    animation: none;
+  }
+}
+
 .tag-row {
   display: flex;
   flex-wrap: wrap;
   gap: 0.4rem;
+}
+
+/* issue_025: in-app User guide. */
+.guide-toc ul {
+  margin: 0.4rem 0 0;
+  padding-left: 1.1rem;
+  columns: 2;
+}
+
+.guide-section h2 {
+  margin-top: 0;
+}
+
+.guide-steps {
+  padding-left: 1.1rem;
+}
+
+.guide-steps li {
+  margin: 0.3rem 0;
+}
+
+.guide-admin-badge {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.05rem 0.5rem;
+  vertical-align: middle;
+  color: var(--text-muted, inherit);
+}
+
+.guide-figure {
+  margin: 0.8rem 0 0;
+}
+
+.guide-flow {
+  width: 100%;
+  max-width: 620px;
+  height: auto;
+  color: var(--text);
+}
+
+.guide-flow rect {
+  fill: color-mix(in srgb, var(--accent, #3b82f6) 10%, transparent);
+  stroke: color-mix(in srgb, var(--accent, #3b82f6) 55%, var(--border));
+}
+
+.guide-flow-label {
+  fill: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.guide-flow-sub {
+  fill: var(--text-muted, currentColor);
+  font-size: 8.5px;
+}
+
+.guide-flow-arrow {
+  stroke: var(--text-muted, currentColor);
+  stroke-width: 1.6;
+  fill: none;
+}
+
+.guide-flow marker path {
+  fill: var(--text-muted, currentColor);
+  stroke: none;
+}
+
+.guide-figure figcaption {
+  margin-top: 0.3rem;
+  font-size: 0.82rem;
 }
 
 .tag {

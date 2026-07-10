@@ -11,6 +11,7 @@ import { SettingsView } from "./SettingsView";
 import { AboutView } from "./AboutView";
 import { AuditView } from "./AuditView";
 import { ServersView } from "./ServersView";
+import { UserGuideView } from "./UserGuideView";
 import { LogOutIcon, MenuIcon } from "./icons";
 
 const SIDEBAR_KEY = "appmanager-lite.sidebar.collapsed";
@@ -177,6 +178,7 @@ export function PortalShell(props: {
               }
             />
             <Route path="/about" element={<AboutView />} />
+            <Route path="/user-guide" element={<UserGuideView />} />
             <Route
               path="/servers"
               element={

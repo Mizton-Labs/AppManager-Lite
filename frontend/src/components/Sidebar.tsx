@@ -4,6 +4,7 @@ import type { Team } from "../types";
 import { teamSlug } from "../teams";
 import { TeamIcon } from "./TeamIcon";
 import {
+  BookIcon,
   HomeIcon,
   InfoIcon,
   ListIcon,
@@ -63,6 +64,12 @@ export function Sidebar(props: {
           to="/servers"
           icon={<ServerIcon />}
           label="Servers"
+          collapsed={collapsed}
+        />
+        <SideLink
+          to="/user-guide"
+          icon={<BookIcon />}
+          label="User Guide"
           collapsed={collapsed}
         />
         <SideLink

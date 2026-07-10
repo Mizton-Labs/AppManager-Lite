@@ -153,3 +153,14 @@ export function ServerIcon(props: SVGProps<SVGSVGElement>) {
     </Glyph>
   );
 }
+
+export function BookIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Glyph {...props}>
+      <path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H20v14H6a2 2 0 0 0-2 2z" />
+      <path d="M4 19.5A1.5 1.5 0 0 1 5.5 18H20" />
+      <path d="M8 8h8" />
+      <path d="M8 11.5h6" />
+    </Glyph>
+  );
+}
