@@ -589,6 +589,9 @@ function UserRow(props: {
 }) {
   const { user } = props;
   const [editing, setEditing] = useState(false);
+  // issue_025: cards are collapsed by default; the teams/servers detail (and
+  // its per-user servers fetch) is deferred until the admin expands the card.
+  const [expanded, setExpanded] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleteApps, setDeleteApps] = useState(false);
   const [role, setRole] = useState<Role>(user.role);
@@ -657,7 +660,26 @@ function UserRow(props: {
           <button
             type="button"
             className="btn ghost"
-            onClick={() => setEditing((v) => !v)}
+            aria-expanded={expanded || editing}
+            onClick={() => {
+              // Collapsing also closes an open edit form.
+              if (expanded || editing) {
+                setExpanded(false);
+                setEditing(false);
+              } else {
+                setExpanded(true);
+              }
+            }}
+          >
+            {expanded || editing ? "Collapse" : "Expand"}
+          </button>
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={() => {
+              setExpanded(true);
+              setEditing((v) => !v);
+            }}
           >
             {editing ? "Close" : "Edit"}
           </button>
@@ -676,7 +698,7 @@ function UserRow(props: {
         </div>
       </div>
 
-      {!editing && user.teams.length > 0 && (
+      {expanded && !editing && user.teams.length > 0 && (
         <div className="tag-row">
           {user.teams.map((team) => (
             <span key={team} className="tag">
@@ -686,7 +708,7 @@ function UserRow(props: {
         </div>
       )}
 
-      {!editing && (
+      {expanded && !editing && (
         <UserServersPanel
           userId={user.id}
           canCreate

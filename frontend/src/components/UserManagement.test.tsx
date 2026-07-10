@@ -246,6 +246,37 @@ describe("UserManagement credential copy", () => {
     expect(analystCard).toBeDefined();
     expect(within(analystCard!).getByText("analyst-one")).toBeInTheDocument();
   });
+
+  it("collapses user cards by default and expands on demand (issue_025)", async () => {
+    const fetchMock = stubUsers();
+    render(<UserManagement currentUser={makeUser({ id: 1, role: "admin" })} />);
+
+    const analystCard = (
+      await screen.findByText("analyst", { selector: ".user-name" })
+    ).closest("article")!;
+    // Collapsed: the user's servers panel is not mounted, so no per-user
+    // servers fetch happened, and no "Create server"/servers UI is present.
+    expect(
+      fetchMock.mock.calls.some((c) => /\/api\/users\/\d+\/servers$/.test(String(c[0]))),
+    ).toBe(false);
+    expect(within(analystCard).queryByText(/add server/i)).toBeNull();
+
+    // Expanding mounts the servers panel (which triggers the servers fetch).
+    await userEvent.click(
+      within(analystCard).getByRole("button", { name: /^expand$/i }),
+    );
+    await screen.findByText("analyst", { selector: ".user-name" });
+    expect(
+      within(analystCard).getByRole("button", { name: /^collapse$/i }),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some((c) =>
+          /\/api\/users\/2\/servers$/.test(String(c[0])),
+        ),
+      ).toBe(true),
+    );
+  });
 });
 
 describe("UserManagement apps-server selection (issue_017)", () => {
