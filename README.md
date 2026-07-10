@@ -303,7 +303,10 @@ unzipped directory** — each points `ssh` at the bundled `config` and the
 private key sitting beside it — and also work once the files are copied into
 `~/.ssh`. The scripts follow the config's options (user and `ProxyJump`/jump
 server); because the zip contains the private key the download is audited and
-never cached. Templates with
+never cached. The downloaded filename carries a UTC timestamp suffix
+(`<bundle>-YYYYMMDD-HHMMSS.zip`) so repeated downloads never collide in a
+browser's downloads folder; only the zip's own filename is suffixed, not the
+files inside it. Templates with
 field mappings are rendered from account details;
 mapping sources include the username, the derived **user ID**, apps server
 host/IP, role, and **per-template variables** (`server_<slug>_name`,
@@ -328,11 +331,21 @@ templates are marked as **Apps servers**, user creation offers those templates'
 names in an **apps-server dropdown** (with a **Custom** option for a manual
 host/IP); an apps server is otherwise **optional** — an account can be created
 without one (it can still view applications, but a custom apps server is
-required to create them). Each application carries its
+required to create them). The value chosen at user creation is only a
+**reference** (the template's name) — it resolves to the actual host of a
+live, provisioned apps-server server automatically when an alias is pushed
+(preferring the server cloned from the referenced template, else the user's
+first apps-server server), so it stays correct even though no server exists
+yet at account-creation time. Each application carries its
 **own port** (see below), so there is no per-user port. A normal user only sets
 the port on an application; the upstream host comes from their apps server.
-Application management likewise offers the **apps-server dropdown** (plus a
-Custom option) for an alias's upstream host instead of free text.
+Application management's alias-upstream **apps-server dropdown** lists the
+application owner's own **provisioned apps-server servers by name** (plus a
+Custom free-text option) instead of template names; picking one stores that
+server's resolvable hostname/IP as the alias's upstream host. Administrators
+editing another user's application see that user's apps-server servers, and
+the dropdown reloads when they change the application's owner. If the owner
+has no apps-server servers yet, only Custom is offered.
 Administrators have no per-user apps server, so when an administrator creates an
 application they can set **both** its apps host and port on the application
 itself.
@@ -466,9 +479,13 @@ Configure in General Settings:
 - **Alias template** — the nginx `location` block (collapsed by default). The
   placeholders `APPS_SERVER`, `APPS_PORT` and `ALIAS` are substituted on push.
   `APPS_PORT` is the application's own port. `APPS_SERVER` is the application's
-  own server (administrator-set, if any), otherwise the **owning user's** apps
-  server. The **NGINX Server Host/IP** above is only the SSH target used to push
-  the config — it is never used as `APPS_SERVER`.
+  own server (set explicitly via its apps-server dropdown/Custom field, if
+  any), otherwise the **owning user's** apps server reference resolved to a
+  live, provisioned apps-server server's host at push time (preferring the
+  server cloned from the account's referenced template, else the user's first
+  apps-server server, else the literal reference as a last resort). The
+  **NGINX Server Host/IP** above is only the SSH target used to push the
+  config — it is never used as `APPS_SERVER`.
 
 ### Protecting direct alias links
 
@@ -566,10 +583,11 @@ Server**, and **Server Templates**.
   templates read live from Proxmox.
 - **Provisioning policy** — enable/disable self-service server provisioning
   (self-service users and administrators; normal users cannot request their own
-  servers), the maximum number of servers per user, whether self-service users
-  may modify server resources, and the per-user resource caps (defaults: 12
-  CPUs, 24 GB memory, 200 GB disk). Administrator-made resource changes do not
-  count against these limits.
+  servers), the maximum number of servers per user, and the per-user resource
+  caps (defaults: 12 CPUs, 24 GB memory, 200 GB disk). Any self-service user
+  may modify their own non-admin-managed server's resources within these caps
+  — there is no separate opt-in toggle for this. Administrator-made resource
+  changes do not count against these limits.
 - **Server templates** — register the Proxmox templates (LXC or VM, by VM ID)
   offered to users when creating a server, each with an app-facing name and an
   **SSH key** chosen from the registry (see Remote Access) for later
@@ -717,18 +735,25 @@ cloning). All of a user's servers count toward these figures — including serve
 created by an administrator and those auto-provisioned at account creation — so
 the usage bars reflect the resources actually committed. Administrators
 themselves remain exempt from per-user caps when they create or modify servers
-(admin-initiated actions are never quota-gated). Resource changes (CPU, memory,
-and grow-only disk) are applied to LXC servers via the Proxmox API; self-service
-users may change resources only when the policy allows it and within their
-remaining quota.
+(admin-initiated actions are never quota-gated). Resource changes are applied
+via the Proxmox API: **LXC** servers support CPU, memory, and grow-only disk;
+**VM** servers support CPU and memory only (VM disk resize is out of scope for
+self-service edits, since it isn't safely automatable) and a **reboot is
+advised** afterwards for the change to take effect. Any self-service user may
+change resources on their own non-admin-managed server, within their
+remaining quota — no administrator opt-in is required.
 
 Each server card in the **Account** page always shows the server's assigned
 CPU/memory/disk (or "Resources: not recorded" when the specs were never
 captured, e.g. for reference servers). Specs missing from older records are
-lazily read back from Proxmox and stored the next time the list loads. When the
-administrator enables self-service resource editing, the resource line on an
-eligible LXC server (own, running, not admin-managed) becomes **inline-editable**
-directly on the card, bounded by the per-user limits; disk can only be grown.
+lazily read back from Proxmox and stored the next time the list loads. On an
+eligible server (own or admin's, LXC or VM, not admin-managed), a **"Change
+resources"** button opens an editor bounded by the per-user limits; LXC disk
+can only be grown, and VMs hide the disk field entirely and show a reboot
+reminder after saving. A separate **Reboot** button (with a confirm step) is
+available on any eligible LXC or VM server to its self-service owner or an
+administrator — including admin-managed servers, since a reboot is a plain
+power operation, not a resource change.
 
 Deleting a server is **deferred and reversible for 24 hours**. After an
 explicit "this is permanent" confirmation, the server enters a **deletion
