@@ -5,8 +5,18 @@ import { getAppName, setBranding } from "./branding";
 import { Login } from "./components/Login";
 import { ChangePasswordForm } from "./components/ChangePasswordForm";
 import { PortalShell } from "./components/PortalShell";
+import { ThemePicker } from "./components/ThemePicker";
+import { ThemeProvider } from "./theme";
 
 export function App() {
+  return (
+    <ThemeProvider>
+      <AppContent />
+    </ThemeProvider>
+  );
+}
+
+function AppContent() {
   const [loading, setLoading] = useState(true);
   const [session, setSession] = useState<SessionState | null>(null);
 
@@ -87,6 +97,7 @@ function ForcedChange(props: { username: string; onChanged: () => Promise<void> 
   return (
     <div className="center-page">
       <div className="card auth-card">
+        <ThemePicker />
         <h1 className="brand">{getAppName()}</h1>
         <h2>Update your password</h2>
         <p className="muted">

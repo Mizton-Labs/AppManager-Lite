@@ -5,6 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 import { PortalShell } from "./PortalShell";
 import type { ApiUser, SessionState } from "../types";
 import { makeUser } from "../test/fixtures";
+import { ThemeProvider } from "../theme";
 
 function makeSession(
   user: Partial<ApiUser> & Pick<ApiUser, "role">,
@@ -26,14 +27,16 @@ function makeSession(
 
 function renderShell(session: SessionState) {
   return render(
-    <MemoryRouter initialEntries={["/"]}>
-      <PortalShell
-        session={session}
-        onLogout={() => undefined}
-        onPasswordChanged={() => undefined}
-        onSessionRefresh={() => undefined}
-      />
-    </MemoryRouter>,
+    <ThemeProvider>
+      <MemoryRouter initialEntries={["/"]}>
+        <PortalShell
+          session={session}
+          onLogout={() => undefined}
+          onPasswordChanged={() => undefined}
+          onSessionRefresh={() => undefined}
+        />
+      </MemoryRouter>
+    </ThemeProvider>,
   );
 }
 
@@ -91,6 +94,7 @@ describe("PortalShell", () => {
     expect(screen.queryByRole("link", { name: "Manage" })).toBeNull();
 
     const nav = screen.getByRole("navigation", { name: "Primary" });
+    expect(screen.getByLabelText("Theme")).toHaveValue("dark-modern");
     expect(within(nav).getByRole("link", { name: "Home" })).toBeInTheDocument();
     // Team links are fetched from /api/teams and appear asynchronously.
     expect(

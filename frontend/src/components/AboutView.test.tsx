@@ -29,9 +29,23 @@ describe("AboutView", () => {
 
   it("lists the development team from the injected git contributors", () => {
     render(<AboutView />);
-    // __APP_CONTRIBUTORS__ is injected by Vite at build time from git authors.
-    const items = screen.getAllByRole("listitem").map((li) => li.textContent);
-    expect(items.length).toBeGreaterThan(0);
+    const team = screen.getByText("Development team").closest(".detail-row");
+    expect(team).not.toBeNull();
+    const links = within(team as HTMLElement).queryAllByRole("link");
+    if (links.length === 0) {
+      expect(
+        within(team as HTMLElement).getByText(/no contributor metadata/i),
+      ).toBeInTheDocument();
+      return;
+    }
+    for (const link of links) {
+      expect(link.textContent).toMatch(/^@[a-z\d-]+$/i);
+      expect(link).toHaveAttribute("href", expect.stringMatching(/^https:\/\/github\.com\//));
+      expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    }
+    // Build-time handle normalization is case-insensitive and unique.
+    const handles = links.map((link) => link.textContent?.toLowerCase());
+    expect(new Set(handles).size).toBe(handles.length);
   });
 
   it("does not show a Collaborators section when none are configured", () => {

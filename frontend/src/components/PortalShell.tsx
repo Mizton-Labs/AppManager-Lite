@@ -11,6 +11,7 @@ import { SettingsView } from "./SettingsView";
 import { AboutView } from "./AboutView";
 import { AuditView } from "./AuditView";
 import { ServersView } from "./ServersView";
+import { ThemePicker } from "./ThemePicker";
 import { LogOutIcon, MenuIcon } from "./icons";
 
 const SIDEBAR_KEY = "appmanager-lite.sidebar.collapsed";
@@ -121,6 +122,7 @@ export function PortalShell(props: {
         </Link>
 
         <div className="header-right">
+          <ThemePicker compact />
           {user && (
             <span className="user-chip">
               {user.username}

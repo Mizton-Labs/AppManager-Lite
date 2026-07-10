@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, apiBase, ApiError } from "../api";
 import type { SessionState, SsoConfig } from "../types";
 import { getAppName, getLogoSrc } from "../branding";
+import { ThemePicker } from "./ThemePicker";
 
 function safeNextPath(): string {
   const next = new URLSearchParams(window.location.search).get("next")?.trim() ?? "";
@@ -68,6 +69,7 @@ export function Login(props: { onAuthenticated: (session: SessionState) => void 
   return (
     <div className="center-page">
       <form className="card auth-card" onSubmit={onSubmit}>
+        <ThemePicker />
         <img
           className="brand-logo auth-logo"
           src={getLogoSrc()}

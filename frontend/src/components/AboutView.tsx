@@ -57,11 +57,24 @@ export function AboutView() {
           <div className="detail-row">
             <dt>Development team</dt>
             <dd>
-              <ul className="about-contributors">
-                {contributors.map((name) => (
-                  <li key={name}>{name}</li>
-                ))}
-              </ul>
+              {contributors.length === 0 ? (
+                <span className="muted">No contributor metadata available.</span>
+              ) : (
+                <ul className="about-contributors">
+                  {contributors.map((contributor) => (
+                    <li key={contributor.handle}>
+                      <a
+                        className="about-contributor"
+                        href={contributor.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        @{contributor.handle}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </dd>
           </div>
 

@@ -29,39 +29,38 @@ const BOT_AUTHORS = new Set(["cortex"]);
 /**
  * Build the development-team list from the repository's commit authors.
  *
- * Identities are de-duplicated by author **email** (one entry per email), and
- * each is displayed with the name from that email's most recent commit. This
- * collapses an author who has committed under several different names (the same
- * person, same email) into a single, current name. Bots are dropped. Order
- * follows most-recent-commit order.
+ * Git's mailmap-aware author identity is treated as the canonical GitHub
+ * handle. Handles are validated and de-duplicated case-insensitively; bots and
+ * unmapped/non-handle identities are omitted. Order follows most-recent commit
+ * order, so this remains dynamic while `.mailmap` reconciles known aliases.
  *
  * This is purely the repository's commit authors; an administrator can
  * additionally configure "Collaborators" at runtime (shown separately on the
  * About page).
  */
-function contributors(): string[] {
-  // One record per commit, newest first (git log default order). Email and name
-  // are separated by a unit-separator that cannot appear in either field.
+function contributors(): { handle: string; url: string }[] {
+  // %aN/%aE honor .mailmap. One record per commit, newest first.
   const SEP = "\x1f";
-  const lines = git(`log --format=%ae${SEP}%an`)
+  const lines = git(`log --format=%aE${SEP}%aN`)
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
 
-  const byEmail = new Map<string, string>();
+  const handles = new Set<string>();
+  const result: { handle: string; url: string }[] = [];
   for (const line of lines) {
     const idx = line.indexOf(SEP);
     if (idx < 0) continue;
-    const email = line.slice(0, idx).trim().toLowerCase();
     const name = line.slice(idx + 1).trim();
-    if (!email || !name) continue;
-    if (BOT_AUTHORS.has(name.toLowerCase())) continue;
-    // First occurrence wins -> the name from this email's most recent commit.
-    if (!byEmail.has(email)) {
-      byEmail.set(email, name);
-    }
+    const normalized = name.toLowerCase();
+    if (!name || BOT_AUTHORS.has(normalized)) continue;
+    // GitHub handles are 1-39 alphanumerics/hyphens, never ending in a hyphen.
+    if (!/^(?=.{1,39}$)[a-z\d](?:[a-z\d-]*[a-z\d])?$/i.test(name)) continue;
+    if (handles.has(normalized)) continue;
+    handles.add(normalized);
+    result.push({ handle: name, url: `https://github.com/${name}` });
   }
-  return [...byEmail.values()];
+  return result;
 }
 
 // Relative base so the built assets resolve under any deployment path prefix.

@@ -3,6 +3,15 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Login } from "./Login";
 import { setCsrfToken } from "../api";
+import { ThemeProvider } from "../theme";
+
+function renderLogin(onAuthenticated = vi.fn()) {
+  return render(
+    <ThemeProvider>
+      <Login onAuthenticated={onAuthenticated} />
+    </ThemeProvider>,
+  );
+}
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -48,8 +57,9 @@ describe("Login", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const onAuthenticated = vi.fn();
-    render(<Login onAuthenticated={onAuthenticated} />);
+    renderLogin(onAuthenticated);
 
+    expect(screen.getByLabelText("Theme")).toHaveValue("dark-modern");
     await userEvent.type(screen.getByLabelText("Username"), "admin");
     await userEvent.type(screen.getByLabelText("Password"), "supersecret1");
     await userEvent.click(screen.getByRole("button", { name: /sign in/i }));
@@ -72,7 +82,7 @@ describe("Login", () => {
       } as Response);
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<Login onAuthenticated={vi.fn()} />);
+    renderLogin();
 
     await userEvent.type(screen.getByLabelText("Username"), "admin");
     await userEvent.type(screen.getByLabelText("Password"), "wrong");
@@ -99,7 +109,7 @@ describe("Login", () => {
     } as Response);
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<Login onAuthenticated={vi.fn()} />);
+    renderLogin();
 
     expect(await screen.findByRole("link", { name: "Sign in with Google" }))
       .toHaveAttribute(
@@ -127,7 +137,7 @@ describe("Login", () => {
     } as Response);
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<Login onAuthenticated={vi.fn()} />);
+    renderLogin();
 
     expect(await screen.findByRole("link", { name: "Sign in with SSO" }))
       .toHaveAttribute("href", "http://localhost:3000/api/auth/oidc/login");
