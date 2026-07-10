@@ -277,7 +277,14 @@ creation (existing accounts are backfilled automatically on startup). From the
 **Account** page a user can view their public key, download the private or
 public key, and regenerate the keypair after an explicit confirmation
 (regeneration and private-key downloads are audited — metadata only, never key
-material; key material is served only to the owning, signed-in user).
+material; key material is served only to the owning, signed-in user). The
+downloaded key files are named `id_ed25519_appmanager_<app>` (and `.pub`),
+where `<app>` is the configured **Application name** lowercased with
+non-alphanumerics turned into dashes (blank app name → `id_ed25519_appmanager`),
+so users can identify the key in their `~/.ssh` directory; the generated SSH
+config's `IdentityFile` lines reference the same filename. (Renaming the app
+between downloading the key and the config means re-downloading so the two
+agree.)
 Regenerating also **rotates the key on the user's servers**: the old public
 key is removed from `authorized_keys` (root and every `/home` user) and the
 new one installed, using each server's admin SSH key; a per-server
@@ -562,7 +569,9 @@ Server**, and **Server Templates**.
   resources, user). A template can be flagged as an **Apps server** so its name
   is offered in the apps-server dropdowns used during user creation and
   application management (the name is used as the alias upstream host and must
-  resolve on the reverse-proxy host).
+  resolve on the reverse-proxy host). Each registered template has an **Edit**
+  action that reopens all of its options (VM ID, name, kind, admin SSH key, main
+  OS user, sudo, trusted access, apps-server flag) for modification.
 - **Jump server** — optionally onboard users onto a bastion. When enabled with
   a host, **SSH port** (default 22), management user, and registry SSH key,
   creating a user provisions an OS account on the jump server with their public
@@ -612,6 +621,8 @@ default), and one server is created per selected template, named
 `TEMPLATE_NAME-USERID`. Provisioning runs synchronously but is best-effort — a
 missing provider, unknown template, or clone failure yields a per-template
 result (shown with the temporary credentials) and never blocks user creation.
+While the create request is in flight, a **progress card** appears at the top of
+the Users tab (above the create card) listing the servers being provisioned.
 
 Each server template also carries provisioning options (both sudo and trusted
 access default on):
@@ -690,12 +701,14 @@ approached. Administrators (who are exempt from per-user quotas) see a short
 "limits are not enforced" note instead.
 
 Quotas apply to non-administrator creators: the per-user server count and the
-summed CPU/memory/disk of quota-counted servers are checked against the
-provisioning policy (template resources are read from Proxmox before cloning).
-Servers created or resource-modified by an administrator are flagged
-(`admin_modified`) and exempt from quota accounting, so admin-granted capacity
-does not consume the user's own limits. Resource changes (CPU, memory, and
-grow-only disk) are applied to LXC servers via the Proxmox API; self-service
+summed CPU/memory/disk of all the user's non-failed servers are checked against
+the provisioning policy (template resources are read from Proxmox before
+cloning). All of a user's servers count toward these figures — including servers
+created by an administrator and those auto-provisioned at account creation — so
+the usage bars reflect the resources actually committed. Administrators
+themselves remain exempt from per-user caps when they create or modify servers
+(admin-initiated actions are never quota-gated). Resource changes (CPU, memory,
+and grow-only disk) are applied to LXC servers via the Proxmox API; self-service
 users may change resources only when the policy allows it and within their
 remaining quota.
 
