@@ -1,13 +1,16 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "../api";
 import type {
+  ApiUser,
   OwnerServers,
+  ServerAccess,
   ServerStats,
   ServersOverview,
   StatsTimeframe,
   UserServer,
 } from "../types";
 import { Sparkline } from "./Sparkline";
+import { CreateServerCard, ServerCard } from "./UserServers";
 
 const TIMEFRAMES: { id: StatsTimeframe; label: string }[] = [
   { id: "hour", label: "Last hour" },
@@ -127,43 +130,26 @@ function ServerStatsCards(props: {
   );
 }
 
-function statusBadge(server: UserServer) {
-  if (server.deletion_failed) {
-    return <span className="status-badge rejected">deletion failed</span>;
-  }
-  if (server.deletion_pending) {
-    return <span className="status-badge warn">deletion pending</span>;
-  }
-  if (server.status === "failed") {
-    return <span className="status-badge warn">failed</span>;
-  }
-  if (server.status === "reference") {
-    return <span className="status-badge ok">reference</span>;
-  }
-  return <span className="status-badge ok">running</span>;
-}
-
 function ServerRow(props: {
   ownerId: number;
   server: UserServer;
   timeframe: StatsTimeframe;
+  isAdmin: boolean;
+  allowResourceEdit: boolean;
+  canDelete: boolean;
+  onChanged: () => void | Promise<void>;
 }) {
   const { server } = props;
   return (
     <article className="overview-server">
-      <div className="overview-server-info">
-        <div className="overview-server-head">
-          <span className="server-name">{server.name}</span>
-          <span className="role-badge">{server.kind.toUpperCase()}</span>
-          {statusBadge(server)}
-        </div>
-        <p className="muted overview-server-meta">
-          {server.ip_address || "no IP"}
-          {" · "}
-          {server.cpus} CPU · {server.memory_gb} GB RAM · {server.disk_gb} GB
-          disk
-        </p>
-      </div>
+      <ServerCard
+        server={server}
+        userId={props.ownerId}
+        isAdmin={props.isAdmin}
+        allowResourceEdit={props.allowResourceEdit}
+        canDelete={props.canDelete}
+        onChanged={props.onChanged}
+      />
       <ServerStatsCards
         userId={props.ownerId}
         serverId={server.id}
@@ -173,8 +159,24 @@ function ServerRow(props: {
   );
 }
 
-function OwnerGroup(props: { owner: OwnerServers; timeframe: StatsTimeframe }) {
+function OwnerGroup(props: {
+  owner: OwnerServers;
+  timeframe: StatsTimeframe;
+  isAdmin: boolean;
+  currentUser: ApiUser;
+  access: ServerAccess | null;
+  onChanged: () => void | Promise<void>;
+}) {
   const { owner } = props;
+  const isOwnGroup = owner.user_id === props.currentUser.id;
+  // Own servers are editable when the account allows resource edits; an admin
+  // may act on any owner's servers. Non-owners (non-admin) stay read-only.
+  const allowResourceEdit =
+    props.isAdmin || (isOwnGroup && (props.access?.allow_resource_edit ?? false));
+  // Deletion requires self-service for a normal user (the backend enforces
+  // this too); an admin may delete any server.
+  const canDelete =
+    props.isAdmin || (isOwnGroup && props.currentUser.self_service);
   return (
     <section className="overview-owner">
       <h3 className="overview-owner-head">
@@ -197,6 +199,10 @@ function OwnerGroup(props: { owner: OwnerServers; timeframe: StatsTimeframe }) {
               ownerId={owner.user_id}
               server={s}
               timeframe={props.timeframe}
+              isAdmin={props.isAdmin}
+              allowResourceEdit={allowResourceEdit}
+              canDelete={canDelete}
+              onChanged={props.onChanged}
             />
           ))}
         </div>
@@ -206,42 +212,54 @@ function OwnerGroup(props: { owner: OwnerServers; timeframe: StatsTimeframe }) {
 }
 
 /**
- * The "Servers" section (issue_015-r5 F2). Lists every server the caller may
- * see, grouped by owner, with compact historical usage charts per server.
- * Administrators see all users; regular users see only their own servers.
+ * The "Servers" section. The single place to create and manage your servers:
+ * a create card on top (for the signed-in user), then every server the caller
+ * may see, grouped by owner, each with compact historical usage charts and —
+ * for servers the caller may act on — Change resources / Reboot / Delete.
+ * Administrators see and manage all users' servers; a regular user sees and
+ * manages only their own.
  */
-export function ServersView() {
+export function ServersView(props: { currentUser: ApiUser; isAdmin: boolean }) {
   const [overview, setOverview] = useState<ServersOverview | null>(null);
+  const [access, setAccess] = useState<ServerAccess | null>(null);
   const [timeframe, setTimeframe] = useState<StatsTimeframe>("hour");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
+  const loadOverview = useCallback(async () => {
+    try {
+      setOverview(await api.getServersOverview());
+      setError(null);
+    } catch (err) {
+      setError(
+        err instanceof ApiError ? err.message : "Failed to load servers.",
+      );
+    }
+  }, []);
+
   useEffect(() => {
     let active = true;
     setLoading(true);
-    setError(null);
-    api
-      .getServersOverview()
-      .then((o) => {
-        if (active) setOverview(o);
+    const accessP = api
+      .getAccountServerAccess()
+      .then((a) => {
+        if (active) setAccess(a);
       })
-      .catch((err) => {
-        if (active) {
-          setError(
-            err instanceof ApiError ? err.message : "Failed to load servers.",
-          );
-        }
-      })
-      .finally(() => {
-        if (active) setLoading(false);
+      .catch(() => {
+        if (active)
+          setAccess({ can_create: false, reason: "", allow_resource_edit: false });
       });
+    Promise.all([accessP, loadOverview()]).finally(() => {
+      if (active) setLoading(false);
+    });
     return () => {
       active = false;
     };
-  }, []);
+  }, [loadOverview]);
 
   const owners = overview?.owners ?? [];
   const hasServers = owners.some((o) => o.servers.length > 0);
+  const canCreate = access?.can_create ?? false;
 
   return (
     <div className="view servers-view">
@@ -263,6 +281,19 @@ export function ServersView() {
         </label>
       </div>
 
+      {access && !canCreate && access.reason && (
+        <p className="muted">{access.reason}</p>
+      )}
+      {canCreate && (
+        <CreateServerCard
+          userId={props.currentUser.id}
+          isAdmin={props.isAdmin}
+          userDerivedId={props.currentUser.user_id}
+          defaultPubkeyUser={props.currentUser.user_id}
+          onCreated={loadOverview}
+        />
+      )}
+
       {error && (
         <p className="alert error" role="alert">
           {error}
@@ -275,7 +306,15 @@ export function ServersView() {
       ) : (
         <div className="overview-owners">
           {owners.map((o) => (
-            <OwnerGroup key={o.user_id} owner={o} timeframe={timeframe} />
+            <OwnerGroup
+              key={o.user_id}
+              owner={o}
+              timeframe={timeframe}
+              isAdmin={props.isAdmin}
+              currentUser={props.currentUser}
+              access={access}
+              onChanged={loadOverview}
+            />
           ))}
         </div>
       )}

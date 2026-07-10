@@ -138,6 +138,73 @@ export function UserServersPanel(props: {
   );
 }
 
+/**
+ * A standalone "Create server" card (issue_022): a success/failure notice and
+ * an inline Add-server form for a single target user. Used at the top of the
+ * Servers section so a user can provision a new server there. It loads its own
+ * template options and calls `onCreated` after each attempt so the caller can
+ * refresh its list.
+ */
+export function CreateServerCard(props: {
+  userId: number;
+  isAdmin?: boolean;
+  userDerivedId?: string;
+  defaultPubkeyUser?: string;
+  onCreated: () => void | Promise<void>;
+}) {
+  const [templates, setTemplates] = useState<ServerTemplateOption[]>([]);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    api
+      .listAccountServerTemplates()
+      .then((t) => {
+        if (active) setTemplates(t);
+      })
+      .catch(() => {
+        if (active) setTemplates([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [props.userId]);
+
+  return (
+    <section className="card create-server-card">
+      <h3>Create server</h3>
+      {notice && (
+        <p className="alert success" role="status">
+          {notice}
+        </p>
+      )}
+      <AddServerForm
+        userId={props.userId}
+        templates={templates}
+        isAdmin={props.isAdmin ?? false}
+        userDerivedId={props.userDerivedId ?? props.defaultPubkeyUser ?? ""}
+        defaultPubkeyUser={props.defaultPubkeyUser ?? ""}
+        onCreated={async (server) => {
+          const withWarnings = /ERROR:|WARNING:/.test(server.last_log);
+          setNotice(
+            server.status === "created"
+              ? `Server '${server.name}' created` +
+                  (withWarnings ? " with warnings (see its log)" : " successfully") +
+                  (server.kind === "vm"
+                    ? "; configure the VM in Proxmox and enter its IP address"
+                    : server.ip_address
+                      ? ` (IP ${server.ip_address})`
+                      : "")
+              : null,
+          );
+          await props.onCreated();
+        }}
+        onFailed={props.onCreated}
+      />
+    </section>
+  );
+}
+
 /** Colour band for a quota bar based on how much of the limit is committed. */
 export function quotaLevel(used: number, limit: number): "ok" | "warn" | "full" {
   if (limit <= 0) return "ok";
@@ -447,7 +514,7 @@ function AddServerForm(props: {
   );
 }
 
-function ServerCard(props: {
+export function ServerCard(props: {
   server: UserServer;
   canDelete: boolean;
   isAdmin: boolean;

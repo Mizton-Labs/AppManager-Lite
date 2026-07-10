@@ -119,7 +119,8 @@ describe("AccountPanel", () => {
     // No sub-tab buttons; every card heading is visible at once.
     expect(screen.queryByRole("button", { name: "User Info" })).toBeNull();
     expect(screen.getByText("Profile")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: /my servers/i })).toBeInTheDocument();
+    // issue_022: the "My servers" card moved to the Servers section.
+    expect(screen.queryByRole("heading", { name: /my servers/i })).toBeNull();
     expect(
       screen.getByRole("heading", { name: /bundle downloads/i }),
     ).toBeInTheDocument();

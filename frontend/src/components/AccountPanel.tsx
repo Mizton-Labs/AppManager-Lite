@@ -3,13 +3,11 @@ import { api, ApiError } from "../api";
 import type {
   ApiUser,
   BundleOption,
-  ServerAccess,
   ServerKeyRotation,
   SshKeyInfo,
 } from "../types";
 import { ChangePasswordForm } from "./ChangePasswordForm";
 import { ThemePicker } from "./ThemePicker";
-import { UserServersPanel } from "./UserServers";
 
 function saveTextFile(content: string, filename: string) {
   const blob = new Blob([content], { type: "text/plain" });
@@ -38,9 +36,6 @@ export function AccountPanel(props: {
         <ProfileCard user={user} onPasswordChanged={props.onPasswordChanged} />
         <SshKeyCard />
         <BundleDownloadCard />
-      </div>
-      <div className="account-row-servers">
-        <MyServersCard user={user} />
       </div>
     </div>
   );
@@ -110,39 +105,6 @@ function ProfileCard(props: {
         <h3>Change password</h3>
         <ChangePasswordForm onChanged={props.onPasswordChanged} />
       </div>
-    </section>
-  );
-}
-
-function MyServersCard(props: { user: ApiUser }) {
-  const [access, setAccess] = useState<ServerAccess | null>(null);
-
-  useEffect(() => {
-    api
-      .getAccountServerAccess()
-      .then(setAccess)
-      .catch(() => setAccess({ can_create: false, reason: "", allow_resource_edit: false }));
-  }, []);
-
-  return (
-    <section className="card">
-      <h2>My servers</h2>
-      <p className="muted">
-        Your provisioned servers. LXC servers receive their IP automatically;
-        for a VM, configure it in Proxmox and enter its IP here.
-      </p>
-      {access && !access.can_create && access.reason && (
-        <p className="muted">{access.reason}</p>
-      )}
-      <UserServersPanel
-        userId={props.user.id}
-        canCreate={access?.can_create ?? false}
-        canDelete={props.user.self_service || props.user.role === "admin"}
-        isAdmin={props.user.role === "admin"}
-        allowResourceEdit={access?.allow_resource_edit ?? false}
-        userDerivedId={props.user.user_id}
-        defaultPubkeyUser={props.user.user_id}
-      />
     </section>
   );
 }
@@ -244,7 +206,7 @@ function SshKeyCard() {
           {info.generated_at && (
             <p className="muted">Generated {info.generated_at} (UTC)</p>
           )}
-          <div className="row-actions">
+          <div className="row-actions row-actions-equal">
             <button
               type="button"
               className="btn primary"

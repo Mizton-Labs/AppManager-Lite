@@ -306,6 +306,7 @@ def test_builtin_render_with_jump_server(admin, monkeypatch) -> None:
     assert "Hostname 10.9.9.9" in text
     assert "User bt" in text
     assert "Port 2222" in text
+    # The config is the canonical drop-into-~/.ssh artifact.
     assert "IdentityFile ~/.ssh/id_ed25519" in text
     # Per-server block references the jump via ProxyJump.
     assert "Host coder-box" in text
@@ -572,20 +573,21 @@ def test_bundle_zip_includes_key_and_connect_scripts(admin) -> None:
     assert _mode("config") == 0o644
     assert _mode("connect_server_alpha.sh") == 0o755
 
-    # The config references the same key filename.
+    # The config is the canonical drop-into-~/.ssh artifact (manual use).
     assert f"IdentityFile ~/.ssh/{key_name}" in members["config"].decode()
 
-    # One connect script per server, deferring to the bundled config.
+    # One connect script per server; each is self-contained and runs in place
+    # from the unzip directory.
     assert "connect_server_alpha.sh" in members
     assert "connect_server_beta.sh" in members
     script = members["connect_server_alpha.sh"].decode()
     assert script.startswith("#!/bin/sh")
-    assert "ssh -F ./config" in script
-    assert "alpha" in script
-    # The identity is overridden to the key shipped beside the script so it can
-    # be run in place from the unzip directory (issue_020).
-    assert 'IdentityFile="$(dirname "$0")/id_ed25519_appmanager"' in script
-    assert "IdentitiesOnly=yes" in script
+    # cd into the script's own dir so the key beside it (./ <key>) resolves
+    # when run in place; the identity is the bundled key, targeting the IP.
+    assert 'cd "$(dirname "$0")"' in script
+    assert "ssh -i ./id_ed25519_appmanager -o IdentitiesOnly=yes" in script
+    # Self-contained: it does not depend on the bundled config.
+    assert "-F ./config" not in script
 
     # The private-key-in-bundle download is audited.
     audit_resp = client.get("/api/audit?category=user")
@@ -619,3 +621,102 @@ def test_bundle_zip_mapping_scripts_are_self_contained(admin) -> None:
     assert "ssh -i" in script
     assert "10.0.0.9" in script
     assert "-F ./config" not in script
+
+
+def test_bundle_connect_script_jump_hop_is_self_contained(admin) -> None:
+    """With a jump server enabled, the connect script reaches the bastion via
+    an explicit ProxyCommand that passes the same bundled key, so the whole
+    chain runs in place from the unzip directory (issue_022)."""
+    client, csrf, _ = admin
+    _enable_jump(client, csrf)
+    created = _create_member(client, csrf)
+    uid = created["user"]["id"]
+    _seed_servers(uid, [
+        {"name": "coder box", "hostname": "coder-box", "ip_address": "10.0.0.5"},
+    ])
+    member, _ = _login(client.app, "bt@example.com", created["password"])
+    builtin = next(
+        t for t in member.get("/api/account/bundles").json()
+        if t["name"] == "SSH Config Default"
+    )
+    members = _zip_members(
+        member.get(f"/api/account/bundles/{builtin['id']}/download")
+    )
+    script = members["connect_server_coder-box.sh"].decode()
+    # cd into the bundle dir so ./ <key> resolves for the final hop.
+    assert 'cd "$(dirname "$0")"' in script
+    assert "ssh -i ./id_ed25519_appmanager -o IdentitiesOnly=yes" in script
+    # Jump hop is an explicit ProxyCommand carrying the same key (CWD-relative
+    # so it resolves in the ProxyCommand's shell too) + -W stdio forwarding.
+    assert "ProxyCommand=" in script
+    assert "ssh -i ./id_ed25519_appmanager" in script
+    assert "-W %h:%p" in script
+    assert "10.9.9.9" in script
+    # It does not fall back to a plain ProxyJump (which would need ~/.ssh).
+    assert "ProxyJump=" not in script
+    assert "-F ./config" not in script
+
+
+def test_connect_script_resolves_key_run_in_place(tmp_path) -> None:
+    """Runtime check (issue_022): run the generated connect script from an
+    unrelated CWD with a fake ssh, and assert BOTH the final-host and the
+    ProxyCommand/bastion identities resolve to the key beside the script -- not
+    to ~/.ssh or a shell-dependent path. This locks in the run-in-place fix
+    (a ProxyCommand's $0 is the proxy shell, so $(dirname "$0") could not be
+    used there; CWD-relative ./<key> works because ssh runs the ProxyCommand
+    in the same working directory)."""
+    import os
+    import subprocess
+
+    key_name = "id_ed25519_appmanager"
+    scripts = repository.render_connect_scripts(
+        {"user_id": "bt", "username": "bt@example.com"},
+        [{"name": "coder box", "hostname": "coder-box",
+          "ip_address": "10.0.0.5", "status": "created"}],
+        jump={"enabled": True, "host": "10.9.9.9", "port": 2222,
+              "jump_user": "root"},
+        key_name=key_name,
+    )
+    bundle = tmp_path / "bundle"
+    bindir = bundle / "bin"
+    bindir.mkdir(parents=True)
+    for name, body in scripts:
+        (bundle / name).write_text(body)
+    (bundle / key_name).write_text("KEYDATA")
+    log = tmp_path / "ssh.log"
+    # Fake ssh: record each -i value with its resolved existence, and emulate
+    # OpenSSH running the ProxyCommand via a shell in the same CWD.
+    fake = bindir / "ssh"
+    fake.write_text(
+        "#!/bin/sh\n"
+        f'LOG="{log}"\n'
+        'prev=""\n'
+        'for a in "$@"; do\n'
+        '  if [ "$prev" = "-i" ]; then\n'
+        '    if [ -f "$a" ]; then echo "OK $a" >> "$LOG";'
+        ' else echo "MISSING $a" >> "$LOG"; fi\n'
+        '  fi\n'
+        '  case "$a" in ProxyCommand=*) '
+        '${PROXY_SHELL:-/bin/sh} -c "${a#ProxyCommand=}" || true ;; esac\n'
+        '  prev="$a"\n'
+        'done\n'
+    )
+    fake.chmod(0o755)
+    script_path = bundle / "connect_server_coder-box.sh"
+    for proxy_shell in ("/bin/sh", "/bin/bash", "/bin/dash"):
+        if not os.path.exists(proxy_shell):
+            continue
+        log.write_text("")
+        env = dict(os.environ)
+        env["PATH"] = f"{bindir}:{env['PATH']}"
+        env["PROXY_SHELL"] = proxy_shell
+        # Run from an unrelated CWD to prove it doesn't depend on it.
+        subprocess.run(
+            ["/bin/sh", str(script_path)],
+            cwd="/tmp", env=env, check=True,
+        )
+        lines = log.read_text().split()
+        # Two identities recorded (final host + bastion), both resolved OK.
+        recorded = [l for l in log.read_text().splitlines()]
+        assert all(l.startswith("OK ") for l in recorded), (proxy_shell, recorded)
+        assert len(recorded) == 2, (proxy_shell, recorded)

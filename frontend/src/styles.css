@@ -1334,6 +1334,14 @@ textarea:focus-visible,
   align-items: center;
 }
 
+/* Equal-width action buttons in a single row (e.g. the SSH key card), for a
+   cleaner look; each button shares the row and wraps gracefully when narrow. */
+.row-actions-equal .btn {
+  flex: 1 1 0;
+  min-width: 9rem;
+  text-align: center;
+}
+
 .user-edit {
   display: flex;
   flex-direction: column;
@@ -2084,31 +2092,19 @@ textarea:focus-visible,
 
 .overview-server {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem 1rem;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.6rem 0.8rem;
-  background: var(--bg);
+  flex-direction: column;
+  gap: 0.6rem;
 }
 
-.overview-server-info {
-  min-width: 12rem;
-  flex: 1 1 12rem;
+/* Inside the Servers section, the full management ServerCard carries its own
+   border; the wrapping article is just a layout container. The card and its
+   usage charts stack vertically. */
+.overview-server > .server-card {
+  margin: 0;
 }
 
-.overview-server-head {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-}
-
-.overview-server-meta {
-  margin: 0.2rem 0 0;
-  font-size: 0.78rem;
+.overview-server .stats-cards {
+  padding: 0 0.2rem 0.2rem;
 }
 
 /* The four compact charts, side by side; wraps on narrow screens. */

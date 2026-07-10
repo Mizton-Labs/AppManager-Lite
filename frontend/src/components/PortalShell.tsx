@@ -177,7 +177,16 @@ export function PortalShell(props: {
               }
             />
             <Route path="/about" element={<AboutView />} />
-            <Route path="/servers" element={<ServersView />} />
+            <Route
+              path="/servers"
+              element={
+                user ? (
+                  <ServersView currentUser={user} isAdmin={isAdmin} />
+                ) : (
+                  <Navigate to="/" replace />
+                )
+              }
+            />
             <Route
               path="/audit"
               element={isAdmin ? <AuditView /> : <Navigate to="/" replace />}
