@@ -62,7 +62,7 @@
       "keyModules": [
         { "path": "frontend/src/App.tsx", "role": "Top-level auth/session bootstrap and routing shell selection." },
         { "path": "frontend/src/theme.tsx", "role": "Browser-local theme preference, root application, and shared React theme provider; Dark-modern is the fallback." },
-        { "path": "frontend/src/components/ThemePicker.tsx", "role": "Shared accessible four-theme selector used on login, forced-password change, and portal header." },
+        { "path": "frontend/src/components/ThemePicker.tsx", "role": "Shared accessible four-theme selector; users pick their own in the Account Appearance card, admins set the deployment default in General Settings." },
         { "path": "frontend/src/api.ts", "role": "Typed API client; attaches CSRF on non-GET requests." },
         { "path": "frontend/src/types.ts", "role": "Shared TypeScript types for API entities." },
         { "path": "frontend/src/branding.ts", "role": "Configurable app name/logo and source repository URL." },
@@ -244,7 +244,7 @@
       { "method": "GET", "path": "/api/settings/reverse-proxy", "auth": "admin", "csrf": false, "summary": "Read reverse-proxy configuration." },
       { "method": "PATCH", "path": "/api/settings/reverse-proxy", "auth": "admin", "csrf": true, "summary": "Update reverse-proxy configuration." },
       { "method": "GET", "path": "/api/settings/branding", "auth": "admin", "csrf": false, "summary": "Read branding settings." },
-      { "method": "PATCH", "path": "/api/settings/branding", "auth": "admin", "csrf": true, "summary": "Update branding (app name, logo, configured flag)." },
+      { "method": "PATCH", "path": "/api/settings/branding", "auth": "admin", "csrf": true, "summary": "Update branding (app name, logo, collaborators, default theme, configured flag)." },
       { "method": "GET", "path": "/api/settings/teams", "auth": "admin", "csrf": false, "summary": "List teams (admin view)." },
       { "method": "POST", "path": "/api/settings/teams", "auth": "admin", "csrf": true, "summary": "Create a team." },
       { "method": "PATCH", "path": "/api/settings/teams/{team_id}", "auth": "admin", "csrf": true, "summary": "Rename a team and/or change its icon." },
@@ -337,7 +337,7 @@
       {
         "name": "settings",
         "description": "Single pinned row (id = 1) for reverse-proxy, branding, LXC/VM provider (Proxmox; API key stored write-only), and server-provisioning policy configuration.",
-        "columns": ["id", "nginx_host", "nginx_user", "nginx_conf_path", "ssh_key_path", "reverse_proxy_ssh_key_id", "appmanager_proxy_host", "appmanager_proxy_port", "alias_template", "app_name", "app_logo", "configured", "provider_type", "proxmox_url", "proxmox_token_name", "proxmox_api_key", "proxmox_template_filter", "proxmox_templates_only", "proxmox_verify_tls", "proxmox_conn_status", "proxmox_conn_log", "provisioning_self_service", "provisioning_max_servers", "provisioning_allow_resource_edit", "provisioning_max_cpus", "provisioning_max_memory_gb", "provisioning_max_disk_gb", "jump_enabled", "jump_host", "jump_user", "jump_port", "jump_ssh_key_id", "jump_management_user", "jump_account_mode", "jump_jumper_user", "jump_bundle_override", "jump_bundle_host", "jump_bundle_port", "updated_at"],
+        "columns": ["id", "nginx_host", "nginx_user", "nginx_conf_path", "ssh_key_path", "reverse_proxy_ssh_key_id", "appmanager_proxy_host", "appmanager_proxy_port", "alias_template", "app_name", "app_logo", "collaborators", "default_theme", "configured", "provider_type", "proxmox_url", "proxmox_token_name", "proxmox_api_key", "proxmox_template_filter", "proxmox_templates_only", "proxmox_verify_tls", "proxmox_conn_status", "proxmox_conn_log", "provisioning_self_service", "provisioning_max_servers", "provisioning_allow_resource_edit", "provisioning_max_cpus", "provisioning_max_memory_gb", "provisioning_max_disk_gb", "jump_enabled", "jump_host", "jump_user", "jump_port", "jump_ssh_key_id", "jump_management_user", "jump_account_mode", "jump_jumper_user", "jump_bundle_override", "jump_bundle_host", "jump_bundle_port", "updated_at"],
         "primaryKey": ["id"]
       },
       {

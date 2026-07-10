@@ -295,7 +295,12 @@ jumper account in shared mode, otherwise the user's own account).
 
 Each bundle template can carry an optional **description** (set in the bundle
 add/edit card). The Account page's **Bundle Downloads** card downloads a
-personal SSH config and shows the selected bundle's description. Templates with
+**zip** ready to unzip into `~/.ssh`: the personal SSH config, the user's
+private key (filename with no extension) and public key, and a
+`connect_server_<name>.sh` helper script per server so the user can connect
+without typing the full `ssh` command. The scripts follow the config's options
+(user, `IdentityFile`, and `ProxyJump`/jump server); because the zip contains
+the private key the download is audited and never cached. Templates with
 field mappings are rendered from account details;
 mapping sources include the username, the derived **user ID**, apps server
 host/IP, role, and **per-template variables** (`server_<slug>_name`,
@@ -759,19 +764,21 @@ to, so it is clear where a tool comes from.
 
 ## Themes
 
-The portal includes four visual themes, selectable from the sign-in card and
-the authenticated header:
+The portal includes four visual themes, chosen by each user from the
+**Appearance** card in the **Account** section:
 
 - **Dark modern** — the default layered dark theme.
 - **Light** — a clear light interface for bright environments.
 - **Energy** — a neutral dark-grey theme with brighter borders and an amber accent.
 - **Classic** — the original portal appearance.
 
-The preference is stored locally in the browser, applies immediately on every
-screen (including sign-in and forced password change), and is restored on the
-next visit. It is intentionally browser-local rather than attached to the user
-account. The initial document applies the saved value before React loads, so a
-saved non-default theme does not flash the default palette on startup.
+A user's preference is stored locally in the browser, applies immediately, and
+is restored on the next visit. An administrator sets the deployment's **Default
+theme** in **General Settings**; it is delivered with the session (even before
+sign-in) and applied to users who have not chosen their own theme — an explicit
+user choice always takes precedence. The initial document applies the stored
+value before React loads, so a saved theme does not flash the default palette on
+startup.
 
 ## About
 
