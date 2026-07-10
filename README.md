@@ -308,9 +308,16 @@ jumpserver` when the jump server is enabled. Built-in templates can be
 **cloned** into editable copies and **disabled** (hidden from downloads) but
 not edited or deleted. Administrators can also set the user's **apps server**
 (host/IP) — the host where that user runs their applications, used as the
-upstream for that user's reverse-proxy aliases. Each application carries its
+upstream for that user's reverse-proxy aliases. When one or more server
+templates are marked as **Apps servers**, user creation offers those templates'
+names in an **apps-server dropdown** (with a **Custom** option for a manual
+host/IP); an apps server is otherwise **optional** — an account can be created
+without one (it can still view applications, but a custom apps server is
+required to create them). Each application carries its
 **own port** (see below), so there is no per-user port. A normal user only sets
 the port on an application; the upstream host comes from their apps server.
+Application management likewise offers the **apps-server dropdown** (plus a
+Custom option) for an alias's upstream host instead of free text.
 Administrators have no per-user apps server, so when an administrator creates an
 application they can set **both** its apps host and port on the application
 itself.
@@ -552,7 +559,10 @@ Server**, and **Server Templates**.
   offered to users when creating a server, each with an app-facing name and an
   **SSH key** chosen from the registry (see Remote Access) for later
   customization. Templates are assumed to be preconfigured (SSH keys,
-  resources, user).
+  resources, user). A template can be flagged as an **Apps server** so its name
+  is offered in the apps-server dropdowns used during user creation and
+  application management (the name is used as the alias upstream host and must
+  resolve on the reverse-proxy host).
 - **Jump server** — optionally onboard users onto a bastion. When enabled with
   a host, **SSH port** (default 22), management user, and registry SSH key,
   creating a user provisions an OS account on the jump server with their public
@@ -689,6 +699,14 @@ grow-only disk) are applied to LXC servers via the Proxmox API; self-service
 users may change resources only when the policy allows it and within their
 remaining quota.
 
+Each server card in the **Account** page always shows the server's assigned
+CPU/memory/disk (or "Resources: not recorded" when the specs were never
+captured, e.g. for reference servers). Specs missing from older records are
+lazily read back from Proxmox and stored the next time the list loads. When the
+administrator enables self-service resource editing, the resource line on an
+eligible LXC server (own, running, not admin-managed) becomes **inline-editable**
+directly on the card, bounded by the per-user limits; disk can only be grown.
+
 Deleting a server is **deferred and reversible for 24 hours**. After an
 explicit "this is permanent" confirmation, the server enters a **deletion
 pending** state with a countdown and a **Cancel deletion** action; owners and
@@ -733,7 +751,7 @@ the authenticated header:
 
 - **Dark modern** — the default layered dark theme.
 - **Light** — a clear light interface for bright environments.
-- **Energy** — a dark warm-accent theme.
+- **Energy** — a neutral dark-grey theme with brighter borders and an amber accent.
 - **Classic** — the original portal appearance.
 
 The preference is stored locally in the browser, applies immediately on every

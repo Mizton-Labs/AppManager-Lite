@@ -266,9 +266,9 @@
       { "method": "POST", "path": "/api/settings/bundle-templates/{template_id}/clone", "auth": "admin", "csrf": true, "summary": "Clone a bundle template (incl. a built-in) into a new editable, non-built-in template." },
       { "method": "PATCH", "path": "/api/settings/bundle-templates/{template_id}/enabled", "auth": "admin", "csrf": true, "summary": "Enable or disable a bundle template; disabled templates are hidden from account downloads." },
       { "method": "GET", "path": "/api/account/server-templates", "auth": "user", "csrf": false, "summary": "User-facing server-template options (id, name, kind only)." },
-      { "method": "GET", "path": "/api/account/server-access", "auth": "user", "csrf": false, "summary": "Whether the caller may create servers for their own account, with a reason when not." },
+      { "method": "GET", "path": "/api/account/server-access", "auth": "user", "csrf": false, "summary": "Whether the caller may create servers for their own account (with a reason when not) and whether they may edit their own servers' resources (allow_resource_edit: admin, or self-service when enabled by policy)." },
       { "method": "GET", "path": "/api/servers/overview", "auth": "user", "csrf": false, "summary": "All servers the caller may see, grouped by owner, for the Servers section. Administrators see every user's servers (with destroy-failure detail); a non-admin sees only their own." },
-      { "method": "GET", "path": "/api/users/{user_id}/servers", "auth": "admin-or-self", "csrf": false, "summary": "List a user's servers. Also runs the lazy deferred-deletion sweep (bounded, single-flight). Admins see servers whose destroy failed (with the error); owners do not." },
+      { "method": "GET", "path": "/api/users/{user_id}/servers", "auth": "admin-or-self", "csrf": false, "summary": "List a user's servers. Also runs the lazy deferred-deletion sweep (bounded, single-flight) and lazily backfills missing (0) CPU/memory/disk specs from the provider for guests with a vmid (bounded per request, persisted, fully guarded). Admins see servers whose destroy failed (with the error); owners do not." },
       { "method": "GET", "path": "/api/users/{user_id}/servers/usage", "auth": "admin-or-self", "csrf": false, "summary": "Per-user provisioning usage vs. limits (servers, CPUs, memory, disk) for the create-form quota bars; administrators are reported as unlimited." },
       { "method": "GET", "path": "/api/users/{user_id}/servers/{server_id}/stats", "auth": "admin-or-self", "csrf": false, "summary": "Historical CPU/memory/disk/network usage for a server over a timeframe (hour/day/week), read from Proxmox rrddata; returns available=false with a reason when there is no guest, the provider is unconfigured, or the read fails." },
       { "method": "POST", "path": "/api/users/{user_id}/servers", "auth": "admin-or-self", "csrf": true, "summary": "Create a server from a template: the request supplies only a name suffix and the full name is composed as '<template-slug>-<owner-id>-<suffix>' (globally unique, max 63 chars); clone (full), start + IP discovery for LXC (the container's real in-guest IP is read over SSH and recorded when the hypervisor corroborates it, else the hypervisor IP is kept), optional SSH public-key installation; VMs are cloned only and get a manual IP. Quotas apply to non-admin creators." },
@@ -348,8 +348,8 @@
       },
       {
         "name": "server_templates",
-        "description": "Admin-registered Proxmox templates (LXC or VM) offered when creating user servers; admin key referenced from the ssh_keys registry.",
-        "columns": ["id", "vmid", "name", "kind", "admin_ssh_key_path", "admin_ssh_key_id", "main_os_user", "enable_sudo", "enable_trusted_access", "created_at", "updated_at"],
+        "description": "Admin-registered Proxmox templates (LXC or VM) offered when creating user servers; admin key referenced from the ssh_keys registry. is_apps_server marks a template whose name is offered as a selectable apps server for user creation and application management.",
+        "columns": ["id", "vmid", "name", "kind", "admin_ssh_key_path", "admin_ssh_key_id", "main_os_user", "enable_sudo", "enable_trusted_access", "is_apps_server", "created_at", "updated_at"],
         "primaryKey": ["id"]
       },
       {
