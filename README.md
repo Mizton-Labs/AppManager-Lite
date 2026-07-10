@@ -298,12 +298,17 @@ add/edit card). The Account page's **Bundle Downloads** card downloads a
 **zip** ready to unzip into `~/.ssh`: the personal SSH config, the user's
 private key (filename with no extension) and public key, and a
 `connect_server_<name>.sh` helper script per server so the user can connect
-without typing the full `ssh` command. The scripts run **in place from the
-unzipped directory** — each points `ssh` at the bundled `config` and the
-private key sitting beside it — and also work once the files are copied into
-`~/.ssh`. The scripts follow the config's options (user and `ProxyJump`/jump
-server); because the zip contains the private key the download is audited and
-never cached. The downloaded filename carries a UTC timestamp suffix
+without typing the full `ssh` command. Each script is **self-contained and runs
+in place from the unzipped directory**: it `cd`s into its own folder and invokes
+`ssh` with the private key sitting beside it (`-i ./<key>`), connecting straight
+to the server. When a jump server is configured the bastion hop is reached with
+an explicit `ProxyCommand` that carries the **same** bundled key (also resolved
+relative to the script's directory), so the whole chain works without touching
+`~/.ssh`. The bundled `config` is provided as a ready-to-use `~/.ssh` artifact
+for users who prefer to drop the files into their home directory and use the
+config manually (its `Host` blocks reference `~/.ssh/<key>`). Because the zip
+contains the private key the download is audited and never cached. The
+downloaded filename carries a UTC timestamp suffix
 (`<bundle>-YYYYMMDD-HHMMSS.zip`) so repeated downloads never collide in a
 browser's downloads folder; only the zip's own filename is suffixed, not the
 files inside it. Templates with
@@ -690,10 +695,12 @@ keypairs are also stored encrypted at rest with the same master key.
 ### User servers
 
 Each user can have multiple servers, shown as small `NAME - IP` cards in their
-User Management card and on their own **Account → My servers** card.
-Administrators can add a server to any user; self-service users can create
-their own (when self-service provisioning is enabled); normal users cannot
-request servers.
+User Management card and, for their own servers, in the top-level **Servers**
+section. Administrators can add a server to any user; self-service users can
+create their own (when self-service provisioning is enabled); normal users
+cannot request servers. The Servers section is the single place a user creates
+and manages their own servers (see [Servers section](#servers-section) below);
+it replaced the former Account → My servers card.
 
 Creating a server picks a registered template and a **name suffix**: the full
 server name always carries a static prefix, so it is composed as
@@ -770,15 +777,25 @@ then **force-remove** the record even when the destroy could not be confirmed.
 
 ### Servers section
 
-The **Servers** entry in the sidebar (below Account) opens an overview of
-servers grouped by owner. Administrators see every user's servers; a regular
-user sees only their own. Each server card shows its assigned resources next to
-four compact usage charts — **CPU, memory, disk, and network** — drawn as small
-sparklines from Proxmox's historical `rrddata`, with a **timeframe** selector
-(last hour, day, or week). Charts are loaded per server as the list renders, so
-a long list stays responsive and one unreachable server never blocks the rest;
-a server with no running guest (or when the provider is unconfigured) simply
-shows a short "no stats" note.
+The **Servers** entry in the sidebar (below Account) is where a user creates and
+manages their servers. A **Create server** card sits at the top (when the user
+may provision), followed by servers grouped by owner. Administrators see and
+manage every user's servers; a regular user sees and manages only their own.
+Each server card shows its assigned resources next to four compact usage charts
+— **CPU, memory, disk, and network** — drawn as small sparklines from Proxmox's
+historical `rrddata`, with a **timeframe** selector (last hour, day, or week).
+Charts are loaded per server as the list renders, so a long list stays
+responsive and one unreachable server never blocks the rest; a server with no
+running guest (or when the provider is unconfigured) simply shows a short "no
+stats" note.
+
+Each card also carries its management actions, subject to the same rules
+enforced by the API: **Change resources** and **Reboot** on eligible servers
+(the self-service owner within their quota, or an administrator on any server),
+and **Delete** (self-service owner or administrator). Resource editing follows
+the LXC/VM rules described under [User servers](#user-servers) (LXC
+CPU/memory/grow-only disk; VM CPU/memory with a reboot advisory). A regular user
+never sees action buttons on another user's servers.
 
 ## Home
 

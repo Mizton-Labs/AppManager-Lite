@@ -80,7 +80,7 @@
         { "path": "frontend/src/components/GeneralSettings.tsx", "role": "Branding and reverse-proxy configuration forms." },
         { "path": "frontend/src/components/AuditView.tsx", "role": "Admin audit-log viewer." },
         { "path": "frontend/src/components/AboutView.tsx", "role": "Build metadata, canonical linked GitHub development-team handles, and runtime collaborators." },
-        { "path": "frontend/src/components/ServersView.tsx", "role": "Servers section: all servers grouped by owner with compact usage charts (admins see all; users see their own)." },
+        { "path": "frontend/src/components/ServersView.tsx", "role": "Servers section: create and manage servers grouped by owner with compact usage charts; a create-server card plus per-server Change resources / Reboot / Delete (self-service owner within quota, or admin on any server). Admins see all owners; users see only their own." },
         { "path": "frontend/src/components/Sparkline.tsx", "role": "Dependency-free compact SVG sparkline used by the server usage charts." },
         { "path": "frontend/src/lib", "role": "Helpers: links, image resize, clipboard, password." },
         { "path": "frontend/public/team-icons", "role": "Bundled team-icon SVG catalogue (generic-IT and cybersecurity sets)." },
