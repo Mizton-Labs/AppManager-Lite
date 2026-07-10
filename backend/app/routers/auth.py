@@ -48,6 +48,7 @@ from ..schemas import (
     SshKeyRegenerateOut,
     SsoConfigOut,
     SsoProviderOut,
+    UpdateThemeRequest,
     UserOut,
 )
 
@@ -114,6 +115,7 @@ def _user_out(user: dict[str, Any]) -> UserOut:
         self_service=user["self_service"],
         apps_server=user.get("apps_server", ""),
         apps_server_ip=user.get("apps_server_ip", ""),
+        theme=user.get("theme", ""),
         teams=user["teams"],
     )
 
@@ -420,6 +422,20 @@ def logout(
         )
     _clear_session_cookie(response)
     return MessageOut(detail="Signed out")
+
+
+@router.patch("/account/theme", response_model=UserOut)
+def update_own_theme(
+    payload: UpdateThemeRequest,
+    user: dict[str, Any] = Depends(get_current_user),
+    _: None = Depends(verify_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> UserOut:
+    """Persist the signed-in user's own UI theme (self-only, issue_020)."""
+    updated = repository.set_user_theme(conn, user["id"], payload.theme)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return _user_out(updated)
 
 
 @router.post("/account/password", response_model=MessageOut)

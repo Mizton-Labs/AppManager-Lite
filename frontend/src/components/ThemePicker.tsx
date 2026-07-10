@@ -1,10 +1,10 @@
 import { THEMES, useTheme } from "../theme";
 
-export function ThemePicker(props: { compact?: boolean }) {
+export function ThemePicker(props: { compact?: boolean; hideLabel?: boolean }) {
   const { theme, setTheme } = useTheme();
   return (
     <label className={props.compact ? "theme-picker compact" : "theme-picker"}>
-      <span>Theme</span>
+      {!props.hideLabel && <span>Theme</span>}
       <select
         aria-label="Theme"
         value={theme}

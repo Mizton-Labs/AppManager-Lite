@@ -3,7 +3,7 @@ import { api, ApiError } from "../api";
 import type { BrandingSettings, ReverseProxySettings, SshKey } from "../types";
 import { SubTabs } from "./SubTabs";
 import { setBranding } from "../branding";
-import { THEMES, setAdminDefaultTheme } from "../theme";
+import { THEMES } from "../theme";
 import { fileToLogoDataUrl } from "../lib/image";
 import { resolveIconSrc } from "../lib/links";
 import { PlusIcon, XIcon } from "./icons";
@@ -151,8 +151,6 @@ function ApplicationBasicInformation(props: {
       setDefaultTheme(result.default_theme);
       // Reflect the new branding across the UI immediately.
       setBranding(result);
-      // Apply the new default live for viewers without an explicit choice.
-      setAdminDefaultTheme(result.default_theme);
       setSaved(true);
       props.onSaved?.();
     } catch (err) {

@@ -1,12 +1,5 @@
 (() => {
-  const key = "appmanager-lite.theme";
-  const allowed = new Set(["dark-modern", "light", "energy", "classic"]);
-  let theme = "dark-modern";
-  try {
-    const stored = window.localStorage.getItem(key);
-    if (allowed.has(stored)) theme = stored;
-  } catch {
-    // Keep the default when browser storage is unavailable.
-  }
-  document.documentElement.dataset.theme = theme;
+  // Prepaint default. The real per-user/admin-default theme is applied once the
+  // session loads (see theme.tsx); this only avoids an unstyled first paint.
+  document.documentElement.dataset.theme = "dark-modern";
 })();

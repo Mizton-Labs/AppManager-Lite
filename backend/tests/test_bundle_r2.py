@@ -571,7 +571,12 @@ def test_bundle_zip_includes_key_and_connect_scripts(admin) -> None:
     assert "connect_server_beta.sh" in members
     script = members["connect_server_alpha.sh"].decode()
     assert script.startswith("#!/bin/sh")
-    assert "ssh -F ./config alpha" in script
+    assert "ssh -F ./config" in script
+    assert "alpha" in script
+    # The identity is overridden to the key shipped beside the script so it can
+    # be run in place from the unzip directory (issue_020).
+    assert 'IdentityFile="$(dirname "$0")/id_ed25519_appmanager"' in script
+    assert "IdentitiesOnly=yes" in script
 
     # The private-key-in-bundle download is audited.
     audit_resp = client.get("/api/audit?category=user")

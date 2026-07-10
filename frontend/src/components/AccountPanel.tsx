@@ -38,25 +38,11 @@ export function AccountPanel(props: {
         <ProfileCard user={user} onPasswordChanged={props.onPasswordChanged} />
         <SshKeyCard />
         <BundleDownloadCard />
-        <AppearanceCard />
       </div>
       <div className="account-row-servers">
         <MyServersCard user={user} />
       </div>
     </div>
-  );
-}
-
-function AppearanceCard() {
-  return (
-    <section className="card">
-      <h2>Appearance</h2>
-      <p className="muted">
-        Choose your interface theme. Your choice is saved in this browser and
-        overrides the deployment default.
-      </p>
-      <ThemePicker />
-    </section>
   );
 }
 
@@ -111,6 +97,12 @@ function ProfileCard(props: {
                 Disabled &mdash; new applications need administrator approval
               </span>
             )}
+          </dd>
+        </div>
+        <div>
+          <dt>Theme</dt>
+          <dd>
+            <ThemePicker compact hideLabel />
           </dd>
         </div>
       </dl>

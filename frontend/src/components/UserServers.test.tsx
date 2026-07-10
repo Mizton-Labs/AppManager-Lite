@@ -251,7 +251,25 @@ describe("UserServersPanel", () => {
     expect(await screen.findByText("win vm - 10.1.2.3")).toBeInTheDocument();
   });
 
-  it("shows the failure log behind a toggle for failed servers", async () => {
+  it("shows the failure log behind a toggle for admins only", async () => {
+    stubServers([
+      makeServer({
+        id: 4,
+        name: "doomed",
+        status: "failed",
+        ip_address: "",
+        last_log: "[t] ERROR: clone: task failed",
+      }),
+    ]);
+    // issue_020: the log is admin-only.
+    render(<UserServersPanel userId={7} canCreate={false} canDelete isAdmin />);
+
+    expect(await screen.findByText("failed")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /view log/i }));
+    expect(screen.getByText(/clone: task failed/i)).toBeInTheDocument();
+  });
+
+  it("hides the server log from non-admin users", async () => {
     stubServers([
       makeServer({
         id: 4,
@@ -264,8 +282,7 @@ describe("UserServersPanel", () => {
     render(<UserServersPanel userId={7} canCreate={false} canDelete={false} />);
 
     expect(await screen.findByText("failed")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: /view log/i }));
-    expect(screen.getByText(/clone: task failed/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /view log/i })).toBeNull();
   });
 
   it("schedules a deferred deletion after confirmation", async () => {

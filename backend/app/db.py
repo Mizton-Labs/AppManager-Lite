@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS users (
     ssh_private_key      TEXT    NOT NULL DEFAULT '',
     ssh_public_key       TEXT    NOT NULL DEFAULT '',
     ssh_key_generated_at TEXT,
+    theme                TEXT    NOT NULL DEFAULT '',
     created_at           TEXT    NOT NULL DEFAULT (datetime('now')),
     updated_at           TEXT    NOT NULL DEFAULT (datetime('now'))
 );
@@ -459,6 +460,9 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     _add_column(conn, "users", "ssh_public_key", "TEXT NOT NULL DEFAULT ''")
     _add_column(conn, "users", "ssh_key_generated_at", "TEXT")
     _backfill_user_ssh_keys(conn)
+    # issue_020: per-user UI theme. Empty means "no explicit choice" -> the
+    # deployment default applies.
+    _add_column(conn, "users", "theme", "TEXT NOT NULL DEFAULT ''")
 
     # Sessions record how the user authenticated so SSO sessions can bypass
     # local-password-only first-login requirements without clearing the flag.

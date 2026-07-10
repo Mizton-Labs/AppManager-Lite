@@ -346,7 +346,7 @@ function AddServerForm(props: {
       {error && (
         <p className="alert error" role="alert">
           {error}{" "}
-          {failLog && (
+          {failLog && props.isAdmin && (
             <button
               type="button"
               className="btn ghost"
@@ -358,7 +358,9 @@ function AddServerForm(props: {
           )}
         </p>
       )}
-      {failLog && showFailLog && <pre className="push-log">{failLog}</pre>}
+      {failLog && showFailLog && props.isAdmin && (
+        <pre className="push-log">{failLog}</pre>
+      )}
       <label className="field">
         <span>Template</span>
         <select
@@ -670,7 +672,7 @@ function ServerCard(props: {
       )}
 
       <div className="row-actions">
-        {server.last_log && (
+        {server.last_log && props.isAdmin && (
           <button
             type="button"
             className="btn ghost"

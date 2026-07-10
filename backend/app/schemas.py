@@ -348,6 +348,8 @@ class UserOut(BaseModel):
     self_service: bool
     apps_server: str = ""
     apps_server_ip: str = ""
+    # issue_020: the user's own UI theme ("" = follow the deployment default).
+    theme: str = ""
     teams: list[str]
 
 
@@ -1403,6 +1405,20 @@ def normalize_theme(value: str | None) -> str:
     """Coerce a theme id to a known value, defaulting to dark-modern."""
     v = (value or "").strip()
     return v if v in VALID_THEMES else DEFAULT_THEME
+
+
+class UpdateThemeRequest(BaseModel):
+    """A user's own UI theme choice (issue_020). Empty resets to the default."""
+
+    theme: str = Field(max_length=32)
+
+    @field_validator("theme")
+    @classmethod
+    def _check_theme(cls, value: str) -> str:
+        v = value.strip()
+        if v and v not in VALID_THEMES:
+            raise ValueError(f"Theme must be one of {VALID_THEMES}.")
+        return v
 
 
 # Admin-managed "Collaborators" shown on the About page. Each is a free-text

@@ -166,6 +166,12 @@ export const api = {
 
   listAccountBundles: () => request<BundleOption[]>("account/bundles"),
 
+  updateAccountTheme: (theme: string) =>
+    request<ApiUser>("account/theme", {
+      method: "PATCH",
+      body: { theme },
+    }),
+
   downloadAccountBundle: (id: number) =>
     requestBlob(`account/bundles/${id}/download`),
 

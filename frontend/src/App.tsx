@@ -5,7 +5,7 @@ import { getAppName, setBranding } from "./branding";
 import { Login } from "./components/Login";
 import { ChangePasswordForm } from "./components/ChangePasswordForm";
 import { PortalShell } from "./components/PortalShell";
-import { ThemeProvider, setAdminDefaultTheme } from "./theme";
+import { ThemeProvider, useTheme } from "./theme";
 
 export function App() {
   return (
@@ -16,6 +16,7 @@ export function App() {
 }
 
 function AppContent() {
+  const { applySessionTheme } = useTheme();
   const [loading, setLoading] = useState(true);
   const [session, setSession] = useState<SessionState | null>(null);
 
@@ -23,10 +24,12 @@ function AppContent() {
     const next = await api.getSession();
     setCsrfToken(next.csrf_token);
     setBranding(next);
-    setAdminDefaultTheme(next.default_theme);
+    // issue_020: the theme is per-user. Apply the signed-in user's own theme,
+    // falling back to the admin default (also used pre-auth on the login form).
+    applySessionTheme(next.user?.theme, next.default_theme);
     setSession(next);
     return next;
-  }, []);
+  }, [applySessionTheme]);
 
   useEffect(() => {
     refresh()
@@ -34,12 +37,15 @@ function AppContent() {
       .finally(() => setLoading(false));
   }, [refresh]);
 
-  const handleAuthenticated = useCallback((next: SessionState) => {
-    setCsrfToken(next.csrf_token);
-    setBranding(next);
-    setAdminDefaultTheme(next.default_theme);
-    setSession(next);
-  }, []);
+  const handleAuthenticated = useCallback(
+    (next: SessionState) => {
+      setCsrfToken(next.csrf_token);
+      setBranding(next);
+      applySessionTheme(next.user?.theme, next.default_theme);
+      setSession(next);
+    },
+    [applySessionTheme],
+  );
 
   const handleLogout = useCallback(async () => {
     try {

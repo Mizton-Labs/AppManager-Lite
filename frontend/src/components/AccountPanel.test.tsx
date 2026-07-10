@@ -127,10 +127,11 @@ describe("AccountPanel", () => {
     expect(
       screen.getByRole("heading", { name: /change password/i }),
     ).toBeInTheDocument();
-    // issue_019: the theme selector now lives in the Account section.
+    // issue_020: the theme selector lives (compact) in the Profile card;
+    // the separate Appearance card was removed.
     expect(
-      screen.getByRole("heading", { name: /appearance/i }),
-    ).toBeInTheDocument();
+      screen.queryByRole("heading", { name: /appearance/i }),
+    ).toBeNull();
     expect(screen.getByLabelText("Theme")).toBeInTheDocument();
   });
 

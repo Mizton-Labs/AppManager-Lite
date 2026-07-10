@@ -276,9 +276,13 @@ def test_regenerate_rotates_key_on_servers(admin, monkeypatch) -> None:
     assert old_blob in argv[-1]
     assert body["public_key"].split()[1] in argv[-1]
 
-    # Server log gained the rotation transcript; audit has no key material.
-    server = member.get(f"/api/users/{user_id}/servers").json()[0]
+    # Server log gained the rotation transcript (admin-only view); audit has
+    # no key material.
+    server = client.get(f"/api/users/{user_id}/servers").json()[0]
     assert "key rotation" in server["last_log"]
+    # The owning non-admin does not see the provisioning log (issue_020).
+    member_server = member.get(f"/api/users/{user_id}/servers").json()[0]
+    assert member_server["last_log"] == ""
     events = client.get("/api/audit?category=user").json()
     regen = [e for e in events if e["action"] == "ssh_key_regenerate"][0]
     assert "box=updated" in regen["detail"]

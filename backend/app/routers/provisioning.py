@@ -914,8 +914,10 @@ def _server_out(
 ) -> UserServerOut:
     """Serialize a server row, deriving the deferred-deletion flags.
 
-    ``include_error`` controls whether the destroy-failure detail is exposed:
-    only administrators (who own the recovery flow) see it; owners never do.
+    ``include_error`` marks an administrator view. Only administrators (who own
+    the recovery flow) see the destroy-failure detail and the provisioning
+    ``last_log``; owners/non-admins never do (issue_020 hides the log from
+    normal users at the API, not just the UI).
     """
     requested_at = server.get("deletion_requested_at", "") or ""
     error = server.get("deletion_error", "") or ""
@@ -924,6 +926,8 @@ def _server_out(
     data["deletion_pending"] = bool(requested_at)
     data["deletion_failed"] = bool(error)
     data["deletion_error"] = error if include_error else ""
+    if not include_error:
+        data["last_log"] = ""
     return UserServerOut(**data)
 
 
@@ -1537,7 +1541,7 @@ def create_user_server(
         template_main_user=template_main_user,
         admin_modified=is_admin,
     )
-    return _server_out(server)
+    return _server_out(server, include_error=is_admin)
 
 
 def _clone_and_persist_server(

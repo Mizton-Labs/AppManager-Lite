@@ -17,6 +17,8 @@ export interface ApiUser {
   self_service: boolean;
   apps_server: string;
   apps_server_ip: string;
+  /** The user's own UI theme ("" = follow the deployment default). */
+  theme?: string;
   teams: string[];
 }
 

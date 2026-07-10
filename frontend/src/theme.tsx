@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import type { ReactNode } from "react";
+import { api } from "./api";
 
-export const THEME_STORAGE_KEY = "appmanager-lite.theme";
 export const DEFAULT_THEME = "dark-modern" as const;
 
 export const THEMES = [
@@ -17,98 +17,76 @@ function isTheme(value: string | null | undefined): value is ThemeId {
   return THEMES.some((theme) => theme.id === value);
 }
 
-/** Whether the user has explicitly chosen a theme (persisted locally). */
-export function hasStoredTheme(): boolean {
-  try {
-    return isTheme(window.localStorage.getItem(THEME_STORAGE_KEY));
-  } catch {
-    return false;
-  }
-}
-
-// The admin-selected deployment default, delivered with the session. Applied
-// only when the user has not made an explicit choice of their own.
-let adminDefaultTheme: ThemeId = DEFAULT_THEME;
-
-export function readTheme(): ThemeId {
-  try {
-    const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
-    if (isTheme(stored)) return stored;
-  } catch {
-    return adminDefaultTheme;
-  }
-  return adminDefaultTheme;
-}
-
 export function applyTheme(theme: ThemeId): void {
   document.documentElement.dataset.theme = theme;
 }
 
+/**
+ * Resolve the theme to show for a session.
+ *
+ * issue_020: the theme is per-user and stored on the account. The signed-in
+ * user's own choice wins; otherwise the deployment default (set by an admin)
+ * applies. Before authentication there is no user, so the default is shown.
+ */
+export function resolveTheme(
+  userTheme: string | null | undefined,
+  adminDefault: string | null | undefined,
+): ThemeId {
+  if (isTheme(userTheme)) return userTheme;
+  if (isTheme(adminDefault)) return adminDefault;
+  return DEFAULT_THEME;
+}
+
 type ThemeContextValue = {
   theme: ThemeId;
+  /** Change and persist the signed-in user's own theme. */
   setTheme: (theme: ThemeId) => void;
-  /** Whether the current theme comes from an explicit user choice. */
-  isExplicit: boolean;
+  /** Apply the theme resolved from a session (user choice or admin default). */
+  applySessionTheme: (
+    userTheme: string | null | undefined,
+    adminDefault: string | null | undefined,
+  ) => void;
 };
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 
-export function ThemeProvider(props: { children: ReactNode }) {
-  const [theme, setThemeState] = useState<ThemeId>(readTheme);
-  const [isExplicit, setIsExplicit] = useState<boolean>(hasStoredTheme);
+// The current deployment default, remembered so a user who clears their choice
+// (or is signed out) falls back to it rather than the hard-coded default.
+let currentAdminDefault: ThemeId = DEFAULT_THEME;
+
+export function ThemeProvider(props: {
+  children: ReactNode;
+  /** When false, changing the theme is not persisted to the server (pre-auth). */
+  persist?: boolean;
+}) {
+  const persist = props.persist ?? true;
+  const [theme, setThemeState] = useState<ThemeId>(DEFAULT_THEME);
 
   useEffect(() => {
     applyTheme(theme);
   }, [theme]);
 
-  // A user's explicit selection is applied immediately and persisted (which
-  // marks it as an explicit choice that wins over the admin default).
   const setTheme = (next: ThemeId) => {
     setThemeState(next);
-    setIsExplicit(true);
-    try {
-      window.localStorage.setItem(THEME_STORAGE_KEY, next);
-    } catch {
-      // A privacy-restricted browser can still use the in-memory selection.
+    if (persist) {
+      // Best-effort: the visible change applies immediately regardless.
+      api.updateAccountTheme(next).catch(() => undefined);
     }
   };
 
-  // The admin default (from the session) fills in only when the user has not
-  // chosen their own theme; it is never persisted, so a later change to the
-  // admin default can still take effect.
-  const applyAdminDefault = (next: ThemeId) => {
-    adminDefaultTheme = next;
-    if (!hasStoredTheme()) {
-      setThemeState(next);
-      setIsExplicit(false);
-    }
+  const applySessionTheme = (
+    userTheme: string | null | undefined,
+    adminDefault: string | null | undefined,
+  ) => {
+    if (isTheme(adminDefault)) currentAdminDefault = adminDefault;
+    setThemeState(resolveTheme(userTheme, adminDefault ?? currentAdminDefault));
   };
 
   return (
-    <ThemeContext.Provider value={{ theme, setTheme, isExplicit }}>
-      <AdminDefaultBridge apply={applyAdminDefault} />
+    <ThemeContext.Provider value={{ theme, setTheme, applySessionTheme }}>
       {props.children}
     </ThemeContext.Provider>
   );
-}
-
-// Exposes the provider's admin-default applier to non-context callers (App) via
-// a module ref, so the session loader can push the deployment default in.
-let applyAdminDefaultRef: ((theme: ThemeId) => void) | null = null;
-
-function AdminDefaultBridge(props: { apply: (theme: ThemeId) => void }) {
-  applyAdminDefaultRef = props.apply;
-  return null;
-}
-
-/** Apply the admin-selected default theme (no-op if the user has chosen). */
-export function setAdminDefaultTheme(theme: string | undefined | null): void {
-  if (!isTheme(theme)) return;
-  if (applyAdminDefaultRef) {
-    applyAdminDefaultRef(theme);
-  } else {
-    adminDefaultTheme = theme;
-  }
 }
 
 export function useTheme(): ThemeContextValue {

@@ -91,6 +91,7 @@ def _row_to_user(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
         "apps_server": row["apps_server"],
         "apps_server_ip": row["apps_server_ip"],
         "apps_port": row["apps_port"],
+        "theme": row["theme"],
         "teams": teams,
     }
 
@@ -369,6 +370,19 @@ def create_sso_user(
         teams=[],
         must_change_password=False,
     )
+
+
+def set_user_theme(
+    conn: sqlite3.Connection, user_id: int, theme: str
+) -> dict[str, Any] | None:
+    """Persist a user's chosen UI theme (issue_020). Empty clears the choice."""
+    if get_user_by_id(conn, user_id) is None:
+        return None
+    conn.execute(
+        "UPDATE users SET theme = ?, updated_at = datetime('now') WHERE id = ?",
+        (theme, user_id),
+    )
+    return get_user_by_id(conn, user_id)
 
 
 def update_user(
@@ -937,9 +951,15 @@ def render_connect_scripts(
                 "exec " + " ".join(parts) + ' "$@"\n'
             )
         else:
+            # Point IdentityFile at the key shipped alongside the script so it
+            # runs in place from the unzip directory (the bundled config's
+            # ~/.ssh path is overridden here; a CLI -o beats the config file).
             body = (
                 'cd "$(dirname "$0")" || exit 1\n'
-                "exec ssh -F ./config " + shlex.quote(alias) + ' "$@"\n'
+                "exec ssh -F ./config "
+                f'-o IdentityFile="$(dirname "$0")/{key_name}" '
+                "-o IdentitiesOnly=yes "
+                + shlex.quote(alias) + ' "$@"\n'
             )
         scripts.append((filename, header + body))
     return scripts

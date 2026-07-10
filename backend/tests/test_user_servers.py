@@ -1400,6 +1400,34 @@ def test_force_remove_requires_admin(admin, monkeypatch) -> None:
     assert resp.status_code == 403
 
 
+def test_server_log_hidden_from_non_admin_owner(admin, monkeypatch) -> None:
+    """issue_020: the provisioning log is admin-only, enforced at the API."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    client.patch(
+        "/api/settings/provisioning",
+        json={"provisioning_self_service": True},
+        headers={"X-CSRF-Token": csrf},
+    )
+    created = _create_member(client, csrf, self_service=True)
+    user_id = created["user"]["id"]
+    server = _create_server_for(client, csrf, user_id, template["id"])
+    assert server  # admin create succeeded
+
+    # Admin sees last_log via the list endpoint.
+    admin_view = client.get(f"/api/users/{user_id}/servers").json()
+    assert any(s.get("last_log") for s in admin_view)
+
+    # The owning non-admin does NOT see last_log.
+    member, _ = _login(client.app, "srvuser@example.com", created["password"])
+    owner_view = member.get(f"/api/users/{user_id}/servers").json()
+    assert owner_view
+    assert all(s["last_log"] == "" for s in owner_view)
+
+
 def test_deferred_deletion_no_vmid_row_honors_grace(admin, monkeypatch) -> None:
     """A record with no vmid (never cloned) still waits the grace window, then
     is removed with no Proxmox destroy call."""
@@ -1814,7 +1842,8 @@ def test_failed_with_guest_counts_against_quota(admin, monkeypatch) -> None:
     assert first.status_code == 201
     body = first.json()
     assert body["vmid"] == 120  # the guest was cloned
-    assert "could not determine the container IP" in body["last_log"]
+    # issue_020: the provisioning log is hidden from non-admin owners.
+    assert body["last_log"] == ""
 
     second = member.post(
         f"/api/users/{user_id}/servers",
