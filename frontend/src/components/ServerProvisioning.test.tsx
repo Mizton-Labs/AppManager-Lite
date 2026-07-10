@@ -16,6 +16,9 @@ const defaults: ProvisioningSettings = {
   proxmox_conn_log: "",
   provisioning_self_service: false,
   provisioning_max_servers: 3,
+  provisioning_add_to_pool: true,
+  proxmox_realms: [],
+  proxmox_pool_prefix: "",
   provisioning_max_cpus: 12,
   provisioning_max_memory_gb: 24,
   provisioning_max_disk_gb: 200,
@@ -67,6 +70,12 @@ function stubProvisioning(initial: Partial<ProvisioningSettings> = {}) {
     }
     if (url.endsWith("/api/settings/provisioning/provider-templates")) {
       return json({ status: "ok", log: "", templates });
+    }
+    if (url.endsWith("/api/settings/provisioning/realms")) {
+      return json([
+        { realm: "pam", type: "pam", comment: "Linux PAM" },
+        { realm: "corp-ldap", type: "ldap", comment: "Corp LDAP" },
+      ]);
     }
     if (url.endsWith("/api/settings/ssh-keys")) {
       return json([
@@ -341,6 +350,55 @@ describe("ServerProvisioning", () => {
       provisioning_max_cpus: 12,
       provisioning_max_memory_gb: 24,
       provisioning_max_disk_gb: 200,
+    });
+  });
+
+  it("toggles the add-to-pool policy (issue_025)", async () => {
+    const fetchMock = stubProvisioning();
+    render(<ServerProvisioning />);
+    await openTab(/^Policy$/i);
+    await screen.findByRole("heading", { name: /server provisioning policy/i });
+    // Defaults on; turn it off.
+    await userEvent.click(
+      screen.getByRole("checkbox", { name: /add servers to user pool/i }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: /save policy/i }));
+    const patchCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).endsWith("/api/settings/provisioning") &&
+        (init as RequestInit | undefined)?.method === "PATCH",
+    );
+    expect(JSON.parse((patchCall![1] as RequestInit).body as string)).toMatchObject({
+      provisioning_add_to_pool: false,
+    });
+  });
+
+  it("selects realms and a pool prefix on the provider card (issue_025)", async () => {
+    const fetchMock = stubProvisioning({
+      proxmox_url: "https://pve:8006",
+      proxmox_token_name: "svc@pam!a",
+      proxmox_api_key_set: true,
+      proxmox_conn_status: "ok",
+    });
+    render(<ServerProvisioning />);
+    await openTab(/^Provider$/i);
+    // Realms load once connected.
+    await userEvent.click(
+      await screen.findByRole("checkbox", { name: /corp-ldap/i }),
+    );
+    const prefix = screen.getByLabelText(/user pool id prefix/i);
+    await userEvent.type(prefix, "lab-");
+    await userEvent.click(
+      screen.getByRole("button", { name: /save and test connection/i }),
+    );
+    const patchCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).endsWith("/api/settings/provisioning") &&
+        (init as RequestInit | undefined)?.method === "PATCH",
+    );
+    expect(JSON.parse((patchCall![1] as RequestInit).body as string)).toMatchObject({
+      proxmox_realms: ["corp-ldap"],
+      proxmox_pool_prefix: "lab-",
     });
   });
 

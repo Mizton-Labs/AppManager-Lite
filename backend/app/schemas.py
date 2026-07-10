@@ -839,6 +839,14 @@ class UpdateReverseProxySettingsRequest(BaseModel):
 _PROXMOX_URL_RE = re.compile(r"^https?://[A-Za-z0-9.\-\[\]:]+(?::\d{1,5})?/?$")
 
 
+class RealmOut(BaseModel):
+    """A Proxmox authentication realm offered for admin selection (issue_025)."""
+
+    realm: str
+    type: str = ""
+    comment: str = ""
+
+
 class ProvisioningSettingsOut(BaseModel):
     """Provider + policy settings. The API key itself is never returned."""
 
@@ -862,6 +870,11 @@ class ProvisioningSettingsOut(BaseModel):
     provisioning_max_cpus: int = 12
     provisioning_max_memory_gb: int = 24
     provisioning_max_disk_gb: int = 200
+    # issue_025: auto-add created guests to their owner's Proxmox pool, the
+    # admin-selected realms, and the optional pool-id prefix.
+    provisioning_add_to_pool: bool = True
+    proxmox_realms: list[str] = Field(default_factory=list)
+    proxmox_pool_prefix: str = ""
     jump_enabled: bool = False
     jump_host: str = ""
     jump_user: str = ""
@@ -892,6 +905,10 @@ class UpdateProvisioningSettingsRequest(BaseModel):
     provisioning_max_cpus: int | None = Field(default=None, ge=1, le=1024)
     provisioning_max_memory_gb: int | None = Field(default=None, ge=1, le=4096)
     provisioning_max_disk_gb: int | None = Field(default=None, ge=1, le=65536)
+    # issue_025: auto-add-to-pool toggle, selected realms, and pool-id prefix.
+    provisioning_add_to_pool: bool | None = None
+    proxmox_realms: list[str] | None = Field(default=None, max_length=64)
+    proxmox_pool_prefix: str | None = Field(default=None, max_length=48)
     jump_enabled: bool | None = None
     jump_host: str | None = Field(default=None, max_length=253)
     jump_user: str | None = Field(default=None, max_length=64)
@@ -923,6 +940,20 @@ class UpdateProvisioningSettingsRequest(BaseModel):
         if not _HOST_RE.match(value):
             raise ValueError(
                 "Jump host must be a bare hostname or IP (letters, digits, '.', '-')."
+            )
+        return value
+
+    @field_validator("proxmox_pool_prefix")
+    @classmethod
+    def _check_pool_prefix(cls, value: str | None) -> str | None:
+        # A pool prefix must keep the resulting pool id within Proxmox's
+        # allowed charset (letters, digits, '-', '_', '.').
+        if value is None:
+            return None
+        value = value.strip()
+        if value and not re.fullmatch(r"[A-Za-z0-9._-]+", value):
+            raise ValueError(
+                "Pool prefix may contain only letters, digits, '.', '-', '_'."
             )
         return value
 

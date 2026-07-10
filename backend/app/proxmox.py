@@ -184,6 +184,98 @@ def test_connection(config: dict[str, Any]) -> ProxmoxResult:
     return result
 
 
+def list_realms(config: dict[str, Any]) -> ProxmoxResult:
+    """List the provider's authentication realms (GET /access/domains).
+
+    Each entry has ``realm`` (id), ``type`` (pam/pve/ldap/ad/openid), and an
+    optional ``comment``. Read-only; used to populate the admin's realm
+    multi-select (issue_025). ``result.data`` is the list of realm dicts.
+    """
+    result = ProxmoxResult()
+    data = _call(config, "GET", "/access/domains", result=result)
+    if result.status != "ok":
+        return result
+    realms = [
+        {
+            "realm": str(item.get("realm", "")),
+            "type": str(item.get("type", "")),
+            "comment": str(item.get("comment", "")),
+        }
+        for item in (data or [])
+        if isinstance(item, dict) and item.get("realm")
+    ]
+    result.data = realms
+    return result
+
+
+# A Proxmox pool id must match this charset (letters, digits, and -_.); we
+# validate before creating/adding so a bad account slug can never form an
+# invalid or injectable pool id.
+_POOLID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _pool_exists(config: dict[str, Any], poolid: str, *, result: ProxmoxResult) -> bool:
+    data = _call(config, "GET", "/pools", result=result)
+    if result.status != "ok":
+        return False
+    for item in data or []:
+        if isinstance(item, dict) and str(item.get("poolid", "")) == poolid:
+            return True
+    return False
+
+
+def add_guest_to_pool(
+    config: dict[str, Any],
+    poolid: str,
+    vmid: int,
+    *,
+    create_if_missing: bool = True,
+    result: ProxmoxResult,
+) -> bool:
+    """Add a guest (by vmid) to a Proxmox pool, creating the pool if missing.
+
+    issue_025: best-effort. Returns True when the guest is a member of the
+    pool afterwards. Never raises; records progress into ``result``. The
+    poolid is validated against a strict charset first.
+    """
+    if not _POOLID_RE.match(poolid):
+        result.fail(f"invalid pool id {poolid!r}")
+        return False
+    exists = _pool_exists(config, poolid, result=result)
+    if result.status != "ok":
+        return False
+    if not exists:
+        if not create_if_missing:
+            result.log(f"Pool '{poolid}' does not exist; skipping")
+            return False
+        _call(
+            config, "POST", "/pools",
+            result=result, json_body={"poolid": poolid},
+        )
+        if result.status != "ok":
+            # A concurrent create can race, or the pool may already exist under
+            # a differently-worded error. Re-check existence rather than
+            # string-matching the (possibly localized) error text.
+            result.status = "ok"
+            if not _pool_exists(config, poolid, result=result):
+                result.fail(f"could not create or find pool '{poolid}'")
+                return False
+            result.log(f"Pool '{poolid}' already exists (create tolerated)")
+        else:
+            result.log(f"Created pool '{poolid}'")
+    _call(
+        config,
+        "PUT",
+        f"/pools/{quote(poolid, safe='')}",
+        result=result,
+        json_body={"vms": str(vmid)},
+    )
+    if result.status != "ok":
+        return False
+    result.log(f"Added vmid {vmid} to pool '{poolid}'")
+    return True
+
+
 def list_templates(config: dict[str, Any]) -> ProxmoxResult:
     """List cluster VMs/containers matching the configured name filter.
 

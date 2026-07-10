@@ -21,6 +21,7 @@ import type {
   JumpAccountModeResult,
   JumpSyncEntry,
   ProviderTemplates,
+  ProxmoxRealm,
   ProvisioningSettings,
   ServerAccess,
   ServersOverview,
@@ -274,6 +275,10 @@ export const api = {
 
   listProviderTemplates: () =>
     request<ProviderTemplates>("settings/provisioning/provider-templates"),
+
+  /** Live list of the provider's auth realms for the admin multi-select. */
+  listProviderRealms: () =>
+    request<ProxmoxRealm[]>("settings/provisioning/realms"),
 
   syncJumpServerUsers: () =>
     request<{ results: JumpSyncEntry[] }>("settings/jump-server/sync", {

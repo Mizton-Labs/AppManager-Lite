@@ -18,16 +18,44 @@ _TEMPLATE_ENTRY = {
 class _FakeProxmox:
     """Scripted proxmox HTTP seam; each created server gets a distinct IP."""
 
-    def __init__(self, monkeypatch, ips=("10.0.7.11", "10.0.7.12", "10.0.7.13")):
+    def __init__(self, monkeypatch, ips=("10.0.7.11", "10.0.7.12", "10.0.7.13"),
+                 realms=None):
         self._ips = list(ips)
         self._assigned: dict[int, str] = {}
         self._next_id = 120
+        # issue_025: observable pool state for assertions.
+        self.realms = realms if realms is not None else [
+            {"realm": "pam", "type": "pam", "comment": "Linux PAM"},
+            {"realm": "pve", "type": "pve"},
+        ]
+        self.pools: dict[str, list[str]] = {}
+        self.pool_calls: list[tuple[str, str]] = []  # (op, poolid)
         monkeypatch.setattr(proxmox, "_http_request", self)
         monkeypatch.setattr(proxmox, "_sleep", lambda s: None)
 
     def __call__(self, method, url, *, headers, verify, json_body=None):
         if "/version" in url:
             return _VERSION_OK
+        if "/access/domains" in url:
+            return (200, {"data": self.realms})
+        if url.rstrip("/").endswith("/pools") and method == "GET":
+            return (200, {"data": [
+                {"poolid": pid} for pid in self.pools
+            ]})
+        if url.rstrip("/").endswith("/pools") and method == "POST":
+            pid = (json_body or {}).get("poolid", "")
+            self.pool_calls.append(("create", pid))
+            self.pools.setdefault(pid, [])
+            return (200, {"data": None})
+        if "/pools/" in url and method == "PUT":
+            import re as _re
+            from urllib.parse import unquote
+            m = _re.search(r"/pools/([^/?]+)", url)
+            pid = unquote(m.group(1))
+            self.pool_calls.append(("add", pid))
+            vms = str((json_body or {}).get("vms", ""))
+            self.pools.setdefault(pid, []).append(vms)
+            return (200, {"data": None})
         if "/cluster/resources" in url:
             return (200, {"data": [_TEMPLATE_ENTRY]})
         if "/cluster/nextid" in url:
@@ -641,3 +669,188 @@ def test_deferred_remesh_retries_after_transient_failure(
     ok = _FakeSsh(monkeypatch)
     client.get(f"/api/users/{uid}/servers")
     assert len([c for c in ok.commands if "ssh-keygen" in c[-1]]) == 2
+
+
+# ---------------------------------------------------------------------------
+# issue_025: Proxmox realms + auto add-to-pool
+# ---------------------------------------------------------------------------
+
+
+def test_realms_endpoint_lists_provider_realms(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch, realms=[
+        {"realm": "pam", "type": "pam", "comment": "Linux PAM"},
+        {"realm": "corp-ldap", "type": "ldap", "comment": "Corp LDAP"},
+    ])
+    _setup_provider(client, csrf)
+    r = client.get("/api/settings/provisioning/realms")
+    assert r.status_code == 200, r.text
+    realms = {x["realm"]: x for x in r.json()}
+    assert "pam" in realms and "corp-ldap" in realms
+    assert realms["corp-ldap"]["type"] == "ldap"
+
+
+def test_realms_endpoint_empty_when_provider_unconfigured(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    # No provider configured -> graceful empty list (never an error).
+    r = client.get("/api/settings/provisioning/realms")
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+def test_provisioning_settings_realms_prefix_toggle_roundtrip(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _setup_provider(client, csrf)
+    r = client.patch(
+        "/api/settings/provisioning",
+        json={
+            "proxmox_realms": ["pve", "pve", "corp-ldap", ""],  # dedup + drop blank
+            "proxmox_pool_prefix": "lab-",
+            "provisioning_add_to_pool": False,
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["proxmox_realms"] == ["pve", "corp-ldap"]
+    assert body["proxmox_pool_prefix"] == "lab-"
+    assert body["provisioning_add_to_pool"] is False
+    # Persisted across reads.
+    got = client.get("/api/settings/provisioning").json()
+    assert got["proxmox_realms"] == ["pve", "corp-ldap"]
+    assert got["provisioning_add_to_pool"] is False
+
+
+def test_provisioning_add_to_pool_defaults_on(admin) -> None:
+    client, csrf, _ = admin
+    assert client.get("/api/settings/provisioning").json()["provisioning_add_to_pool"] is True
+
+
+def test_invalid_pool_prefix_rejected(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _setup_provider(client, csrf)
+    r = client.patch(
+        "/api/settings/provisioning",
+        json={"proxmox_pool_prefix": "bad prefix!"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 422
+
+
+def test_server_create_adds_to_pool_creating_it_when_missing(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    fake = _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    # Prefix the pool ids.
+    client.patch(
+        "/api/settings/provisioning",
+        json={"proxmox_pool_prefix": "lab-"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    template = _add_template(client, csrf, name="Box")
+    created = _create_member(client, csrf, "pooluser@example.com")
+    uid = created["user"]["id"]
+    server = _mk_server(client, csrf, uid, template["id"], "s1")
+    assert server["status"] == "created"
+
+    # Pool id = prefix + derived user id (pooluser@example.com -> pooluser).
+    assert ("create", "lab-pooluser") in fake.pool_calls
+    assert ("add", "lab-pooluser") in fake.pool_calls
+    assert server["vmid"] and str(server["vmid"]) in fake.pools["lab-pooluser"]
+    # Audited.
+    events = client.get("/api/audit", params={"category": "user"}).json()
+    assert any(
+        e["action"] == "server_pool_add" and "status=ok" in e.get("detail", "")
+        for e in events
+    )
+
+
+def test_server_create_skips_pool_when_toggle_off(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    fake = _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    client.patch(
+        "/api/settings/provisioning",
+        json={"provisioning_add_to_pool": False},
+        headers={"X-CSRF-Token": csrf},
+    )
+    template = _add_template(client, csrf, name="Box")
+    created = _create_member(client, csrf, "nopool@example.com")
+    uid = created["user"]["id"]
+    server = _mk_server(client, csrf, uid, template["id"], "s1")
+    assert server["status"] == "created"
+    assert fake.pool_calls == []
+
+
+def test_server_create_pool_failure_never_blocks_create(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    fake = _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf, name="Box")
+    created = _create_member(client, csrf, "failpool@example.com")
+    uid = created["user"]["id"]
+
+    # Make pool operations fail after the guest is cloned.
+    orig = fake.__call__
+
+    def boom(method, url, *, headers, verify, json_body=None):
+        if "/pools" in url:
+            return (500, {"errors": "pool backend down"})
+        return orig(method, url, headers=headers, verify=verify, json_body=json_body)
+
+    monkeypatch.setattr(proxmox, "_http_request", boom)
+    server = _mk_server(client, csrf, uid, template["id"], "s1")
+    # Server still created despite the pool failure.
+    assert server["status"] == "created"
+    events = client.get("/api/audit", params={"category": "user"}).json()
+    assert any(
+        e["action"] == "server_pool_add" and "status=failed" in e.get("detail", "")
+        for e in events
+    )
+
+
+def test_add_guest_to_pool_tolerates_existing_pool(monkeypatch) -> None:
+    """issue_025: a POST /pools failure is tolerated when the pool actually
+    exists (verified by re-checking), rather than string-matching the error."""
+    calls: list[tuple[str, str]] = []
+    state = {"exists": False}
+
+    def fake_http(method, url, *, headers, verify, json_body=None):
+        calls.append((method, url))
+        if url.rstrip("/").endswith("/pools") and method == "GET":
+            data = [{"poolid": "team-x"}] if state["exists"] else []
+            return (200, {"data": data})
+        if url.rstrip("/").endswith("/pools") and method == "POST":
+            # Simulate a racing/creating duplicate: POST fails, but now it exists.
+            state["exists"] = True
+            return (500, {"errors": "pool 'team-x' already in use"})
+        if "/pools/" in url and method == "PUT":
+            return (200, {"data": None})
+        raise AssertionError(url)
+
+    monkeypatch.setattr(proxmox, "_http_request", fake_http)
+    result = proxmox.ProxmoxResult()
+    ok = proxmox.add_guest_to_pool(
+        {"proxmox_url": "https://pve:8006", "proxmox_token_name": "t",
+         "proxmox_api_key": "k", "proxmox_verify_tls": False},
+        "team-x", 105, create_if_missing=True, result=result,
+    )
+    assert ok is True
+    # The PUT to add the guest still ran after the tolerated POST.
+    assert any(m == "PUT" and "/pools/team-x" in u for m, u in calls)
+
+
+def test_add_guest_to_pool_rejects_invalid_poolid(monkeypatch) -> None:
+    result = proxmox.ProxmoxResult()
+    ok = proxmox.add_guest_to_pool(
+        {"proxmox_url": "https://pve:8006", "proxmox_token_name": "t",
+         "proxmox_api_key": "k", "proxmox_verify_tls": False},
+        "bad pool!", 1, result=result,
+    )
+    assert ok is False
+    assert "invalid pool id" in result.transcript.lower()

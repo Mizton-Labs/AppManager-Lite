@@ -8,6 +8,7 @@ audited.
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 import threading
@@ -40,6 +41,7 @@ from ..schemas import (
     MessageOut,
     ProviderTemplatesOut,
     ProvisioningSettingsOut,
+    RealmOut,
     OwnerServersOut,
     ResourceUsageOut,
     ServerAccessOut,
@@ -99,6 +101,9 @@ def _provisioning_out(row: dict[str, Any]) -> ProvisioningSettingsOut:
         provisioning_max_cpus=int(row.get("provisioning_max_cpus", 12)),
         provisioning_max_memory_gb=int(row.get("provisioning_max_memory_gb", 24)),
         provisioning_max_disk_gb=int(row.get("provisioning_max_disk_gb", 200)),
+        provisioning_add_to_pool=bool(row.get("provisioning_add_to_pool", 1)),
+        proxmox_realms=repository.parse_string_list(row.get("proxmox_realms")),
+        proxmox_pool_prefix=row.get("proxmox_pool_prefix", "") or "",
         jump_enabled=bool(row.get("jump_enabled", 0)),
         jump_host=row.get("jump_host", "") or "",
         jump_user=row.get("jump_user", "") or "",
@@ -142,6 +147,34 @@ def get_provisioning_settings(
     return _provisioning_out(repository.get_settings_row(conn))
 
 
+@router.get("/settings/provisioning/realms", response_model=list[RealmOut])
+def list_provider_realms(
+    admin: dict[str, Any] = Depends(require_admin),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> list[RealmOut]:
+    """Live list of the provider's authentication realms (issue_025).
+
+    Populates the admin realm multi-select. Returns an empty list (never an
+    error) when the provider is unconfigured or unreachable, so the UI can
+    degrade gracefully.
+    """
+    row = repository.get_settings_row(conn)
+    if not _provider_configured(row):
+        return []
+    result = proxmox.list_realms(_provider_config(row))
+    if result.status != "ok" or not isinstance(result.data, list):
+        return []
+    return [
+        RealmOut(
+            realm=item.get("realm", ""),
+            type=item.get("type", ""),
+            comment=item.get("comment", ""),
+        )
+        for item in result.data
+        if item.get("realm")
+    ]
+
+
 @router.patch("/settings/provisioning", response_model=ProvisioningSettingsOut)
 def update_provisioning_settings(
     payload: UpdateProvisioningSettingsRequest,
@@ -157,6 +190,15 @@ def update_provisioning_settings(
         for k, v in payload.model_dump(exclude_unset=True).items()
         if v is not None
     }
+    # issue_025: realms are stored as a JSON string list. Normalize/validate the
+    # incoming list (drop blanks/dupes) and JSON-encode for the text column.
+    if "proxmox_realms" in changes:
+        seen: list[str] = []
+        for realm in changes["proxmox_realms"]:
+            r = str(realm).strip()
+            if r and r not in seen:
+                seen.append(r)
+        changes["proxmox_realms"] = json.dumps(seen)
     if "jump_ssh_key_id" in changes and (
         repository.get_ssh_key(conn, changes["jump_ssh_key_id"]) is None
     ):
@@ -1687,6 +1729,25 @@ def _clone_and_persist_server(
             conn, user_id, server, admin_key_path, actor=actor
         )
 
+    # issue_025: add the created guest to its owner's Proxmox pool (created if
+    # missing) when the policy is enabled. Best-effort and fully guarded like
+    # the mesh above: a pool failure must never lose the server record.
+    settings_row = repository.get_settings_row(conn)
+    if (
+        server["status"] == "created"
+        and server.get("vmid")
+        and bool(settings_row.get("provisioning_add_to_pool", 1))
+    ):
+        server = _assign_to_pool_and_record(
+            conn,
+            user_id,
+            server,
+            provider_config,
+            settings_row,
+            owner_uid=owner_uid,
+            actor=actor,
+        )
+
     logger.info(
         "Server creation %s user=%s name=%r vmid=%s by=%r",
         outcome["status"],
@@ -1828,6 +1889,57 @@ def provision_default_servers(
                 "detail": f"Unexpected error: {exc.__class__.__name__}",
             })
     return results
+
+
+def _assign_to_pool_and_record(
+    conn: sqlite3.Connection,
+    user_id: int,
+    server: dict[str, Any],
+    provider_config: dict[str, Any],
+    settings_row: dict[str, Any],
+    *,
+    owner_uid: str,
+    actor: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Add the created guest to its owner's Proxmox pool (issue_025).
+
+    The pool id is ``<prefix><owner derived id>`` (prefix from settings). The
+    pool is created if missing, then the guest's vmid is added. Best-effort:
+    the transcript is appended to the server log and audited, and any failure
+    is swallowed so the server record for the already-cloned guest survives.
+    Realms are stored for admin selection/visibility; because Proxmox pools are
+    cluster-wide (not realm-scoped), the pool id is derived from the account.
+    """
+    prefix = (settings_row.get("proxmox_pool_prefix") or "").strip()
+    poolid = f"{prefix}{owner_uid}"
+    result = proxmox.ProxmoxResult()
+    status_str = "failed"
+    try:
+        ok = proxmox.add_guest_to_pool(
+            provider_config,
+            poolid,
+            int(server["vmid"]),
+            create_if_missing=True,
+            result=result,
+        )
+        status_str = "ok" if ok else "failed"
+    except Exception as exc:  # noqa: BLE001 - best-effort, never fatal
+        result.fail(f"pool assignment error: {exc.__class__.__name__}")
+    merged = (server["last_log"] + "\n\n--- pool assignment ---\n"
+              + result.transcript).strip()
+    repository.update_user_server(conn, user_id, server["id"], last_log=merged)
+    updated = repository.get_user_server(conn, user_id, server["id"])
+    audit.record(
+        conn,
+        category=audit.CATEGORY_USER,
+        action="server_pool_add",
+        actor=actor,
+        target_type="user_server",
+        target_id=server["id"],
+        target_name=server["name"],
+        detail=f"status={status_str}; pool={poolid}"[:500],
+    )
+    return updated or server
 
 
 def _reconcile_and_record_mesh(

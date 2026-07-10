@@ -3,6 +3,7 @@ import { api, ApiError } from "../api";
 import type {
   JumpSyncEntry,
   ProviderTemplate,
+  ProxmoxRealm,
   ProvisioningSettings,
   ServerTemplate,
   SshKey,
@@ -512,6 +513,13 @@ function ProviderCard(props: {
   const [showLog, setShowLog] = useState(false);
   const [templates, setTemplates] = useState<ProviderTemplate[] | null>(null);
   const [templatesError, setTemplatesError] = useState<string | null>(null);
+  // issue_025: available realms (live from the provider) + admin selection and
+  // pool-id prefix.
+  const [availableRealms, setAvailableRealms] = useState<ProxmoxRealm[]>([]);
+  const [selectedRealms, setSelectedRealms] = useState<string[]>(
+    settings.proxmox_realms ?? [],
+  );
+  const [poolPrefix, setPoolPrefix] = useState(settings.proxmox_pool_prefix ?? "");
   // Bumped on every successful save so the verification dropdown refetches
   // even when the connection status/filter values did not change.
   const [saveCount, setSaveCount] = useState(0);
@@ -540,6 +548,18 @@ function ProviderCard(props: {
     }
   }, [connStatus, saveCount]);
 
+  // issue_025: load the provider's realms once connected, for the multi-select.
+  useEffect(() => {
+    if (connStatus === "ok") {
+      api
+        .listProviderRealms()
+        .then(setAvailableRealms)
+        .catch(() => setAvailableRealms([]));
+    } else {
+      setAvailableRealms([]);
+    }
+  }, [connStatus, saveCount]);
+
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
@@ -554,6 +574,8 @@ function ProviderCard(props: {
         proxmox_template_filter: filter.trim(),
         proxmox_templates_only: templatesOnly,
         proxmox_verify_tls: verifyTls,
+        proxmox_realms: selectedRealms,
+        proxmox_pool_prefix: poolPrefix.trim(),
       });
       props.onSaved(next);
       setApiKey("");
@@ -675,6 +697,57 @@ function ProviderCard(props: {
             interception. Only use this with self-signed lab instances.
           </p>
         )}
+
+        {/* issue_025: once connected, offer the provider's realms for the admin
+            to select (applied to pool operations) and a pool-id prefix. */}
+        {connStatus === "ok" && (
+          <fieldset className="team-picker">
+            <legend>Proxmox realms</legend>
+            <p className="muted logo-hint">
+              Select the realms that apply to platform pool operations. Multiple
+              may be selected.
+            </p>
+            {availableRealms.length === 0 ? (
+              <p className="muted">No realms reported by the provider.</p>
+            ) : (
+              <div className="team-grid">
+                {availableRealms.map((r) => (
+                  <label key={r.realm} className="checkbox">
+                    <input
+                      type="checkbox"
+                      checked={selectedRealms.includes(r.realm)}
+                      onChange={() =>
+                        setSelectedRealms((cur) =>
+                          cur.includes(r.realm)
+                            ? cur.filter((x) => x !== r.realm)
+                            : [...cur, r.realm],
+                        )
+                      }
+                    />
+                    <span>
+                      {r.realm}
+                      {r.type ? ` (${r.type})` : ""}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
+            <label className="field">
+              <span>User pool id prefix (optional)</span>
+              <input
+                type="text"
+                value={poolPrefix}
+                onChange={(e) => setPoolPrefix(e.target.value)}
+                placeholder="lab-"
+                aria-label="User pool id prefix"
+              />
+              <span className="muted logo-hint">
+                Prepended to each user's pool id (letters, digits, '.', '-', '_').
+              </span>
+            </label>
+          </fieldset>
+        )}
+
         <div className="row-actions">
           <button type="submit" className="btn primary" disabled={busy}>
             {busy ? "Testing connection..." : "Save and test connection"}
@@ -727,6 +800,10 @@ function PolicyCard(props: {
   const [maxDisk, setMaxDisk] = useState(
     String(settings.provisioning_max_disk_gb),
   );
+  // issue_025: add each created guest to its owner's Proxmox pool.
+  const [addToPool, setAddToPool] = useState(
+    settings.provisioning_add_to_pool,
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -740,6 +817,7 @@ function PolicyCard(props: {
       const next = await api.updateProvisioningSettings({
         provisioning_self_service: selfService,
         provisioning_max_servers: Number(maxServers),
+        provisioning_add_to_pool: addToPool,
         provisioning_max_cpus: Number(maxCpus),
         provisioning_max_memory_gb: Number(maxMemory),
         provisioning_max_disk_gb: Number(maxDisk),
@@ -784,6 +862,17 @@ function PolicyCard(props: {
           <span>
             Enable self-service server provisioning (self-service users and
             administrators; normal users cannot request servers)
+          </span>
+        </label>
+        <label className="checkbox-field">
+          <input
+            type="checkbox"
+            checked={addToPool}
+            onChange={(e) => setAddToPool(e.target.checked)}
+          />
+          <span>
+            Add servers to User Pool in the LXC/VM provider (each created server
+            is added to its owner's pool, created if missing)
           </span>
         </label>
         <label className="field">

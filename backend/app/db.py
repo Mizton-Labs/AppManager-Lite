@@ -221,6 +221,10 @@ CREATE TABLE IF NOT EXISTS settings (
     proxmox_verify_tls       INTEGER NOT NULL DEFAULT 1,
     proxmox_conn_status      TEXT    NOT NULL DEFAULT '',
     proxmox_conn_log         TEXT    NOT NULL DEFAULT '',
+    -- issue_025: admin-selected Proxmox realms (JSON list of realm ids) and the
+    -- optional prefix applied to auto-created user pool ids.
+    proxmox_realms           TEXT    NOT NULL DEFAULT '[]',
+    proxmox_pool_prefix      TEXT    NOT NULL DEFAULT '',
     -- Server-provisioning policy.
     provisioning_self_service     INTEGER NOT NULL DEFAULT 0,
     provisioning_max_servers      INTEGER NOT NULL DEFAULT 3,
@@ -228,6 +232,9 @@ CREATE TABLE IF NOT EXISTS settings (
     provisioning_max_cpus         INTEGER NOT NULL DEFAULT 12,
     provisioning_max_memory_gb    INTEGER NOT NULL DEFAULT 24,
     provisioning_max_disk_gb      INTEGER NOT NULL DEFAULT 200,
+    -- issue_025: when on, each created guest is added to its owner's Proxmox
+    -- pool (created if missing). Default on.
+    provisioning_add_to_pool      INTEGER NOT NULL DEFAULT 1,
     updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -582,6 +589,13 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     )
     _add_column(
         conn, "settings", "provisioning_max_disk_gb", "INTEGER NOT NULL DEFAULT 200"
+    )
+    # issue_025: Proxmox realms selection, user-pool prefix, and the
+    # add-to-pool policy toggle (default on).
+    _add_column(conn, "settings", "proxmox_realms", "TEXT NOT NULL DEFAULT '[]'")
+    _add_column(conn, "settings", "proxmox_pool_prefix", "TEXT NOT NULL DEFAULT ''")
+    _add_column(
+        conn, "settings", "provisioning_add_to_pool", "INTEGER NOT NULL DEFAULT 1"
     )
 
     # Reference servers imported without a template carry their own admin

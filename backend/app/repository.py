@@ -1499,6 +1499,11 @@ def parse_collaborators(raw: Any) -> list[str]:
     return [str(name) for name in parsed if isinstance(name, str)]
 
 
+# issue_025: Proxmox realms are stored as the same JSON-string-list shape as
+# collaborators; reuse the tolerant parser.
+parse_string_list = parse_collaborators
+
+
 def get_settings_row(conn: sqlite3.Connection) -> dict[str, Any]:
     """Return the single settings row (id = 1), or an empty default shape."""
     row = conn.execute("SELECT * FROM settings WHERE id = 1").fetchone()
@@ -1594,6 +1599,9 @@ _PROVISIONING_COLUMNS = (
     "provisioning_max_cpus",
     "provisioning_max_memory_gb",
     "provisioning_max_disk_gb",
+    "provisioning_add_to_pool",
+    "proxmox_realms",
+    "proxmox_pool_prefix",
     "jump_enabled",
     "jump_host",
     "jump_user",

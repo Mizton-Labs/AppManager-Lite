@@ -144,6 +144,11 @@ export interface ProvisioningSettings {
   proxmox_conn_log: string;
   provisioning_self_service: boolean;
   provisioning_max_servers: number;
+  /** issue_025: auto-add created guests to their owner's Proxmox pool. */
+  provisioning_add_to_pool: boolean;
+  /** issue_025: admin-selected Proxmox realms and the pool-id prefix. */
+  proxmox_realms: string[];
+  proxmox_pool_prefix: string;
   provisioning_max_cpus: number;
   provisioning_max_memory_gb: number;
   provisioning_max_disk_gb: number;
@@ -177,6 +182,9 @@ export interface UpdateProvisioningSettingsInput {
   proxmox_verify_tls?: boolean;
   provisioning_self_service?: boolean;
   provisioning_max_servers?: number;
+  provisioning_add_to_pool?: boolean;
+  proxmox_realms?: string[];
+  proxmox_pool_prefix?: string;
   provisioning_max_cpus?: number;
   provisioning_max_memory_gb?: number;
   provisioning_max_disk_gb?: number;
@@ -203,6 +211,13 @@ export interface JumpAccountModeResult {
   reverted: boolean;
   detail: string;
   results: JumpSyncEntry[];
+}
+
+/** A Proxmox authentication realm offered for admin selection (issue_025). */
+export interface ProxmoxRealm {
+  realm: string;
+  type: string;
+  comment: string;
 }
 
 /** A VM/LXC entry read live from the provider. */
