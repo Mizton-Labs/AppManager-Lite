@@ -463,6 +463,8 @@ function ServerCard(props: {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [confirmingForce, setConfirmingForce] = useState(false);
   const [editingResources, setEditingResources] = useState(false);
+  const [confirmingReboot, setConfirmingReboot] = useState(false);
+  const [rebootAdvisory, setRebootAdvisory] = useState(false);
 
   const needsIp = server.kind === "vm" && !server.ip_address &&
     server.status !== "failed";
@@ -531,37 +533,68 @@ function ServerCard(props: {
     }
   }
 
-  // issue_017: a self-service user may edit an LXC guest's resources when the
-  // admin has enabled it. Mirrors the backend's eligibility guard so the
-  // inline editor only appears when a save could actually succeed.
+  // issue_021: any self-service owner (or admin) may change resources on
+  // their own LXC/VM guest, as long as it isn't admin-managed. Mirrors the
+  // backend's eligibility guard so the editor only appears when a save could
+  // actually succeed. VM disk is intentionally excluded (see ResourceEditor).
   const canEditResources =
     props.allowResourceEdit &&
-    server.kind === "lxc" &&
+    (server.kind === "lxc" || server.kind === "vm") &&
     !!server.vmid &&
     server.status !== "failed" &&
     !server.deletion_pending &&
     !server.admin_modified;
 
+  // issue_021: reboot is a plain power operation (no resource change), so it
+  // is available whenever the caller is the self-service owner or an admin,
+  // even on an admin-managed server -- unlike resource edits it isn't gated
+  // by admin_modified.
+  const canReboot =
+    props.allowResourceEdit &&
+    !!server.vmid &&
+    server.status !== "failed" &&
+    !server.deletion_pending;
+
   async function saveResources(next: {
     cpus: number;
     memory_gb: number;
-    disk_gb: number;
+    disk_gb?: number;
   }) {
     setBusy(true);
     setError(null);
     try {
-      await api.updateUserServer(props.userId, server.id, {
+      const updated = await api.updateUserServer(props.userId, server.id, {
         cpus: next.cpus,
         memory_gb: next.memory_gb,
-        disk_gb: next.disk_gb,
+        ...(server.kind === "lxc" && next.disk_gb !== undefined
+          ? { disk_gb: next.disk_gb }
+          : {}),
       });
       setEditingResources(false);
+      setRebootAdvisory(!!updated.reboot_required);
       await props.onChanged();
     } catch (err) {
       setError(
         err instanceof ApiError
           ? err.message
           : "Unable to change resources.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function rebootServer() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.rebootUserServer(server.user_id, server.id);
+      setConfirmingReboot(false);
+      setRebootAdvisory(false);
+      await props.onChanged();
+    } catch (err) {
+      setError(
+        err instanceof ApiError ? err.message : "Unable to reboot the server.",
       );
     } finally {
       setBusy(false);
@@ -604,18 +637,6 @@ function ServerCard(props: {
         ) : (
           <>Resources: not recorded</>
         )}
-        {canEditResources && !editingResources && (
-          <>
-            {" · "}
-            <button
-              type="button"
-              className="btn ghost btn-inline"
-              onClick={() => setEditingResources(true)}
-            >
-              Edit
-            </button>
-          </>
-        )}
       </p>
       {canEditResources && editingResources && (
         <ResourceEditor
@@ -624,6 +645,23 @@ function ServerCard(props: {
           onCancel={() => setEditingResources(false)}
           onSave={saveResources}
         />
+      )}
+      {rebootAdvisory && (
+        <p className="alert warn" role="status">
+          A reboot is required for these changes to take effect.
+          {canReboot && !confirmingReboot && (
+            <>
+              {" "}
+              <button
+                type="button"
+                className="btn ghost btn-inline"
+                onClick={() => setConfirmingReboot(true)}
+              >
+                Reboot now
+              </button>
+            </>
+          )}
+        </p>
       )}
       {error && (
         <p className="alert error" role="alert">
@@ -682,6 +720,51 @@ function ServerCard(props: {
             {showLog ? "Hide log" : "View log"}
           </button>
         )}
+
+        {/* issue_021: promoted from an inline "Edit" link to a labeled
+            button, alongside the other server actions. */}
+        {canEditResources && !editingResources && (
+          <button
+            type="button"
+            className="btn"
+            onClick={() => setEditingResources(true)}
+            disabled={busy}
+          >
+            Change resources
+          </button>
+        )}
+
+        {/* issue_021: reboot, LXC and VM, with a confirm step. */}
+        {canReboot &&
+          (confirmingReboot ? (
+            <>
+              <button
+                type="button"
+                className="btn danger"
+                onClick={rebootServer}
+                disabled={busy}
+              >
+                Confirm reboot
+              </button>
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => setConfirmingReboot(false)}
+                disabled={busy}
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              className="btn"
+              onClick={() => setConfirmingReboot(true)}
+              disabled={busy}
+            >
+              Reboot
+            </button>
+          ))}
 
         {/* Pending (not failed): allow cancelling the scheduled deletion. */}
         {server.deletion_pending && !server.deletion_failed && (
@@ -770,6 +853,13 @@ function ServerCard(props: {
         </p>
       )}
 
+      {confirmingReboot && (
+        <p className="alert warn" role="alert">
+          This restarts the server now; anything running on it will briefly
+          be unavailable.
+        </p>
+      )}
+
       {showLog && <pre className="push-log">{server.last_log}</pre>}
     </article>
   );
@@ -783,10 +873,14 @@ function ResourceEditor(props: {
   onSave: (next: {
     cpus: number;
     memory_gb: number;
-    disk_gb: number;
+    disk_gb?: number;
   }) => void | Promise<void>;
 }) {
   const { server } = props;
+  // issue_021: VMs support CPU/memory only -- disk resize is LXC-only, since
+  // it relies on the container rootfs growing in place; a VM's disk lives in
+  // its guest partition table/filesystem, which isn't safely automatable.
+  const isVm = server.kind === "vm";
   const [cpus, setCpus] = useState(String(server.cpus || 1));
   const [memoryGb, setMemoryGb] = useState(String(server.memory_gb || 1));
   const [diskGb, setDiskGb] = useState(String(server.disk_gb || 1));
@@ -801,10 +895,11 @@ function ResourceEditor(props: {
     parsed.cpus >= 1 &&
     Number.isFinite(parsed.memory_gb) &&
     parsed.memory_gb >= 1 &&
-    Number.isFinite(parsed.disk_gb) &&
-    parsed.disk_gb >= 1 &&
-    // Disk can only be grown, not shrunk (Proxmox constraint).
-    parsed.disk_gb >= (server.disk_gb || 0);
+    (isVm ||
+      (Number.isFinite(parsed.disk_gb) &&
+        parsed.disk_gb >= 1 &&
+        // Disk can only be grown, not shrunk (Proxmox constraint).
+        parsed.disk_gb >= (server.disk_gb || 0)));
 
   return (
     <div className="resource-editor" aria-label="Edit server resources">
@@ -828,26 +923,35 @@ function ResourceEditor(props: {
           aria-label="Memory (GB)"
         />
       </label>
-      <label className="field">
-        <span>Disk (GB)</span>
-        <input
-          type="number"
-          min={server.disk_gb || 1}
-          value={diskGb}
-          onChange={(e) => setDiskGb(e.target.value)}
-          aria-label="Disk (GB)"
-        />
-        <span className="field-hint muted">
-          Disk can only be grown, not shrunk. Changes must stay within your
-          administrator's per-user limits.
-        </span>
-      </label>
+      {isVm ? (
+        <p className="field-hint muted">
+          VM disk size cannot be changed here. A reboot is required for CPU
+          or memory changes to take effect.
+        </p>
+      ) : (
+        <label className="field">
+          <span>Disk (GB)</span>
+          <input
+            type="number"
+            min={server.disk_gb || 1}
+            value={diskGb}
+            onChange={(e) => setDiskGb(e.target.value)}
+            aria-label="Disk (GB)"
+          />
+          <span className="field-hint muted">
+            Disk can only be grown, not shrunk. Changes must stay within your
+            administrator's per-user limits.
+          </span>
+        </label>
+      )}
       <div className="row-actions">
         <button
           type="button"
           className="btn primary"
           disabled={props.busy || !valid}
-          onClick={() => props.onSave(parsed)}
+          onClick={() =>
+            props.onSave(isVm ? { cpus: parsed.cpus, memory_gb: parsed.memory_gb } : parsed)
+          }
         >
           {props.busy ? "Saving..." : "Save resources"}
         </button>

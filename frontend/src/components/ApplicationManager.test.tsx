@@ -2,8 +2,37 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ApplicationManager } from "./ApplicationManager";
-import type { Application } from "../types";
-import { makeApp } from "../test/fixtures";
+import type { Application, UserServer } from "../types";
+import { makeApp, makeUser } from "../test/fixtures";
+
+/** Build a {@link UserServer} for tests; override only what a case cares about. */
+function makeUserServer(overrides: Partial<UserServer> = {}): UserServer {
+  return {
+    id: 1,
+    user_id: 1,
+    name: "apps-lxc",
+    hostname: "apps-lxc.internal",
+    template_id: 1,
+    template_name: "apps-lxc",
+    vmid: 500,
+    node: "pve1",
+    kind: "lxc",
+    ip_address: "",
+    cpus: 2,
+    memory_gb: 4,
+    disk_gb: 20,
+    admin_modified: false,
+    status: "created",
+    last_log: "",
+    deletion_requested_at: "",
+    deletion_pending: false,
+    deletion_failed: false,
+    deletion_error: "",
+    created_at: "",
+    is_apps_server: true,
+    ...overrides,
+  };
+}
 
 // Team options the Application Manager renders in its picker. Previously this
 // mirrored the hardcoded ALL_TEAMS; teams are now admin-managed, so the test
@@ -27,7 +56,10 @@ function jsonResponse(payload: unknown, ok = true, status = 200): Response {
  * component's reload-after-mutation flow behaves like the real backend. Both the
  * admin (`/manage`) and member (`/mine`) listing endpoints return the store.
  */
-function stubBackend(initial: Application[]) {
+function stubBackend(
+  initial: Application[],
+  serversByOwner: Record<number, UserServer[]> = {},
+) {
   let store = [...initial];
   let nextId = store.reduce((max, app) => Math.max(max, app.id), 0) + 1;
 
@@ -40,11 +72,9 @@ function stubBackend(initial: Application[]) {
     if (method === "GET" && /\/api\/applications\/(manage|mine)$/.test(url)) {
       return jsonResponse(store);
     }
-    if (method === "GET" && url.endsWith("/api/account/server-templates")) {
-      return jsonResponse([
-        { id: 1, name: "apps-lxc", kind: "lxc", is_apps_server: true },
-        { id: 2, name: "plain", kind: "lxc", is_apps_server: false },
-      ]);
+    const ownerServersMatch = url.match(/\/api\/users\/(\d+)\/servers$/);
+    if (method === "GET" && ownerServersMatch) {
+      return jsonResponse(serversByOwner[Number(ownerServersMatch[1])] ?? []);
     }
     if (method === "GET" && url.endsWith("/api/users")) {
       return jsonResponse([
@@ -219,9 +249,26 @@ describe("ApplicationManager", () => {
     );
   });
 
-  it("offers apps-server templates as a dropdown with a Custom fallback", async () => {
-    const fetchMock = stubBackend([]);
-    render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
+  it("offers an owner's apps-server servers as a dropdown (by name) with a Custom fallback", async () => {
+    const fetchMock = stubBackend([], {
+      1: [
+        makeUserServer({
+          id: 101, user_id: 1, name: "apps-lxc",
+          hostname: "apps-lxc.internal", is_apps_server: true,
+        }),
+        makeUserServer({
+          id: 102, user_id: 1, name: "plain-server",
+          hostname: "plain.internal", is_apps_server: false,
+        }),
+      ],
+    });
+    render(
+      <ApplicationManager
+        isAdmin
+        teamOptions={ALL_TEAMS}
+        currentUser={makeUser({ id: 1, role: "admin", username: "admin@example.com" })}
+      />,
+    );
 
     await screen.findByText(/No applications yet/i);
     await userEvent.click(
@@ -234,7 +281,15 @@ describe("ApplicationManager", () => {
       "aliased",
     );
     const select = await screen.findByLabelText(/alias upstream apps server/i);
-    await userEvent.selectOptions(select, "apps-lxc");
+    // The dropdown offers the server by name; the non-apps-server "plain"
+    // server is excluded.
+    expect(
+      screen.getByRole("option", { name: "apps-lxc" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("option", { name: "plain-server" }),
+    ).toBeNull();
+    await userEvent.selectOptions(select, "apps-lxc.internal");
     await userEvent.type(screen.getByLabelText(/alias upstream port/i), "8080");
     await userEvent.click(
       screen.getByRole("button", { name: /create application/i }),
@@ -245,9 +300,10 @@ describe("ApplicationManager", () => {
         String(u).endsWith("/api/applications") &&
         (init?.method ?? "GET") === "POST",
     );
+    // The value stored/pushed is the resolvable host, not the server's name.
     expect(
       JSON.parse((postCall![1] as RequestInit).body as string),
-    ).toMatchObject({ apps_server: "apps-lxc" });
+    ).toMatchObject({ apps_server: "apps-lxc.internal" });
   });
 
   it("defaults new applications to the local-alias radio", async () => {

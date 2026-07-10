@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import re
 import zipfile
 
 from fastapi.testclient import TestClient
@@ -542,6 +543,14 @@ def test_bundle_zip_includes_key_and_connect_scripts(admin) -> None:
     assert dl.status_code == 200
     assert dl.headers["content-type"] == "application/zip"
     assert dl.headers["cache-control"] == "no-store"
+    # issue_021: the download filename carries a UTC timestamp suffix so
+    # repeated downloads don't collide in a browser's downloads folder.
+    disposition = dl.headers["content-disposition"]
+    match = re.search(r'filename="([^"]+)"', disposition)
+    assert match, disposition
+    assert re.match(
+        r"^ssh-config-default-\d{8}-\d{6}\.zip$", match.group(1)
+    ), match.group(1)
     archive = zipfile.ZipFile(io.BytesIO(dl.content))
     members = {name: archive.read(name) for name in archive.namelist()}
 

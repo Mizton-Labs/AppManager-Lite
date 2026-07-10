@@ -854,6 +854,10 @@ class ProvisioningSettingsOut(BaseModel):
     proxmox_conn_log: str = ""
     provisioning_self_service: bool = False
     provisioning_max_servers: int = 3
+    # issue_021: retained for backward compatibility (read/write still
+    # works), but no longer consulted for authorization -- any self-service
+    # user may edit their own non-admin-managed server's resources now (see
+    # get_account_server_access). The admin UI no longer surfaces this.
     provisioning_allow_resource_edit: bool = False
     provisioning_max_cpus: int = 12
     provisioning_max_memory_gb: int = 24
@@ -1279,6 +1283,14 @@ class UserServerOut(BaseModel):
     deletion_failed: bool = False
     deletion_error: str = ""
     created_at: str = ""
+    # issue_021: transient, response-only hint set right after a VM CPU/memory
+    # change so the frontend can advise a reboot; never persisted.
+    reboot_required: bool = False
+    # issue_021: true when this server was cloned from a template flagged
+    # is_apps_server (derived via a null-safe join; a server whose template
+    # was deleted is not an apps-server). Drives the App-management
+    # apps-server dropdown.
+    is_apps_server: bool = False
 
 
 class CreateUserServerRequest(BaseModel):

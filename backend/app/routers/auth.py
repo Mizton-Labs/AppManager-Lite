@@ -8,6 +8,7 @@ import secrets
 import sqlite3
 import stat
 import zipfile
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import (
@@ -629,11 +630,18 @@ def download_account_bundle(
         detail="part=private (bundle)",
     )
 
+    # issue_021: suffix the download with a UTC timestamp so repeated
+    # downloads (e.g. after a key rotation) don't collide in a browser's
+    # downloads folder. Only the download filename changes; the zip's
+    # entries (config, key files, connect scripts) keep their stable names.
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     return Response(
         content=buffer.getvalue(),
         media_type="application/zip",
         headers={
-            "Content-Disposition": f'attachment; filename="{safe_name}.zip"',
+            "Content-Disposition": (
+                f'attachment; filename="{safe_name}-{timestamp}.zip"'
+            ),
             "Cache-Control": "no-store",
         },
     )

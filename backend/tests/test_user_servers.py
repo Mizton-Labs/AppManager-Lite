@@ -32,13 +32,19 @@ class _FakeProxmox:
 
     def __init__(self, monkeypatch, *, template_resources=None,
                  clone_ok=True, start_ok=True, ip="10.0.7.42",
-                 extra_iface_ips=None, destroy_ok=True, live_vmids=None):
+                 extra_iface_ips=None, destroy_ok=True, live_vmids=None,
+                 template_entry=None, reboot_ok=True):
         self.calls: list[str] = []
         self.template_resources = template_resources or {
             "cores": 2, "memory": 4096, "rootfs": "local:9001/x,size=20G",
         }
+        # Cluster-resources entry describing the clone source (issue_021: a
+        # VM test overrides this with a "qemu" entry so the cloned server
+        # ends up kind="vm").
+        self.template_entry = template_entry or _TEMPLATE_ENTRY
         self.clone_ok = clone_ok
         self.start_ok = start_ok
+        self.reboot_ok = reboot_ok
         self.ip = ip
         # Additional IPv4s the hypervisor reports on the guest's interfaces
         # (beyond the primary ``ip``). Used to exercise F2 corroboration: an
@@ -58,7 +64,7 @@ class _FakeProxmox:
         if "/version" in url:
             return _VERSION_OK
         if "/cluster/resources" in url:
-            entries = [_TEMPLATE_ENTRY]
+            entries = [self.template_entry]
             for vmid in sorted(self.live_vmids):
                 entries.append({
                     "vmid": vmid, "name": f"guest-{vmid}", "type": "lxc",
@@ -75,6 +81,8 @@ class _FakeProxmox:
             return (200, {"data": "UPID:pve1:0002:start:"})
         if "/status/stop" in url:
             return (200, {"data": "UPID:pve1:0004:stop:"})
+        if "/status/reboot" in url:
+            return (200, {"data": "UPID:pve1:0006:reboot:"})
         if method == "DELETE" and ("/lxc/" in url or "/qemu/" in url):
             return (200, {"data": "UPID:pve1:0005:destroy:"})
         if "/tasks/" in url:
@@ -87,6 +95,9 @@ class _FakeProxmox:
             if "destroy" in url and not self.destroy_ok:
                 return (200, {"data": {"status": "stopped",
                                        "exitstatus": "destroy error"}})
+            if "reboot" in url and not self.reboot_ok:
+                return (200, {"data": {"status": "stopped",
+                                       "exitstatus": "reboot error"}})
             return (200, {"data": {"status": "stopped", "exitstatus": "OK"}})
         if "/interfaces" in url:
             if not self.ip:
@@ -1119,9 +1130,10 @@ def test_admin_resource_change_marks_admin_modified(admin, monkeypatch) -> None:
     assert resp.json()["admin_modified"] is True
 
 
-def test_self_service_resource_change_policy_and_quota(
-    admin, monkeypatch
-) -> None:
+def test_self_service_resource_change_and_quota(admin, monkeypatch) -> None:
+    """issue_021: any self-service user may change their own server's
+    resources -- the admin-toggle gate from issue_017 is gone -- but the
+    per-user quota is still enforced."""
     client, csrf, _ = admin
     _FakeProxmox(monkeypatch)
     _FakeSsh(monkeypatch)
@@ -1144,19 +1156,7 @@ def test_self_service_resource_change_policy_and_quota(
         headers={"X-CSRF-Token": member_csrf},
     ).json()
 
-    # Resource edits disabled by policy -> 403.
-    resp = member.patch(
-        f"/api/users/{user_id}/servers/{server['id']}",
-        json={"cpus": 4},
-        headers={"X-CSRF-Token": member_csrf},
-    )
-    assert resp.status_code == 403
-
-    client.patch(
-        "/api/settings/provisioning",
-        json={"provisioning_allow_resource_edit": True},
-        headers={"X-CSRF-Token": csrf},
-    )
+    # No admin toggle needed: self-service ownership alone is sufficient.
     ok = member.patch(
         f"/api/users/{user_id}/servers/{server['id']}",
         json={"cpus": 4},
@@ -1183,6 +1183,321 @@ def test_self_service_resource_change_policy_and_quota(
     )
     assert shrink.status_code == 502
     assert "grown" in shrink.json()["detail"]
+
+
+def test_non_self_service_user_cannot_change_resources(
+    admin, monkeypatch
+) -> None:
+    """A non-self-service owner still cannot edit their own server's resources."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    created = _create_member(client, csrf, self_service=False)
+    user_id = created["user"]["id"]
+    server = _create_server_for(client, csrf, user_id, template["id"])
+    member, member_csrf = _login(
+        client.app, "srvuser@example.com", created["password"]
+    )
+    resp = member.patch(
+        f"/api/users/{user_id}/servers/{server['id']}",
+        json={"cpus": 4},
+        headers={"X-CSRF-Token": member_csrf},
+    )
+    assert resp.status_code == 403
+
+
+def test_account_server_access_allow_resource_edit_by_role(
+    admin, monkeypatch
+) -> None:
+    """issue_021: allow_resource_edit no longer depends on the admin toggle."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+
+    self_service_user = _create_member(
+        client, csrf, "self-service@example.com", self_service=True
+    )
+    non_self_service_user = _create_member(
+        client, csrf, "plain@example.com", self_service=False
+    )
+
+    self_service_member, _ = _login(
+        client.app, "self-service@example.com", self_service_user["password"]
+    )
+    plain_member, _ = _login(
+        client.app, "plain@example.com", non_self_service_user["password"]
+    )
+
+    # provisioning_allow_resource_edit is left at its (off) default.
+    assert self_service_member.get(
+        "/api/account/server-access"
+    ).json()["allow_resource_edit"] is True
+    assert plain_member.get(
+        "/api/account/server-access"
+    ).json()["allow_resource_edit"] is False
+    assert client.get(
+        "/api/account/server-access"
+    ).json()["allow_resource_edit"] is True
+
+
+_VM_TEMPLATE_ENTRY = {
+    "vmid": 9100, "name": "tpl-vm", "type": "qemu", "template": 1,
+    "node": "pve2",
+}
+
+
+def _create_vm_server(client, csrf, monkeypatch, *, self_service=True):
+    """Provision a self-service member's VM server via a fake VM template.
+
+    Returns ``(user_id, server, member_client, member_csrf, fake_proxmox)``.
+    """
+    fake = _FakeProxmox(
+        monkeypatch,
+        template_entry=_VM_TEMPLATE_ENTRY,
+        template_resources={"cores": 2, "memory": 4096},
+    )
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = client.post(
+        "/api/settings/server-templates",
+        json={"vmid": 9100, "name": "Win VM", "kind": "vm"},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    client.patch(
+        "/api/settings/provisioning",
+        json={"provisioning_self_service": True},
+        headers={"X-CSRF-Token": csrf},
+    )
+    created = _create_member(
+        client, csrf, "vmowner@example.com", self_service=self_service
+    )
+    user_id = created["user"]["id"]
+    member, member_csrf = _login(
+        client.app, "vmowner@example.com", created["password"]
+    )
+    # A non-self-service member cannot create their own server, so the admin
+    # provisions it on their behalf (mirrors an admin-managed account).
+    creator, creator_csrf = (member, member_csrf) if self_service else (client, csrf)
+    server = creator.post(
+        f"/api/users/{user_id}/servers",
+        json={"template_id": template["id"], "name": "vmbox"},
+        headers={"X-CSRF-Token": creator_csrf},
+    ).json()
+    assert server["kind"] == "vm"
+    return user_id, server, member, member_csrf, fake
+
+
+def test_vm_resource_change_cpu_memory_sets_reboot_required(
+    admin, monkeypatch
+) -> None:
+    """issue_021: VMs support CPU/memory changes; a reboot is then advised."""
+    client, csrf, _ = admin
+    user_id, server, member, member_csrf, _fake = _create_vm_server(
+        client, csrf, monkeypatch
+    )
+
+    resp = member.patch(
+        f"/api/users/{user_id}/servers/{server['id']}",
+        json={"cpus": 4, "memory_gb": 8},
+        headers={"X-CSRF-Token": member_csrf},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["cpus"] == 4
+    assert body["memory_gb"] == 8
+    assert body["reboot_required"] is True
+
+    # A plain re-fetch never reports reboot_required (transient, not stored).
+    listed = client.get(f"/api/users/{user_id}/servers").json()
+    assert listed[0]["reboot_required"] is False
+
+
+def test_vm_disk_change_rejected(admin, monkeypatch) -> None:
+    """issue_021: VM disk resize is out of scope for self-service edits."""
+    client, csrf, _ = admin
+    user_id, server, member, member_csrf, _fake = _create_vm_server(
+        client, csrf, monkeypatch
+    )
+
+    resp = member.patch(
+        f"/api/users/{user_id}/servers/{server['id']}",
+        json={"disk_gb": 40},
+        headers={"X-CSRF-Token": member_csrf},
+    )
+    assert resp.status_code == 400
+    assert "disk" in resp.json()["detail"].lower()
+
+
+def test_reboot_owner_self_service_succeeds_and_is_audited(
+    admin, monkeypatch
+) -> None:
+    client, csrf, _ = admin
+    user_id, server, member, member_csrf, _fake = _create_vm_server(
+        client, csrf, monkeypatch
+    )
+
+    resp = member.post(
+        f"/api/users/{user_id}/servers/{server['id']}/reboot",
+        headers={"X-CSRF-Token": member_csrf},
+    )
+    assert resp.status_code == 200, resp.text
+
+    events = client.get("/api/audit", params={"category": "user"}).json()
+    reboots = [e for e in events if e["action"] == "server_reboot"]
+    assert len(reboots) == 1
+    assert reboots[0]["target_name"] == server["name"]
+
+
+def test_reboot_admin_succeeds_on_others_server(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    user_id, server, _member, _member_csrf, _fake = _create_vm_server(
+        client, csrf, monkeypatch
+    )
+
+    resp = client.post(
+        f"/api/users/{user_id}/servers/{server['id']}/reboot",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def test_reboot_lxc_server_succeeds(admin, monkeypatch) -> None:
+    """issue_021: reboot works for LXC guests too, not just VMs."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    client.patch(
+        "/api/settings/provisioning",
+        json={"provisioning_self_service": True},
+        headers={"X-CSRF-Token": csrf},
+    )
+    created = _create_member(client, csrf, self_service=True)
+    user_id = created["user"]["id"]
+    member, member_csrf = _login(
+        client.app, "srvuser@example.com", created["password"]
+    )
+    server = member.post(
+        f"/api/users/{user_id}/servers",
+        json={"template_id": template["id"], "name": "mine",
+              "install_pubkey": False},
+        headers={"X-CSRF-Token": member_csrf},
+    ).json()
+    assert server["kind"] == "lxc"
+
+    resp = member.post(
+        f"/api/users/{user_id}/servers/{server['id']}/reboot",
+        headers={"X-CSRF-Token": member_csrf},
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def test_reboot_self_service_owner_allowed_on_admin_modified_server(
+    admin, monkeypatch
+) -> None:
+    """A reboot is a plain power operation -- unlike resource edits, it is
+    not blocked by admin_modified."""
+    client, csrf, _ = admin
+    user_id, server, member, member_csrf, _fake = _create_vm_server(
+        client, csrf, monkeypatch
+    )
+    admin_marked = client.patch(
+        f"/api/users/{user_id}/servers/{server['id']}",
+        json={"cpus": 4},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    assert admin_marked["admin_modified"] is True
+
+    resp = member.post(
+        f"/api/users/{user_id}/servers/{server['id']}/reboot",
+        headers={"X-CSRF-Token": member_csrf},
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def test_reboot_proxmox_failure_returns_502(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    user_id, server, member, member_csrf, fake = _create_vm_server(
+        client, csrf, monkeypatch
+    )
+    fake.reboot_ok = False
+
+    resp = member.post(
+        f"/api/users/{user_id}/servers/{server['id']}/reboot",
+        headers={"X-CSRF-Token": member_csrf},
+    )
+    assert resp.status_code == 502
+    assert "reboot" in resp.json()["detail"].lower()
+
+
+def test_reboot_rejects_deletion_pending_server(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    user_id, server, member, member_csrf, _fake = _create_vm_server(
+        client, csrf, monkeypatch
+    )
+    client.delete(
+        f"/api/users/{user_id}/servers/{server['id']}",
+        headers={"X-CSRF-Token": csrf},
+    )
+
+    resp = member.post(
+        f"/api/users/{user_id}/servers/{server['id']}/reboot",
+        headers={"X-CSRF-Token": member_csrf},
+    )
+    assert resp.status_code == 409
+
+
+def test_reboot_rejects_non_owner(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    user_id, server, _member, _member_csrf, _fake = _create_vm_server(
+        client, csrf, monkeypatch
+    )
+    other = _create_member(client, csrf, "other@example.com", self_service=True)
+    other_member, other_csrf = _login(
+        client.app, "other@example.com", other["password"]
+    )
+
+    resp = other_member.post(
+        f"/api/users/{user_id}/servers/{server['id']}/reboot",
+        headers={"X-CSRF-Token": other_csrf},
+    )
+    assert resp.status_code == 403
+
+
+def test_reboot_rejects_non_self_service_owner(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    user_id, server, member, member_csrf, _fake = _create_vm_server(
+        client, csrf, monkeypatch, self_service=False
+    )
+    resp = member.post(
+        f"/api/users/{user_id}/servers/{server['id']}/reboot",
+        headers={"X-CSRF-Token": member_csrf},
+    )
+    assert resp.status_code == 403
+
+
+def test_reboot_rejects_failed_server(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch, clone_ok=False)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    created = _create_member(client, csrf)
+    user_id = created["user"]["id"]
+    server = client.post(
+        f"/api/users/{user_id}/servers",
+        json={"template_id": template["id"], "name": "doomed"},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    assert server["status"] == "failed"
+
+    resp = client.post(
+        f"/api/users/{user_id}/servers/{server['id']}/reboot",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 400
 
 
 def test_delete_requests_deferred_deletion(admin, monkeypatch) -> None:
@@ -1786,6 +2101,54 @@ def test_account_server_helpers(admin, monkeypatch) -> None:
     ]
     assert "vmid" not in options.text
     assert "id_ed25519" not in options.text
+
+
+def test_is_apps_server_reflects_current_template_flag(
+    admin, monkeypatch
+) -> None:
+    """issue_021: UserServerOut.is_apps_server is derived live from the
+    server's template, and goes False if the template is later deleted (it
+    can never report a stale True)."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    apps_template = client.post(
+        "/api/settings/server-templates",
+        json={"vmid": 9001, "name": "Apps Template", "kind": "lxc",
+              "is_apps_server": True},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    created = _create_member(client, csrf)
+    user_id = created["user"]["id"]
+    server = _create_server_for(client, csrf, user_id, apps_template["id"])
+    assert server["is_apps_server"] is True
+
+    listed = client.get(f"/api/users/{user_id}/servers").json()
+    assert listed[0]["is_apps_server"] is True
+
+    # Deleting the template sets template_id to NULL (ON DELETE SET NULL);
+    # the server is no longer treated as an apps-server.
+    resp = client.delete(
+        f"/api/settings/server-templates/{apps_template['id']}",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 200, resp.text
+    listed = client.get(f"/api/users/{user_id}/servers").json()
+    assert listed[0]["is_apps_server"] is False
+    assert listed[0]["template_id"] is None
+
+
+def test_is_apps_server_false_for_non_apps_template(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)  # is_apps_server defaults off
+    created = _create_member(client, csrf)
+    user_id = created["user"]["id"]
+    server = _create_server_for(client, csrf, user_id, template["id"])
+    assert server["is_apps_server"] is False
 
 
 def test_key_install_failure_keeps_created_record(admin, monkeypatch) -> None:

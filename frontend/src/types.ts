@@ -124,7 +124,14 @@ export interface SshKeyRegenerateResult extends SshKeyInfo {
   rotation: ServerKeyRotation[];
 }
 
-/** Provider + policy settings; the API key itself is never returned. */
+/** Provider + policy settings; the API key itself is never returned.
+ *
+ * issue_021: the backend still accepts/returns a legacy
+ * ``provisioning_allow_resource_edit`` field for backward compatibility, but
+ * it is no longer read for authorization (any self-service user may edit
+ * their own non-admin-managed server's resources) and is intentionally
+ * omitted here so the UI no longer surfaces a now-inert toggle.
+ */
 export interface ProvisioningSettings {
   provider_type: string;
   proxmox_url: string;
@@ -137,7 +144,6 @@ export interface ProvisioningSettings {
   proxmox_conn_log: string;
   provisioning_self_service: boolean;
   provisioning_max_servers: number;
-  provisioning_allow_resource_edit: boolean;
   provisioning_max_cpus: number;
   provisioning_max_memory_gb: number;
   provisioning_max_disk_gb: number;
@@ -171,7 +177,6 @@ export interface UpdateProvisioningSettingsInput {
   proxmox_verify_tls?: boolean;
   provisioning_self_service?: boolean;
   provisioning_max_servers?: number;
-  provisioning_allow_resource_edit?: boolean;
   provisioning_max_cpus?: number;
   provisioning_max_memory_gb?: number;
   provisioning_max_disk_gb?: number;
@@ -280,6 +285,10 @@ export interface UserServer {
   /** Only populated in administrator responses. */
   deletion_error: string;
   created_at: string;
+  /** True right after a VM CPU/memory change; transient, never persisted. */
+  reboot_required?: boolean;
+  /** True when cloned from a template flagged as an apps server. */
+  is_apps_server?: boolean;
 }
 
 export interface CreateUserServerInput {

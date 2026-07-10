@@ -36,20 +36,6 @@ export function ApplicationManager(props: {
   const [pushBusy, setPushBusy] = useState<Record<number, boolean>>({});
   const [pushMessages, setPushMessages] = useState<Record<number, string>>({});
   const [ownerOptions, setOwnerOptions] = useState<ApiUser[]>([]);
-  // issue_017: names of templates flagged as "Apps server", offered as a
-  // dropdown for the alias upstream host (plus a "Custom" free-text option).
-  const [appsServers, setAppsServers] = useState<string[]>([]);
-
-  useEffect(() => {
-    api
-      .listAccountServerTemplates()
-      .then((templates) =>
-        setAppsServers(
-          templates.filter((t) => t.is_apps_server).map((t) => t.name),
-        ),
-      )
-      .catch(() => setAppsServers([]));
-  }, []);
 
   const reload = useCallback(async () => {
     const [nextApps, nextUsers] = await Promise.all([
@@ -175,7 +161,7 @@ export function ApplicationManager(props: {
         <CreateApplicationCard
           isAdmin={isAdmin}
           teamOptions={teamOptions}
-          appsServers={appsServers}
+          currentUserId={props.currentUser?.id}
           defaultAppsServer={defaultAliasAppsServer(props.currentUser)}
           onCreated={(created) => {
             setCreating(false);
@@ -255,7 +241,6 @@ export function ApplicationManager(props: {
                 pushBusy={Boolean(pushBusy[app.id])}
                 pushMessage={pushMessages[app.id]}
                 ownerOptions={ownerOptions}
-                appsServers={appsServers}
                 initiallyEditing={editAppId === app.id}
                 onDelete={() =>
                   runAction(async () => {
@@ -355,6 +340,29 @@ function defaultAliasAppsServer(user?: ApiUser | null): string {
   return user?.apps_server || user?.apps_server_ip || "";
 }
 
+/** The value to prefill an alias-upstream host field with, before the user
+ * has picked anything themselves.
+ *
+ * issue_021: the account-level apps_server/apps_server_ip (``literal``) is
+ * now only a *reference* (e.g. the name of a template picked at account
+ * creation) -- it is no longer safe to assume it is itself a connectable
+ * host. It is only used directly when it already matches a known,
+ * resolved apps-server option's host (a legitimate real address), or when
+ * the owner has no provisioned apps-server servers at all (nothing better
+ * to offer, so the pre-issue_021 behavior is kept as a best effort).
+ * Otherwise the field is left blank: the dropdown still offers an explicit
+ * pick, and an untouched blank value resolves correctly at alias-push time
+ * via the backend's resolve_user_apps_server_host instead of silently
+ * saving a non-resolvable reference string as if it were a host.
+ */
+function defaultAppsServerValue(
+  literal: string,
+  options: readonly AppsServerOption[],
+): string {
+  if (!literal || options.length === 0) return literal;
+  return options.some((o) => o.value === literal) ? literal : "";
+}
+
 function normalizeAppsPath(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) return "";
@@ -373,12 +381,33 @@ function aliasUpstreamPreview(
   return `${protocol}://${cleanHost}:${cleanPort}${normalizeAppsPath(path) || "/"}`;
 }
 
+/** An owner's apps-server server, offered by name in the upstream dropdown;
+ * the value pushed/stored is the resolvable host (issue_021). */
+export type AppsServerOption = { label: string; value: string };
+
+/** The given owner's apps-server servers, as dropdown options.
+ *
+ * issue_021: replaces the old template-name list with the owner's actual
+ * provisioned apps-server servers -- the dropdown shows each server's name,
+ * but the value stored/pushed is its resolvable host (hostname, else IP).
+ * Servers without a usable host, or that failed provisioning, are excluded.
+ */
+async function fetchOwnerAppsServers(ownerId: number): Promise<AppsServerOption[]> {
+  const servers = await api.listUserServers(ownerId);
+  return servers
+    .filter(
+      (s) =>
+        s.is_apps_server && s.status !== "failed" && (s.hostname || s.ip_address),
+    )
+    .map((s) => ({ label: s.name, value: s.hostname || s.ip_address }));
+}
+
 function AliasUpstreamFields(props: {
   protocol: "http" | "https";
   host: string;
   port: string;
   path: string;
-  appsServers: readonly string[];
+  appsServers: readonly AppsServerOption[];
   onProtocolChange: (value: "http" | "https") => void;
   onHostChange: (value: string) => void;
   onPortChange: (value: string) => void;
@@ -388,7 +417,7 @@ function AliasUpstreamFields(props: {
   // The dropdown reflects a known apps server when the current host matches one;
   // otherwise it falls back to Custom with a free-text field (also the default
   // for an empty host, so manual entry stays available).
-  const isKnown = props.appsServers.includes(props.host);
+  const isKnown = props.appsServers.some((s) => s.value === props.host);
   const selectValue = isKnown ? props.host : CUSTOM;
   const showCustom = !isKnown || props.appsServers.length === 0;
   return (
@@ -417,9 +446,9 @@ function AliasUpstreamFields(props: {
             }
             aria-label="Alias upstream apps server"
           >
-            {props.appsServers.map((name) => (
-              <option key={name} value={name}>
-                {name}
+            {props.appsServers.map((s) => (
+              <option key={s.value} value={s.value}>
+                {s.label}
               </option>
             ))}
             <option value={CUSTOM}>Custom…</option>
@@ -663,7 +692,9 @@ function CreateApplicationCard(props: {
   isAdmin: boolean;
   teamOptions: readonly string[];
   defaultAppsServer: string;
-  appsServers: readonly string[];
+  /** New applications are always owned by their creator (no create-time
+   * owner picker), so the apps-server dropdown loads this user's servers. */
+  currentUserId?: number;
   onCreated: (created: Application) => void;
   onCancel: () => void;
   onError: (message: string) => void;
@@ -680,6 +711,37 @@ function CreateApplicationCard(props: {
   const [appsPath, setAppsPath] = useState("");
   const [aliasAuthRequired, setAliasAuthRequired] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [appsServerOptions, setAppsServerOptions] = useState<AppsServerOption[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    if (!props.currentUserId) {
+      setAppsServerOptions([]);
+      return () => {
+        active = false;
+      };
+    }
+    fetchOwnerAppsServers(props.currentUserId)
+      .then((options) => {
+        if (!active) return;
+        setAppsServerOptions(options);
+        // Re-resolve the prefilled default now that the owner's real
+        // apps-server hosts are known -- but only if the field is still
+        // untouched, so we never clobber a value the user already picked
+        // or typed.
+        setAppsServer((current) =>
+          current === props.defaultAppsServer
+            ? defaultAppsServerValue(props.defaultAppsServer, options)
+            : current,
+        );
+      })
+      .catch(() => {
+        if (active) setAppsServerOptions([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [props.currentUserId]);
 
   // Each alias application has its own upstream target. The host is prefilled
   // from the signed-in user's configured apps server when available.
@@ -755,7 +817,7 @@ function CreateApplicationCard(props: {
             host={appsServer}
             port={appsPort}
             path={appsPath}
-            appsServers={props.appsServers}
+            appsServers={appsServerOptions}
             onProtocolChange={setAppsProtocol}
             onHostChange={setAppsServer}
             onPortChange={setAppsPort}
@@ -815,7 +877,6 @@ function ApplicationRow(props: {
   app: Application;
   isAdmin: boolean;
   defaultAppsServer: string;
-  appsServers: readonly string[];
   canMoveUp: boolean;
   canMoveDown: boolean;
   onMoveUp: () => void;
@@ -857,6 +918,42 @@ function ApplicationRow(props: {
   );
   const [ownerId, setOwnerId] = useState(String(app.created_by_id ?? ""));
   const [logoError, setLogoError] = useState<string | null>(null);
+  const [appsServerOptions, setAppsServerOptions] = useState<AppsServerOption[]>([]);
+
+  // issue_021: the apps-server dropdown reflects the *current* owner's
+  // servers -- for a non-admin this is always self (ownerId never changes,
+  // there's no owner picker); for an admin it reloads whenever they pick a
+  // different owner in the Owner select below.
+  useEffect(() => {
+    let active = true;
+    const idNum = Number(ownerId);
+    if (!ownerId || !Number.isFinite(idNum) || idNum <= 0) {
+      setAppsServerOptions([]);
+      return () => {
+        active = false;
+      };
+    }
+    fetchOwnerAppsServers(idNum)
+      .then((options) => {
+        if (!active) return;
+        setAppsServerOptions(options);
+        // Only re-resolve when the app itself has no explicit host and the
+        // field still holds the untouched account-level default -- never
+        // clobber an app's actual saved value or a user's own edit.
+        if (app.apps_server) return;
+        setAppsServer((current) =>
+          current === props.defaultAppsServer
+            ? defaultAppsServerValue(props.defaultAppsServer, options)
+            : current,
+        );
+      })
+      .catch(() => {
+        if (active) setAppsServerOptions([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [ownerId]);
 
   useEffect(() => {
     if (props.initiallyEditing) {
@@ -873,7 +970,10 @@ function ApplicationRow(props: {
     setTeams(app.teams);
     setAppsProtocol(app.apps_protocol ?? "http");
     setAppsPort(app.apps_port ?? "");
-    setAppsServer(app.apps_server || props.defaultAppsServer);
+    setAppsServer(
+      app.apps_server ||
+        defaultAppsServerValue(props.defaultAppsServer, appsServerOptions),
+    );
     setAppsPath(app.apps_path ?? "");
     setAliasAuthRequired(app.alias_auth_required);
     setOwnerId(String(app.created_by_id ?? ""));
@@ -902,7 +1002,9 @@ function ApplicationRow(props: {
       iconUrl !== app.icon_url ||
       appsProtocol !== (app.apps_protocol ?? "http") ||
       appsPort !== (app.apps_port ?? "") ||
-      appsServer !== (app.apps_server || props.defaultAppsServer) ||
+      appsServer !==
+        (app.apps_server ||
+          defaultAppsServerValue(props.defaultAppsServer, appsServerOptions)) ||
       appsPath !== (app.apps_path ?? "") ||
       aliasAuthRequired !== app.alias_auth_required ||
       ownerId !== String(app.created_by_id ?? "") ||
@@ -917,6 +1019,7 @@ function ApplicationRow(props: {
       appsProtocol,
       appsPort,
       appsServer,
+      appsServerOptions,
       appsPath,
       aliasAuthRequired,
       ownerId,
@@ -945,7 +1048,11 @@ function ApplicationRow(props: {
         if (config.status === "ok") {
           setUrl(config.alias || app.url);
           setAppsProtocol(config.apps_protocol || "http");
-          setAppsServer(config.apps_server || app.apps_server || props.defaultAppsServer);
+          setAppsServer(
+            config.apps_server ||
+              app.apps_server ||
+              defaultAppsServerValue(props.defaultAppsServer, appsServerOptions),
+          );
           setAppsPort(config.apps_port || app.apps_port || "");
           setAppsPath(config.apps_path || "");
           setAliasAuthRequired(config.alias_auth_required);
@@ -1192,7 +1299,7 @@ function ApplicationRow(props: {
               host={appsServer}
               port={appsPort}
               path={appsPath}
-              appsServers={props.appsServers}
+              appsServers={appsServerOptions}
               onProtocolChange={setAppsProtocol}
               onHostChange={setAppsServer}
               onPortChange={setAppsPort}

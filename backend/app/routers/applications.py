@@ -69,6 +69,59 @@ def _app_out(
     )
 
 
+def resolve_user_apps_server_host(
+    conn: sqlite3.Connection, owner: dict[str, Any] | None
+) -> str:
+    """Resolve an owner's apps-server reference to a live, connectable host.
+
+    issue_021: a user's account-level ``apps_server`` is set at account
+    creation to the *name* of the apps-server template selected in the
+    create-user form (or a custom hostname/IP typed by an administrator) --
+    it is a reference, not necessarily a provisioned server's address. This
+    resolves that reference to the actual host of a live, owned apps-server
+    server whenever one exists, so alias pushes reach the real machine
+    instead of a template name that was never a valid host.
+
+    Preference order: a candidate whose own host the reference already names
+    literally (the admin typed a real hostname/IP directly), else the server
+    cloned from the template the reference names, else the owner's first
+    apps-server server (by name), else the literal stored
+    ``apps_server``/``apps_server_ip`` value (best effort -- e.g. before
+    provisioning finishes, or for legacy custom entries that already are a
+    real hostname/IP with no matching provisioned server).
+    """
+    if not owner:
+        return ""
+    reference = (owner.get("apps_server") or "").strip()
+    literal_fallback = reference or (owner.get("apps_server_ip") or "")
+    owner_id = owner.get("id")
+    if not owner_id:
+        return literal_fallback
+    candidates = [
+        s
+        for s in repository.list_user_servers(conn, owner_id)
+        if s.get("is_apps_server")
+        and s.get("status") != "failed"
+        and (s.get("hostname") or s.get("ip_address"))
+    ]
+    if not candidates:
+        return literal_fallback
+    if reference:
+        for server in candidates:
+            if reference in (server.get("hostname"), server.get("ip_address")):
+                return reference
+        templates_by_name = {
+            t["name"]: t["id"] for t in repository.list_server_templates(conn)
+        }
+        template_id = templates_by_name.get(reference)
+        if template_id is not None:
+            for server in candidates:
+                if server.get("template_id") == template_id:
+                    return server.get("hostname") or server.get("ip_address") or ""
+    first = candidates[0]
+    return first.get("hostname") or first.get("ip_address") or ""
+
+
 # Cap stored push transcripts so a verbose remote error can't bloat the row.
 _MAX_PUSH_LOG = 16000
 
@@ -133,7 +186,7 @@ def _push_alias_on_approval(
                 apps_protocol = app.get("apps_protocol") or "http"
                 apps_path = app.get("apps_path") or ""
                 apps_server = app.get("apps_server") or (
-                    (owner["apps_server"] or owner["apps_server_ip"]) if owner else ""
+                    resolve_user_apps_server_host(conn, owner) if owner else ""
                 )
                 if not (apps_server and apps_port):
                     result = reverse_proxy.PushResult(status="skipped")

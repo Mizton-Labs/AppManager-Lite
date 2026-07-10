@@ -720,9 +720,6 @@ function PolicyCard(props: {
   const [maxServers, setMaxServers] = useState(
     String(settings.provisioning_max_servers),
   );
-  const [allowResourceEdit, setAllowResourceEdit] = useState(
-    settings.provisioning_allow_resource_edit,
-  );
   const [maxCpus, setMaxCpus] = useState(String(settings.provisioning_max_cpus));
   const [maxMemory, setMaxMemory] = useState(
     String(settings.provisioning_max_memory_gb),
@@ -743,7 +740,6 @@ function PolicyCard(props: {
       const next = await api.updateProvisioningSettings({
         provisioning_self_service: selfService,
         provisioning_max_servers: Number(maxServers),
-        provisioning_allow_resource_edit: allowResourceEdit,
         provisioning_max_cpus: Number(maxCpus),
         provisioning_max_memory_gb: Number(maxMemory),
         provisioning_max_disk_gb: Number(maxDisk),
@@ -764,7 +760,9 @@ function PolicyCard(props: {
       <h2>Server provisioning policy</h2>
       <p className="muted">
         Limits applied to user-created servers. Administrator changes to a
-        user's server resources do not count against these limits.
+        user's server resources do not count against these limits. Any
+        self-service user may change their own (non-admin-managed) server's
+        resources within these limits.
       </p>
       {error && (
         <p className="alert error" role="alert">
@@ -797,14 +795,6 @@ function PolicyCard(props: {
             value={maxServers}
             onChange={(e) => setMaxServers(e.target.value)}
           />
-        </label>
-        <label className="checkbox-field">
-          <input
-            type="checkbox"
-            checked={allowResourceEdit}
-            onChange={(e) => setAllowResourceEdit(e.target.checked)}
-          />
-          <span>Allow self-service users to modify server resources</span>
         </label>
         <label className="field">
           <span>Max CPUs per user (cores)</span>

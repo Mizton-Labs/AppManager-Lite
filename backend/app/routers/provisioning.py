@@ -859,11 +859,12 @@ def get_account_server_access(
     conn: sqlite3.Connection = Depends(get_db),
 ) -> ServerAccessOut:
     row = repository.get_settings_row(conn)
-    # issue_017: a self-service user may edit their own servers' resources only
-    # when the admin has enabled it; admins may always edit.
-    allow_resource_edit = user.get("role") == "admin" or (
-        bool(user.get("self_service"))
-        and bool(row.get("provisioning_allow_resource_edit", 0))
+    # issue_021: any self-service user may edit their own (non-admin-managed)
+    # servers' resources; admins may always edit. The per-user quota (see
+    # _check_resource_quota) remains the guardrail, so the admin-toggle gate
+    # from issue_017 is no longer required.
+    allow_resource_edit = user.get("role") == "admin" or bool(
+        user.get("self_service")
     )
     if not _provider_configured(row):
         return ServerAccessOut(
@@ -910,7 +911,10 @@ def _require_self_or_admin(actor: dict[str, Any], user_id: int) -> bool:
 
 
 def _server_out(
-    server: dict[str, Any], *, include_error: bool = False
+    server: dict[str, Any],
+    *,
+    include_error: bool = False,
+    reboot_required: bool = False,
 ) -> UserServerOut:
     """Serialize a server row, deriving the deferred-deletion flags.
 
@@ -918,6 +922,10 @@ def _server_out(
     the recovery flow) see the destroy-failure detail and the provisioning
     ``last_log``; owners/non-admins never do (issue_020 hides the log from
     normal users at the API, not just the UI).
+
+    ``reboot_required`` is a transient, response-only hint (issue_021): true
+    right after a VM CPU/memory change, so the frontend can advise a reboot.
+    It is never persisted on the server row.
     """
     requested_at = server.get("deletion_requested_at", "") or ""
     error = server.get("deletion_error", "") or ""
@@ -928,6 +936,7 @@ def _server_out(
     data["deletion_error"] = error if include_error else ""
     if not include_error:
         data["last_log"] = ""
+    data["reboot_required"] = reboot_required
     return UserServerOut(**data)
 
 
@@ -1905,11 +1914,20 @@ def update_user_server(
         )
         if v is not None
     }
+    reboot_required = False
     if resource_change:
-        if server["kind"] != "lxc" or server["status"] == "failed":
+        if server["kind"] not in ("lxc", "vm") or server["status"] == "failed":
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Resources can only be changed on LXC servers",
+                detail="Resources can only be changed on LXC/VM servers",
+            )
+        if server["kind"] == "vm" and "disk_gb" in resource_change:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "VM disk size cannot be changed here; only CPU and "
+                    "memory are supported for VMs"
+                ),
             )
         if not server["vmid"] or not server["node"]:
             raise HTTPException(
@@ -1917,9 +1935,7 @@ def update_user_server(
                 detail="This server is managed outside AppManager",
             )
         if not is_admin:
-            if not actor.get("self_service") or not bool(
-                row.get("provisioning_allow_resource_edit", 0)
-            ):
+            if not actor.get("self_service"):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Resource changes are not enabled for your account",
@@ -1940,16 +1956,30 @@ def update_user_server(
             _check_resource_quota(row, usage, additional)
 
         result = proxmox.ProxmoxResult()
-        ok = proxmox.set_lxc_resources(
-            _provider_config(row),
-            server["node"],
-            server["vmid"],
-            cpus=resource_change.get("cpus"),
-            memory_gb=resource_change.get("memory_gb"),
-            disk_gb_target=resource_change.get("disk_gb"),
-            current_disk_gb=server["disk_gb"],
-            result=result,
-        )
+        if server["kind"] == "vm":
+            ok = proxmox.set_vm_resources(
+                _provider_config(row),
+                server["node"],
+                server["vmid"],
+                cpus=resource_change.get("cpus"),
+                memory_gb=resource_change.get("memory_gb"),
+                result=result,
+            )
+            reboot_required = ok and bool(
+                resource_change.get("cpus") is not None
+                or resource_change.get("memory_gb") is not None
+            )
+        else:
+            ok = proxmox.set_lxc_resources(
+                _provider_config(row),
+                server["node"],
+                server["vmid"],
+                cpus=resource_change.get("cpus"),
+                memory_gb=resource_change.get("memory_gb"),
+                disk_gb_target=resource_change.get("disk_gb"),
+                current_disk_gb=server["disk_gb"],
+                result=result,
+            )
         updated_log = (server["last_log"] + "\n\n--- resource change ---\n"
                        + result.transcript).strip()
         if not ok:
@@ -2000,7 +2030,87 @@ def update_user_server(
             f"{k}={v}" for k, v in updates.items() if k != "last_log"
         ),
     )
-    return _server_out(updated)
+    return _server_out(updated, reboot_required=reboot_required)
+
+
+@router.post(
+    "/users/{user_id}/servers/{server_id}/reboot",
+    response_model=UserServerOut,
+)
+def reboot_user_server(
+    user_id: int,
+    server_id: int,
+    actor: dict[str, Any] = Depends(get_current_user),
+    __: None = Depends(verify_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> UserServerOut:
+    """Reboot a server (LXC or VM); self-service owners and admins only.
+
+    The frontend confirms with the user before calling this; the backend
+    only enforces ownership and guest state. Rejected when the server failed
+    provisioning, has a deletion pending/failed, or Proxmox has not actually
+    created it (no vmid/node).
+    """
+    is_admin = _require_self_or_admin(actor, user_id)
+    server = repository.get_user_server(conn, user_id, server_id)
+    if server is None:
+        raise HTTPException(status_code=404, detail="Server not found")
+    if not is_admin and not actor.get("self_service"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only self-service users may reboot their servers",
+        )
+    if server["status"] == "failed":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This server failed provisioning and cannot be rebooted",
+        )
+    if server.get("deletion_requested_at") or server.get("deletion_error"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This server has a deletion pending and cannot be rebooted",
+        )
+    if not server["vmid"] or not server["node"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This server is managed outside AppManager",
+        )
+    row = repository.get_settings_row(conn)
+    result = proxmox.ProxmoxResult()
+    ok = proxmox.reboot_guest(
+        _provider_config(row),
+        server["node"],
+        server["vmid"],
+        server["kind"],
+        result=result,
+    )
+    updated_log = (server["last_log"] + "\n\n--- reboot ---\n"
+                   + result.transcript).strip()
+    updated = repository.update_user_server(
+        conn, user_id, server_id, last_log=updated_log
+    )
+    if updated is None:  # concurrently deleted
+        raise HTTPException(status_code=404, detail="Server not found")
+    if not ok:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Reboot failed: {result.transcript[-400:]}",
+        )
+    audit.record(
+        conn,
+        category=audit.CATEGORY_USER,
+        action="server_reboot",
+        actor=actor,
+        target_type="user_server",
+        target_id=server_id,
+        target_name=server["name"],
+        detail=f"kind={server['kind']}",
+    )
+    logger.info(
+        "Server reboot requested by user=%r for server id=%s (user=%s)",
+        actor.get("username"), server_id, user_id,
+    )
+    return _server_out(updated, include_error=is_admin)
 
 
 @router.delete(

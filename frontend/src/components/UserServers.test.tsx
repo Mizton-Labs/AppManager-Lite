@@ -89,6 +89,10 @@ function stubServers(
       );
       return json({ detail: "Server record removed. The guest was destroyed." });
     }
+    if (/\/api\/users\/7\/servers\/\d+\/reboot$/.test(url) &&
+        method === "POST") {
+      return json(servers.find((s) => url.includes(`/${s.id}/reboot`)));
+    }
     if (/\/api\/users\/7\/servers\/\d+$/.test(url) && method === "PATCH") {
       const body = JSON.parse(init?.body as string);
       servers = servers.map((s) =>
@@ -487,10 +491,31 @@ describe("UserServersPanel", () => {
       />,
     );
     await screen.findByText("coder box - 10.0.7.42");
-    await userEvent.click(screen.getByRole("button", { name: /^Edit$/ }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /^Change resources$/ }),
+    );
     expect(screen.getByLabelText("CPUs")).toBeInTheDocument();
     expect(screen.getByLabelText("Memory (GB)")).toBeInTheDocument();
     expect(screen.getByLabelText("Disk (GB)")).toBeInTheDocument();
+  });
+
+  it("hides the Disk field for VM servers", async () => {
+    stubServers([makeServer({ kind: "vm" })]);
+    render(
+      <UserServersPanel
+        userId={7}
+        canCreate={false}
+        canDelete={false}
+        allowResourceEdit
+      />,
+    );
+    await screen.findByText("coder box - 10.0.7.42");
+    await userEvent.click(
+      screen.getByRole("button", { name: /^Change resources$/ }),
+    );
+    expect(screen.getByLabelText("CPUs")).toBeInTheDocument();
+    expect(screen.getByLabelText("Memory (GB)")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Disk (GB)")).toBeNull();
   });
 
   it("hides the editor for admin-managed or non-eligible servers", async () => {
@@ -504,14 +529,18 @@ describe("UserServersPanel", () => {
       />,
     );
     await screen.findByText("coder box - 10.0.7.42");
-    expect(screen.queryByRole("button", { name: /^Edit$/ })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /^Change resources$/ }),
+    ).toBeNull();
   });
 
   it("hides the editor entirely when editing is not allowed", async () => {
     stubServers([makeServer()]);
     render(<UserServersPanel userId={7} canCreate={false} canDelete={false} />);
     await screen.findByText("coder box - 10.0.7.42");
-    expect(screen.queryByRole("button", { name: /^Edit$/ })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /^Change resources$/ }),
+    ).toBeNull();
   });
 
   it("saves changed resources via the update endpoint", async () => {
@@ -525,7 +554,9 @@ describe("UserServersPanel", () => {
       />,
     );
     await screen.findByText("coder box - 10.0.7.42");
-    await userEvent.click(screen.getByRole("button", { name: /^Edit$/ }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /^Change resources$/ }),
+    );
     const cpus = screen.getByLabelText("CPUs");
     await userEvent.clear(cpus);
     await userEvent.type(cpus, "4");
@@ -539,6 +570,68 @@ describe("UserServersPanel", () => {
     );
     expect(patch).toBeTruthy();
     expect(JSON.parse(patch![1]!.body as string)).toMatchObject({ cpus: 4 });
+  });
+
+  it("shows a reboot advisory after a VM resource change, and reboots on confirm", async () => {
+    let servers = [makeServer({ kind: "vm" })];
+    const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      const json = (payload: unknown, status = 200) =>
+        ({ ok: status < 400, status, json: async () => payload }) as Response;
+      if (url.endsWith("/api/account/server-templates")) return json([]);
+      if (/\/servers\/usage$/.test(url)) {
+        return json({
+          unlimited: false,
+          servers: { used: 1, limit: 3 },
+          cpus: { used: 2, limit: 12 },
+          memory_gb: { used: 4, limit: 24 },
+          disk_gb: { used: 20, limit: 200 },
+        });
+      }
+      if (/\/api\/users\/7\/servers$/.test(url) && method === "GET")
+        return json(servers);
+      if (/\/api\/users\/7\/servers\/\d+$/.test(url) && method === "PATCH") {
+        const body = JSON.parse(init?.body as string);
+        servers = servers.map((s) => ({ ...s, ...body }));
+        return json({ ...servers[0], reboot_required: true });
+      }
+      if (/\/api\/users\/7\/servers\/\d+\/reboot$/.test(url) && method === "POST") {
+        return json(servers[0]);
+      }
+      return json({ detail: "unexpected" }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <UserServersPanel
+        userId={7}
+        canCreate={false}
+        canDelete={false}
+        allowResourceEdit
+      />,
+    );
+    await screen.findByText("coder box - 10.0.7.42");
+    await userEvent.click(
+      screen.getByRole("button", { name: /^Change resources$/ }),
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: /save resources/i }),
+    );
+    expect(
+      await screen.findByText(/a reboot is required/i),
+    ).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /^Reboot$/ }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /^Confirm reboot$/ }),
+    );
+    const reboot = fetchMock.mock.calls.find(
+      (c) =>
+        /\/api\/users\/7\/servers\/1\/reboot$/.test(String(c[0])) &&
+        (c[1]?.method ?? "").toUpperCase() === "POST",
+    );
+    expect(reboot).toBeTruthy();
   });
 
   it("surfaces a backend error when a resource change is rejected", async () => {
@@ -576,7 +669,9 @@ describe("UserServersPanel", () => {
       />,
     );
     await screen.findByText("coder box - 10.0.7.42");
-    await userEvent.click(screen.getByRole("button", { name: /^Edit$/ }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /^Change resources$/ }),
+    );
     await userEvent.click(
       screen.getByRole("button", { name: /save resources/i }),
     );

@@ -1935,6 +1935,10 @@ def delete_server_template(conn: sqlite3.Connection, template_id: int) -> bool:
 
 
 def _row_to_user_server(row: sqlite3.Row) -> dict[str, Any]:
+    # ``tpl_is_apps_server`` is only present when the query joined
+    # server_templates (issue_021); queries that never need it (e.g. the
+    # deletion sweep) omit the join and default to False here.
+    keys = row.keys()
     return {
         "id": row["id"],
         "user_id": row["user_id"],
@@ -1959,14 +1963,26 @@ def _row_to_user_server(row: sqlite3.Row) -> dict[str, Any]:
         "deletion_requested_at": row["deletion_requested_at"],
         "deletion_error": row["deletion_error"],
         "created_at": row["created_at"],
+        # issue_021: True when the server's template is (still) flagged
+        # is_apps_server. A deleted template (template_id set NULL) yields
+        # False via the LEFT JOIN, never a stale True.
+        "is_apps_server": bool(row["tpl_is_apps_server"])
+        if "tpl_is_apps_server" in keys else False,
     }
+
+
+_USER_SERVER_SELECT = (
+    "SELECT us.*, st.is_apps_server AS tpl_is_apps_server "
+    "FROM user_servers us "
+    "LEFT JOIN server_templates st ON st.id = us.template_id "
+)
 
 
 def list_user_servers(
     conn: sqlite3.Connection, user_id: int
 ) -> list[dict[str, Any]]:
     rows = conn.execute(
-        "SELECT * FROM user_servers WHERE user_id = ? ORDER BY name, id",
+        _USER_SERVER_SELECT + "WHERE us.user_id = ? ORDER BY us.name, us.id",
         (user_id,),
     ).fetchall()
     return [_row_to_user_server(r) for r in rows]
@@ -1992,8 +2008,10 @@ def list_all_servers(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     username as needed.
     """
     rows = conn.execute(
-        "SELECT s.*, u.username AS owner_username "
+        "SELECT s.*, u.username AS owner_username, "
+        "st.is_apps_server AS tpl_is_apps_server "
         "FROM user_servers s JOIN users u ON u.id = s.user_id "
+        "LEFT JOIN server_templates st ON st.id = s.template_id "
         "ORDER BY u.username, s.name, s.id"
     ).fetchall()
     out: list[dict[str, Any]] = []
@@ -2008,7 +2026,7 @@ def get_user_server(
     conn: sqlite3.Connection, user_id: int, server_id: int
 ) -> dict[str, Any] | None:
     row = conn.execute(
-        "SELECT * FROM user_servers WHERE id = ? AND user_id = ?",
+        _USER_SERVER_SELECT + "WHERE us.id = ? AND us.user_id = ?",
         (server_id, user_id),
     ).fetchone()
     return _row_to_user_server(row) if row else None

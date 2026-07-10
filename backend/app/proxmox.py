@@ -666,6 +666,66 @@ def set_lxc_resources(
     return True
 
 
+def set_vm_resources(
+    config: dict[str, Any],
+    node: str,
+    vmid: int,
+    *,
+    cpus: int | None = None,
+    memory_gb: int | None = None,
+    result: ProxmoxResult,
+) -> bool:
+    """Apply CPU/memory config changes to a VM (qemu). No disk resize here:
+
+    VM disks are intentionally out of scope for self-service edits (unlike
+    LXC rootfs growth, VM disk resize interacts with the guest's partition
+    table/filesystem and is not safely automatable), so callers must reject
+    a disk change before reaching this helper.
+    """
+    body: dict[str, Any] = {}
+    if cpus is not None:
+        body["cores"] = cpus
+    if memory_gb is not None:
+        body["memory"] = memory_gb * 1024
+    if not body:
+        return True
+    _call(
+        config, "PUT", f"/nodes/{node}/qemu/{vmid}/config",
+        result=result, json_body=body,
+    )
+    if result.status != "ok":
+        return False
+    result.log(f"Updated config: {sorted(body)}")
+    return True
+
+
+_REBOOT_BUDGET_SECONDS = 60.0
+
+
+def reboot_guest(
+    config: dict[str, Any],
+    node: str,
+    vmid: int,
+    kind: str,
+    *,
+    result: ProxmoxResult,
+) -> bool:
+    """Reboot a running guest (LXC or VM) via the Proxmox reboot task."""
+    upid = _call(
+        config,
+        "POST",
+        f"/nodes/{quote(node, safe='')}/{_guest_path(kind)}/{vmid}/status/reboot",
+        result=result,
+        json_body={},
+    )
+    if result.status != "ok":
+        return False
+    return _wait_task(
+        config, node, upid, result=result,
+        budget=_REBOOT_BUDGET_SECONDS, label="reboot",
+    )
+
+
 # Timeframes the Proxmox RRD API accepts for guest usage graphs.
 RRD_TIMEFRAMES = ("hour", "day", "week", "month", "year")
 

@@ -16,7 +16,6 @@ const defaults: ProvisioningSettings = {
   proxmox_conn_log: "",
   provisioning_self_service: false,
   provisioning_max_servers: 3,
-  provisioning_allow_resource_edit: false,
   provisioning_max_cpus: 12,
   provisioning_max_memory_gb: 24,
   provisioning_max_disk_gb: 200,

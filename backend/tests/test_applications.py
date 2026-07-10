@@ -1129,3 +1129,143 @@ def test_create_rejects_logo_path_traversal(admin) -> None:
     ):
         resp = _create_app(client, csrf, icon_url=bad)
         assert resp.status_code == 422, f"expected 422 for {bad!r}, got {resp.status_code}"
+
+
+# ---------------------------------------------------------------------------
+# issue_021: apps-server reference resolution (account apps_server is a
+# template-name reference set at user creation; it resolves to the real host
+# of a live, owned apps-server server at alias-push time).
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_user_apps_server_host_prefers_creation_template(admin) -> None:
+    from app.db import get_connection
+    from app import repository
+    from app.routers.applications import resolve_user_apps_server_host
+
+    client, csrf, _ = admin
+    owner = client.post(
+        "/api/users",
+        json={
+            "username": "resolver@example.com", "role": "user", "teams": [],
+            "apps_server": "AppsTemplate",
+        },
+        headers={"X-CSRF-Token": csrf},
+    ).json()["user"]
+
+    with get_connection() as conn:
+        other_template = repository.create_server_template(
+            conn, vmid=9001, name="OtherTemplate", kind="lxc",
+            is_apps_server=True,
+        )
+        creation_template = repository.create_server_template(
+            conn, vmid=9002, name="AppsTemplate", kind="lxc",
+            is_apps_server=True,
+        )
+        # Alphabetically first, but NOT the template referenced at creation.
+        repository.create_user_server(
+            conn, user_id=owner["id"], name="aaa-other",
+            hostname="other.internal", template_id=other_template["id"],
+            template_name=other_template["name"], kind="lxc", status="created",
+        )
+        # Alphabetically last, but IS the template referenced at creation.
+        repository.create_user_server(
+            conn, user_id=owner["id"], name="zzz-target",
+            hostname="target.internal", template_id=creation_template["id"],
+            template_name=creation_template["name"], kind="lxc",
+            status="created",
+        )
+        owner_row = repository.get_user_by_id(conn, owner["id"])
+        host = resolve_user_apps_server_host(conn, owner_row)
+    assert host == "target.internal"
+
+
+def test_resolve_user_apps_server_host_falls_back_to_first_then_literal(
+    admin,
+) -> None:
+    from app.db import get_connection
+    from app import repository
+    from app.routers.applications import resolve_user_apps_server_host
+
+    client, csrf, _ = admin
+    owner = client.post(
+        "/api/users",
+        json={
+            "username": "resolver2@example.com", "role": "user", "teams": [],
+            "apps_server": "no-such-template",
+        },
+        headers={"X-CSRF-Token": csrf},
+    ).json()["user"]
+
+    with get_connection() as conn:
+        owner_row = repository.get_user_by_id(conn, owner["id"])
+        # No apps-server servers yet: the literal reference is best effort.
+        assert (
+            resolve_user_apps_server_host(conn, owner_row)
+            == "no-such-template"
+        )
+
+        template = repository.create_server_template(
+            conn, vmid=9003, name="SomeTemplate", kind="lxc",
+            is_apps_server=True,
+        )
+        repository.create_user_server(
+            conn, user_id=owner["id"], name="first-server",
+            hostname="first.internal", template_id=template["id"],
+            template_name=template["name"], kind="lxc", status="created",
+        )
+        owner_row = repository.get_user_by_id(conn, owner["id"])
+        # Reference doesn't match any template: falls back to the first
+        # apps-server server.
+        assert (
+            resolve_user_apps_server_host(conn, owner_row)
+            == "first.internal"
+        )
+
+
+def test_resolve_user_apps_server_host_literal_matches_a_candidate_host(
+    admin,
+) -> None:
+    """When the admin typed a real hostname/IP directly (not a template
+    name) that happens to match one of the owner's servers, prefer it over
+    the alphabetically-first server."""
+    from app.db import get_connection
+    from app import repository
+    from app.routers.applications import resolve_user_apps_server_host
+
+    client, csrf, _ = admin
+    owner = client.post(
+        "/api/users",
+        json={
+            "username": "resolver3@example.com", "role": "user", "teams": [],
+            "apps_server": "second.internal",
+        },
+        headers={"X-CSRF-Token": csrf},
+    ).json()["user"]
+
+    with get_connection() as conn:
+        template = repository.create_server_template(
+            conn, vmid=9004, name="SomeTemplate", kind="lxc",
+            is_apps_server=True,
+        )
+        # Alphabetically first, but not the referenced literal host.
+        repository.create_user_server(
+            conn, user_id=owner["id"], name="aaa-first",
+            hostname="first.internal", template_id=template["id"],
+            template_name=template["name"], kind="lxc", status="created",
+        )
+        # Alphabetically last, but its host matches the literal reference.
+        repository.create_user_server(
+            conn, user_id=owner["id"], name="zzz-second",
+            hostname="second.internal", template_id=template["id"],
+            template_name=template["name"], kind="lxc", status="created",
+        )
+        owner_row = repository.get_user_by_id(conn, owner["id"])
+        host = resolve_user_apps_server_host(conn, owner_row)
+    assert host == "second.internal"
+
+
+def test_resolve_user_apps_server_host_none_owner_returns_empty() -> None:
+    from app.routers.applications import resolve_user_apps_server_host
+
+    assert resolve_user_apps_server_host(None, None) == ""

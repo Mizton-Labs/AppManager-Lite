@@ -352,6 +352,13 @@ export const api = {
       { method: "POST" },
     ),
 
+  /** Reboot a server (LXC or VM); self-service owner or admin. */
+  rebootUserServer: (userId: number, serverId: number) =>
+    request<UserServer>(
+      `users/${userId}/servers/${serverId}/reboot`,
+      { method: "POST" },
+    ),
+
   /** Admin-only: force-remove a server record (even if its destroy failed). */
   forceRemoveServer: (userId: number, serverId: number) =>
     request<{ detail: string }>(
