@@ -61,6 +61,8 @@
       "entrypoint": "frontend/src/main.tsx",
       "keyModules": [
         { "path": "frontend/src/App.tsx", "role": "Top-level auth/session bootstrap and routing shell selection." },
+        { "path": "frontend/src/theme.tsx", "role": "Browser-local theme preference, root application, and shared React theme provider; Dark-modern is the fallback." },
+        { "path": "frontend/src/components/ThemePicker.tsx", "role": "Shared accessible four-theme selector used on login, forced-password change, and portal header." },
         { "path": "frontend/src/api.ts", "role": "Typed API client; attaches CSRF on non-GET requests." },
         { "path": "frontend/src/types.ts", "role": "Shared TypeScript types for API entities." },
         { "path": "frontend/src/branding.ts", "role": "Configurable app name/logo and source repository URL." },
@@ -77,11 +79,13 @@
         { "path": "frontend/src/components/TeamManagement.tsx", "role": "Admin team management: create, rename, icon, reorder, delete." },
         { "path": "frontend/src/components/GeneralSettings.tsx", "role": "Branding and reverse-proxy configuration forms." },
         { "path": "frontend/src/components/AuditView.tsx", "role": "Admin audit-log viewer." },
+        { "path": "frontend/src/components/AboutView.tsx", "role": "Build metadata, canonical linked GitHub development-team handles, and runtime collaborators." },
         { "path": "frontend/src/components/ServersView.tsx", "role": "Servers section: all servers grouped by owner with compact usage charts (admins see all; users see their own)." },
         { "path": "frontend/src/components/Sparkline.tsx", "role": "Dependency-free compact SVG sparkline used by the server usage charts." },
         { "path": "frontend/src/lib", "role": "Helpers: links, image resize, clipboard, password." },
         { "path": "frontend/public/team-icons", "role": "Bundled team-icon SVG catalogue (generic-IT and cybersecurity sets)." },
-        { "path": "frontend/public/logos", "role": "Bundled default application-logo SVG catalogue." }
+        { "path": "frontend/public/logos", "role": "Bundled default application-logo SVG catalogue." },
+        { "path": "frontend/public/theme-init.js", "role": "Prepaint browser-local theme initializer loaded before React to avoid a default-theme flash." }
       ]
     },
     {

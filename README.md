@@ -726,6 +726,22 @@ The Home page shows two groups of applications:
 Each card shows a small team-scope badge for the team(s) the application belongs
 to, so it is clear where a tool comes from.
 
+## Themes
+
+The portal includes four visual themes, selectable from the sign-in card and
+the authenticated header:
+
+- **Dark modern** — the default layered dark theme.
+- **Light** — a clear light interface for bright environments.
+- **Energy** — a dark warm-accent theme.
+- **Classic** — the original portal appearance.
+
+The preference is stored locally in the browser, applies immediately on every
+screen (including sign-in and forced password change), and is restored on the
+next visit. It is intentionally browser-local rather than attached to the user
+account. The initial document applies the saved value before React loads, so a
+saved non-default theme does not flash the default palette on startup.
+
 ## About
 
 The **About** page (sidebar, after Settings) shows the application
@@ -736,7 +752,10 @@ build time from `package.json` and the git commit history; because the
 lifecycle script rebuilds the frontend when the commit changes, a `start`/
 `restart` after a new commit refreshes them automatically (or use `--rebuild`).
 
-The **development team** is derived only from the repository's commit authors.
+The **development team** is derived only from the repository's commit authors,
+canonicalized through `.mailmap` to GitHub handles, and displayed once per
+handle as a link to that profile (for example, `@jusafing`). This keeps multiple
+Git names or emails for one contributor from producing duplicate entries.
 **Collaborators** are a separate, internal list set by administrators in
 **Settings → General Settings → About Collaborators** (a name textbox with Add,
 each entry removable, then Save) and are shown as their own row beneath the
