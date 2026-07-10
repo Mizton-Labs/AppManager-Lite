@@ -672,8 +672,22 @@ access default on):
   servers that share the same main user: each server generates its own keypair
   locally (private keys never leave the servers or touch AppManager) and every
   server's public key is installed on the others, so the user's servers can
-  reach each other. The mesh is reconciled whenever a trusted server is created
-  or a VM's IP is entered.
+  reach each other. **A main OS user is required** — trusted access needs a
+  shared OS account to key, so a template with trusted access enabled but no
+  main user forms no mesh (the template editor warns about this). The mesh is
+  reconciled whenever a trusted server is created, a VM's IP is entered, and
+  lazily when the server list is loaded if a server acquired its IP only after
+  creation (so an LXC whose address arrived late is still joined). Every
+  reachable group of the user's trusted servers sharing a main user is meshed,
+  even across different templates. The mesh reaches each server as **root**
+  using that server's template admin key, so the **template image must
+  authorize the admin key for root** (`PermitRootLogin` + the key in root's
+  `authorized_keys`); when it doesn't, the mesh records a clear, actionable
+  error instead of silently doing nothing. Each per-server mesh outcome
+  (established / skipped / failed, with the reason) is recorded on the server's
+  provisioning log and in the audit trail (`server_mesh`). Transient
+  "sshd not ready yet" conditions are retried briefly and otherwise re-tried on
+  the next reconcile.
 
 ## Remote Access (SSH key registry)
 
@@ -747,20 +761,21 @@ via the Proxmox API: **LXC** servers support CPU, memory, and grow-only disk;
 **VM** servers support CPU and memory only (VM disk resize is out of scope for
 self-service edits, since it isn't safely automatable) and a **reboot is
 advised** afterwards for the change to take effect. Any self-service user may
-change resources on their own non-admin-managed server, within their
-remaining quota — no administrator opt-in is required.
+change resources on **their own** server — including servers an administrator
+provisioned for them — within their remaining quota; no administrator opt-in is
+required. (Servers an administrator sized stay exempt from the user's quota, but
+that no longer prevents the owner from resizing them.)
 
-Each server card in the **Account** page always shows the server's assigned
+Each server card in the **Servers** section always shows the server's assigned
 CPU/memory/disk (or "Resources: not recorded" when the specs were never
 captured, e.g. for reference servers). Specs missing from older records are
 lazily read back from Proxmox and stored the next time the list loads. On an
-eligible server (own or admin's, LXC or VM, not admin-managed), a **"Change
-resources"** button opens an editor bounded by the per-user limits; LXC disk
-can only be grown, and VMs hide the disk field entirely and show a reboot
-reminder after saving. A separate **Reboot** button (with a confirm step) is
-available on any eligible LXC or VM server to its self-service owner or an
-administrator — including admin-managed servers, since a reboot is a plain
-power operation, not a resource change.
+eligible server (own, or any server for an admin; LXC or VM; not failed or
+pending deletion), a **"Change resources"** button opens an editor bounded by
+the per-user limits; LXC disk can only be grown, and VMs hide the disk field
+entirely and show a reboot reminder after saving. A separate **Reboot** button
+(with a confirm step) is available on any eligible LXC or VM server to its
+self-service owner or an administrator.
 
 Deleting a server is **deferred and reversible for 24 hours**. After an
 explicit "this is permanent" confirmation, the server enters a **deletion

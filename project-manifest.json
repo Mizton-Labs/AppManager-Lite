@@ -334,7 +334,7 @@
       },
       {
         "name": "audit_log",
-        "description": "Audit trail of actions, grouped by category (application, user, system).",
+        "description": "Audit trail of actions, grouped by category (application, user, system). User-category server actions include server_create, server_update, server_reboot, server_delete/cancel, and server_mesh (trusted SSH mesh outcome: established/skipped/failed with the reason).",
         "columns": ["id", "created_at", "category", "action", "actor_id", "actor_username", "target_type", "target_id", "target_name", "detail"],
         "primaryKey": ["id"]
       },
@@ -358,7 +358,7 @@
       },
       {
         "name": "user_servers",
-        "description": "Per-user provisioned or referenced LXC/VM servers with resource accounting (admin_modified rows are exempt from user quotas) and a secret-free creation transcript. Supports deferred deletion: deletion_requested_at marks a pending deletion (24-hour grace before the guest is destroyed) and deletion_error records a destroy failure (admin-only recovery). The API's is_apps_server flag is derived live from template_id's server_templates.is_apps_server (a deleted template yields false, never stale).",
+        "description": "Per-user provisioned or referenced LXC/VM servers with resource accounting and a secret-free creation transcript. admin_modified marks a server whose size was set by an administrator (admin resource edits are not quota-gated); it no longer prevents the self-service owner from resizing their own server (issue_023 -- quota still applies to the owner). Supports deferred deletion: deletion_requested_at marks a pending deletion (24-hour grace before the guest is destroyed) and deletion_error records a destroy failure (admin-only recovery). The API's is_apps_server flag is derived live from template_id's server_templates.is_apps_server (a deleted template yields false, never stale). Trusted-access servers sharing a template main OS user are SSH-meshed (see the server_mesh audit action).",
         "columns": ["id", "user_id", "name", "hostname", "template_id", "template_name", "vmid", "node", "kind", "ip_address", "cpus", "memory_gb", "disk_gb", "admin_modified", "admin_ssh_key_path", "admin_ssh_key_id", "status", "last_log", "deletion_requested_at", "deletion_error", "created_at", "updated_at"],
         "primaryKey": ["id"],
         "foreignKeys": ["user_id -> users.id (cascade)", "template_id -> server_templates.id (set null)"]
