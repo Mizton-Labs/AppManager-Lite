@@ -117,6 +117,14 @@ function stubProvisioning(initial: Partial<ProvisioningSettings> = {}) {
       serverTemplates = [{ id: 1, ...body }];
       return json(serverTemplates[0], 201);
     }
+    if (url.includes("/api/settings/server-templates/") && method === "PATCH") {
+      const id = Number(url.split("/").pop());
+      const body = JSON.parse(init?.body as string);
+      serverTemplates = serverTemplates.map((t) =>
+        (t as { id: number }).id === id ? { ...(t as object), ...body } : t,
+      );
+      return json(serverTemplates.find((t) => (t as { id: number }).id === id));
+    }
     if (url.includes("/api/settings/server-templates/") && method === "DELETE") {
       serverTemplates = [];
       return json({ detail: "Server template deleted" });
@@ -162,6 +170,49 @@ describe("ServerProvisioning apps-server flag (issue_017)", () => {
       is_apps_server: true,
     });
     expect(await screen.findByText("Apps server")).toBeInTheDocument();
+  });
+
+  it("edits an existing template and PATCHes the changed fields", async () => {
+    const fetchMock = stubProvisioning();
+    render(<ServerProvisioning />);
+    await openTab(/Server Templates/i);
+
+    // Create a template first so the list has an entry to edit.
+    await screen.findByRole("heading", { name: /add server template/i });
+    await userEvent.type(screen.getByLabelText(/LXC\/VM ID/i), "9001");
+    await userEvent.type(screen.getByLabelText(/Template name/i), "coder");
+    await userEvent.click(
+      screen.getByRole("button", { name: /add template/i }),
+    );
+
+    // Open the edit form for the listed template.
+    await userEvent.click(await screen.findByRole("button", { name: /^Edit$/ }));
+    // The edit form is prefilled with the template's current name.
+    const nameInput = await screen.findByDisplayValue("coder");
+    await userEvent.clear(nameInput);
+    await userEvent.type(nameInput, "coder-edited");
+    // Two "Apps server" checkboxes exist (add + edit forms); toggle the edit
+    // one, which sits inside the same form as the Save changes button.
+    const appsCheckboxes = screen.getAllByRole("checkbox", {
+      name: /apps server/i,
+    });
+    await userEvent.click(appsCheckboxes[appsCheckboxes.length - 1]);
+    await userEvent.click(
+      screen.getByRole("button", { name: /save changes/i }),
+    );
+
+    const patch = fetchMock.mock.calls.find(
+      (c) =>
+        /\/api\/settings\/server-templates\/1$/.test(String(c[0])) &&
+        (c[1]?.method ?? "GET").toUpperCase() === "PATCH",
+    );
+    expect(patch).toBeTruthy();
+    expect(JSON.parse(patch![1]!.body as string)).toMatchObject({
+      name: "coder-edited",
+      is_apps_server: true,
+    });
+    // The list reflects the new name.
+    expect(await screen.findByText("coder-edited")).toBeInTheDocument();
   });
 });
 

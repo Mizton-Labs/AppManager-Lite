@@ -373,6 +373,9 @@ export interface UpdateServerTemplateInput {
   kind?: "lxc" | "vm";
   admin_ssh_key_path?: string;
   admin_ssh_key_id?: number | null;
+  main_os_user?: string;
+  enable_sudo?: boolean;
+  enable_trusted_access?: boolean;
   is_apps_server?: boolean;
 }
 

@@ -1078,6 +1078,7 @@ function ServerTemplatesListCard(props: {
   onDeleted: () => Promise<void> | void;
 }) {
   const { templates, sshKeys, loading } = props;
+  const [editingId, setEditingId] = useState<number | null>(null);
 
   async function onDelete(template: ServerTemplate) {
     props.onError(null);
@@ -1109,6 +1110,7 @@ function ServerTemplatesListCard(props: {
                 ? sshKeys.find((k) => k.id === template.admin_ssh_key_id)
                     ?.name ?? `#${template.admin_ssh_key_id}`
                 : template.admin_ssh_key_path || null;
+            const isEditing = editingId === template.id;
             return (
               <article key={template.id} className="user-card">
                 <div className="user-card-head">
@@ -1122,6 +1124,15 @@ function ServerTemplatesListCard(props: {
                   <div className="row-actions">
                     <button
                       type="button"
+                      className="btn ghost"
+                      onClick={() =>
+                        setEditingId(isEditing ? null : template.id)
+                      }
+                    >
+                      {isEditing ? "Close" : "Edit"}
+                    </button>
+                    <button
+                      type="button"
                       className="btn danger"
                       onClick={() => onDelete(template)}
                     >
@@ -1129,40 +1140,215 @@ function ServerTemplatesListCard(props: {
                     </button>
                   </div>
                 </div>
-                <div className="badge-row">
-                  <span className="status-badge">
-                    Main user: {template.main_os_user || "(user's own ID)"}
-                  </span>
-                  <span
-                    className={
-                      template.enable_sudo
-                        ? "status-badge ok"
-                        : "status-badge off"
-                    }
-                  >
-                    Sudo: {template.enable_sudo ? "on" : "off"}
-                  </span>
-                  <span
-                    className={
-                      template.enable_trusted_access
-                        ? "status-badge ok"
-                        : "status-badge off"
-                    }
-                  >
-                    Trusted SSH: {template.enable_trusted_access ? "on" : "off"}
-                  </span>
-                  {template.is_apps_server && (
-                    <span className="status-badge ok">Apps server</span>
-                  )}
-                </div>
-                <p className="muted">
-                  Admin key: {adminKey ?? "None"}
-                </p>
+                {isEditing ? (
+                  <EditServerTemplateForm
+                    template={template}
+                    sshKeys={sshKeys}
+                    onError={props.onError}
+                    onCancel={() => setEditingId(null)}
+                    onSaved={async () => {
+                      setEditingId(null);
+                      await props.onDeleted();
+                    }}
+                  />
+                ) : (
+                  <>
+                    <div className="badge-row">
+                      <span className="status-badge">
+                        Main user: {template.main_os_user || "(user's own ID)"}
+                      </span>
+                      <span
+                        className={
+                          template.enable_sudo
+                            ? "status-badge ok"
+                            : "status-badge off"
+                        }
+                      >
+                        Sudo: {template.enable_sudo ? "on" : "off"}
+                      </span>
+                      <span
+                        className={
+                          template.enable_trusted_access
+                            ? "status-badge ok"
+                            : "status-badge off"
+                        }
+                      >
+                        Trusted SSH:{" "}
+                        {template.enable_trusted_access ? "on" : "off"}
+                      </span>
+                      {template.is_apps_server && (
+                        <span className="status-badge ok">Apps server</span>
+                      )}
+                    </div>
+                    <p className="muted">Admin key: {adminKey ?? "None"}</p>
+                  </>
+                )}
               </article>
             );
           })}
         </div>
       )}
     </section>
+  );
+}
+
+/** Inline edit form for an existing server template (issue_018). */
+function EditServerTemplateForm(props: {
+  template: ServerTemplate;
+  sshKeys: SshKey[];
+  onError: (message: string | null) => void;
+  onCancel: () => void;
+  onSaved: () => Promise<void> | void;
+}) {
+  const { template, sshKeys } = props;
+  const [vmid, setVmid] = useState(String(template.vmid));
+  const [name, setName] = useState(template.name);
+  const [kind, setKind] = useState<"lxc" | "vm">(template.kind);
+  const [keyId, setKeyId] = useState(
+    template.admin_ssh_key_id !== null ? String(template.admin_ssh_key_id) : "",
+  );
+  const [mainUser, setMainUser] = useState(template.main_os_user);
+  const [enableSudo, setEnableSudo] = useState(template.enable_sudo);
+  const [enableTrusted, setEnableTrusted] = useState(
+    template.enable_trusted_access,
+  );
+  const [isAppsServer, setIsAppsServer] = useState(template.is_apps_server);
+  const [busy, setBusy] = useState(false);
+
+  async function onSave(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    props.onError(null);
+    try {
+      await api.updateServerTemplate(template.id, {
+        vmid: Number(vmid),
+        name: name.trim(),
+        kind,
+        // Explicit null clears the assigned key; a value sets it.
+        admin_ssh_key_id: keyId ? Number(keyId) : null,
+        main_os_user: mainUser.trim(),
+        enable_sudo: enableSudo,
+        enable_trusted_access: enableTrusted,
+        is_apps_server: isAppsServer,
+      });
+      await props.onSaved();
+    } catch (err) {
+      props.onError(
+        err instanceof ApiError ? err.message : "Unable to update the template.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="create-form" onSubmit={onSave}>
+      <label className="field">
+        <span>LXC/VM ID</span>
+        <input
+          type="number"
+          min={1}
+          value={vmid}
+          onChange={(e) => setVmid(e.target.value)}
+          required
+        />
+      </label>
+      <label className="field">
+        <span>Template name</span>
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          maxLength={60}
+          required
+        />
+      </label>
+      <fieldset className="field">
+        <legend>Template type</legend>
+        <label className="checkbox-field">
+          <input
+            type="radio"
+            name={`edit-template-kind-${template.id}`}
+            checked={kind === "lxc"}
+            onChange={() => setKind("lxc")}
+          />
+          <span>Existing LXC template</span>
+        </label>
+        <label className="checkbox-field">
+          <input
+            type="radio"
+            name={`edit-template-kind-${template.id}`}
+            checked={kind === "vm"}
+            onChange={() => setKind("vm")}
+          />
+          <span>Existing VM template</span>
+        </label>
+      </fieldset>
+      <label className="field">
+        <span>Admin SSH key (optional)</span>
+        <select value={keyId} onChange={(e) => setKeyId(e.target.value)}>
+          <option value="">None</option>
+          {sshKeys.map((k) => (
+            <option key={k.id} value={k.id}>
+              {k.name} ({k.kind})
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="field">
+        <span>Main user (OS account, optional)</span>
+        <input
+          value={mainUser}
+          onChange={(e) => setMainUser(e.target.value)}
+          placeholder="e.g. coder (blank = the user's own ID)"
+          maxLength={32}
+        />
+      </label>
+      <label className="checkbox-field">
+        <input
+          type="checkbox"
+          checked={enableSudo}
+          onChange={(e) => setEnableSudo(e.target.checked)}
+        />
+        <span>Grant the main user sudo access on the server</span>
+      </label>
+      <label className="checkbox-field">
+        <input
+          type="checkbox"
+          checked={enableTrusted}
+          onChange={(e) => setEnableTrusted(e.target.checked)}
+        />
+        <span>
+          Enable trusted SSH access (the user's servers can reach each other)
+        </span>
+      </label>
+      <label className="checkbox-field">
+        <input
+          type="checkbox"
+          checked={isAppsServer}
+          onChange={(e) => setIsAppsServer(e.target.checked)}
+        />
+        <span>
+          Apps server (offer this template's name as an apps-server option when
+          creating users and applications)
+        </span>
+      </label>
+      <div className="row-actions">
+        <button
+          type="submit"
+          className="btn primary"
+          disabled={busy || !vmid || !name.trim()}
+        >
+          {busy ? "Saving..." : "Save changes"}
+        </button>
+        <button
+          type="button"
+          className="btn ghost"
+          disabled={busy}
+          onClick={props.onCancel}
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
   );
 }
