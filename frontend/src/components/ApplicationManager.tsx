@@ -142,13 +142,23 @@ export function ApplicationManager(props: {
   // Run an action that returns the affected application, then surface its push
   // status as a transient notice next to that application's name.
   const runPushAction = useCallback(
-    async (appId: number, action: () => Promise<Application>) => {
+    async (
+      appId: number,
+      action: () => Promise<Application>,
+      opts?: { onlyIfChanged?: string | null },
+    ) => {
       setError(null);
       setPushBusy((current) => ({ ...current, [appId]: true }));
       setPushMessages((current) => ({ ...current, [appId]: "" }));
       try {
         const result = await action();
-        if (result && result.last_push_status) {
+        // When onlyIfChanged is provided (a Save), only report a push if the
+        // action actually pushed (last_push_at advanced); otherwise stay quiet.
+        const pushed =
+          opts === undefined ||
+          !("onlyIfChanged" in opts) ||
+          (result.last_push_at ?? null) !== (opts.onlyIfChanged ?? null);
+        if (result && result.last_push_status && pushed) {
           setPushNotices((current) => ({
             ...current,
             [result.id]: result.last_push_status as string,
@@ -182,6 +192,21 @@ export function ApplicationManager(props: {
       }
     },
     [reload],
+  );
+
+  // issue_025: save an application, then surface the reverse-proxy push outcome
+  // ONLY when the save actually triggered a push (an admin/self-service alias
+  // config change auto-pushes server-side; a plain metadata edit does not). We
+  // detect a real push by a change in last_push_at, so a residual prior status
+  // is never reported as if this save had pushed.
+  const runSaveAction = useCallback(
+    (appId: number, action: () => Promise<Application>) => {
+      const before = apps.find((a) => a.id === appId)?.last_push_at ?? null;
+      return runPushAction(appId, action, {
+        onlyIfChanged: before,
+      });
+    },
+    [apps, runPushAction],
   );
 
   if (loading) {
@@ -263,8 +288,10 @@ export function ApplicationManager(props: {
             onMoveDown={() => void moveApp(app.id, 1)}
             teamOptions={teamOptions}
             onSave={(input) =>
-              runAction(async () => {
-                await api.updateApplication(app.id, input);
+              // issue_025: surface the reverse-proxy push outcome only when the
+              // save actually pushed (see runSaveAction).
+              runSaveAction(app.id, async () => {
+                return await api.updateApplication(app.id, input);
               })
             }
             onToggleActive={() =>
@@ -1498,6 +1525,31 @@ function ApplicationRow(props: {
             >
               Save changes
             </button>
+            {/* issue_025: when the approved alias still needs applying to the
+                reverse proxy (a config change that wasn't auto-pushed, or a
+                failed push), surface a highlighted Push button right next to
+                Save so it's the obvious next step. */}
+            {isAdmin &&
+              app.approval_status === "approved" &&
+              app.url_type === "alias" &&
+              (app.needs_push || app.last_push_status === "failed") && (
+                <button
+                  type="button"
+                  className="btn approve push-apply"
+                  onClick={props.onRetryPush}
+                  disabled={props.pushBusy}
+                  title="Apply this change to the reverse proxy"
+                >
+                  {props.pushBusy
+                    ? "Pushing…"
+                    : "Push to reverse proxy"}
+                </button>
+              )}
+            {props.pushMessage && (
+              <span className="muted push-action-message" role="status">
+                {props.pushMessage}
+              </span>
+            )}
             {confirmingDelete ? (
               <span className="confirm-inline">
                 <span>Delete {app.name}?</span>

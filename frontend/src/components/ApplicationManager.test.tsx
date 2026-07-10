@@ -154,6 +154,23 @@ function stubBackend(
           ? "admin@example.com"
           : "owner@example.com"
         : undefined;
+      // issue_025: simulate the backend auto-push for an approved alias whose
+      // reverse-proxy config changed — advance last_push_at so the frontend can
+      // tell a real push happened (vs. a plain metadata edit).
+      const prior = store.find((app) => app.id === id);
+      const configKeys = [
+        "apps_protocol",
+        "apps_port",
+        "apps_server",
+        "apps_path",
+        "alias_auth_required",
+        "url",
+        "url_type",
+      ];
+      const pushed =
+        prior?.approval_status === "approved" &&
+        (prior?.url_type === "alias" || body.url_type === "alias") &&
+        configKeys.some((k) => k in body && body[k] !== (prior as never)[k]);
       store = store.map((app) =>
         app.id === id
           ? {
@@ -161,6 +178,9 @@ function stubBackend(
               ...body,
               ...(selectedOwner
                 ? { created_by_id: body.created_by, created_by: selectedOwner }
+                : {}),
+              ...(pushed
+                ? { last_push_status: "ok", last_push_at: new Date().toISOString() }
                 : {}),
             }
           : app,
@@ -800,6 +820,78 @@ describe("ApplicationManager", () => {
       ),
     ).toBe(true);
     expect((await screen.findAllByText(/proxy: ok/i)).length).toBeGreaterThan(0);
+  });
+
+  it("surfaces the proxy push outcome after an alias CONFIG change auto-pushes (issue_025)", async () => {
+    stubBackend([
+      makeApp({
+        url: "hunt",
+        url_type: "alias",
+        approval_status: "approved",
+        apps_port: "8080",
+        last_push_status: "ok",
+        last_push_at: "2026-01-01T00:00:00Z",
+      }),
+    ]);
+    render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
+    await screen.findByText("Hunt Workbench");
+    await userEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    // Change a reverse-proxy config field (port) so the backend auto-pushes.
+    const port = screen.getByLabelText(/alias upstream port/i);
+    await userEvent.clear(port);
+    await userEvent.type(port, "9090");
+    await userEvent.click(screen.getByRole("button", { name: /save changes/i }));
+    expect(
+      (await screen.findAllByText(/proxy: ok|push completed/i)).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("does NOT show a push message after a plain metadata edit (issue_025)", async () => {
+    stubBackend([
+      makeApp({
+        url: "hunt",
+        url_type: "alias",
+        approval_status: "approved",
+        last_push_status: "ok",
+        last_push_at: "2026-01-01T00:00:00Z",
+      }),
+    ]);
+    render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
+    await screen.findByText("Hunt Workbench");
+    await userEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    // Change only the name (no reverse-proxy config change -> no push).
+    const name = screen.getByLabelText("Name");
+    await userEvent.clear(name);
+    await userEvent.type(name, "Hunt Workbench 2");
+    await userEvent.click(screen.getByRole("button", { name: /save changes/i }));
+    await screen.findByText("Hunt Workbench 2");
+    // No spurious "push completed" message from a metadata-only edit.
+    expect(screen.queryByText(/push completed/i)).toBeNull();
+  });
+
+  it("shows a prominent Push button next to Save when a push is needed (issue_025)", async () => {
+    const fetchMock = stubBackend([
+      makeApp({
+        url: "hunt",
+        url_type: "alias",
+        approval_status: "approved",
+        needs_push: true,
+        last_push_status: "failed",
+      }),
+    ]);
+    render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
+    await screen.findByText("Hunt Workbench");
+    await userEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    const applyBtn = screen.getByRole("button", {
+      name: /push to reverse proxy/i,
+    });
+    expect(applyBtn).toBeInTheDocument();
+    await userEvent.click(applyBtn);
+    expect(
+      fetchMock.mock.calls.some(([u, init]) =>
+        String(u).endsWith("/push-retry") && (init?.method ?? "GET") === "POST",
+      ),
+    ).toBe(true);
   });
 
   it("shows publisher and push-needed notices to admins", async () => {
