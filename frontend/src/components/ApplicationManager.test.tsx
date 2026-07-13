@@ -718,18 +718,46 @@ describe("ApplicationManager", () => {
     });
   });
 
-  it("deletes an application after confirmation", async () => {
+  it("deletes an application after confirmation from the expanded editor", async () => {
     stubBackend([makeApp()]);
     render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
 
     await screen.findByText("Hunt Workbench");
     await userEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    // While expanded, the editor footer owns the Delete UI (the header hides
+    // its Delete to avoid a duplicate confirm), so there is exactly one.
     await userEvent.click(screen.getByRole("button", { name: /^delete$/i }));
     await userEvent.click(
       screen.getByRole("button", { name: /confirm delete/i }),
     );
 
     expect(await screen.findByText(/No applications yet/i)).toBeInTheDocument();
+  });
+
+  it("deletes an application from the collapsed card without expanding", async () => {
+    stubBackend([makeApp()]);
+    render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
+
+    await screen.findByText("Hunt Workbench");
+    // Delete lives in the always-visible action row next to Disable/Enable.
+    await userEvent.click(screen.getByRole("button", { name: /^delete$/i }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /confirm delete/i }),
+    );
+
+    expect(await screen.findByText(/No applications yet/i)).toBeInTheDocument();
+  });
+
+  it("shows exactly one Delete button whether collapsed or expanded", async () => {
+    stubBackend([makeApp()]);
+    render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
+
+    await screen.findByText("Hunt Workbench");
+    // Collapsed: the header Delete is the only one.
+    expect(screen.getAllByRole("button", { name: /^delete$/i })).toHaveLength(1);
+    // Expanded: the header Delete hides so the footer one is the only one.
+    await userEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    expect(screen.getAllByRole("button", { name: /^delete$/i })).toHaveLength(1);
   });
 
   it("shows the reverse-proxy push log for an admin when the card is expanded", async () => {

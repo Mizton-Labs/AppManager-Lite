@@ -1319,6 +1319,41 @@ function ApplicationRow(props: {
           >
             {app.is_active ? "Disable" : "Enable"}
           </button>
+          {/* Delete lives in the always-visible action row for quick access.
+              When the card is expanded, the editor footer owns the Delete UI
+              instead (both share `confirmingDelete`), so only render it here
+              while collapsed to avoid two confirm prompts at once. */}
+          {!editing &&
+            (confirmingDelete ? (
+              <span className="confirm-inline">
+                <span>Delete {app.name}?</span>
+                <button
+                  type="button"
+                  className="btn danger"
+                  onClick={() => {
+                    props.onDelete();
+                    setConfirmingDelete(false);
+                  }}
+                >
+                  Confirm delete
+                </button>
+                <button
+                  type="button"
+                  className="btn ghost"
+                  onClick={() => setConfirmingDelete(false)}
+                >
+                  Cancel
+                </button>
+              </span>
+            ) : (
+              <button
+                type="button"
+                className="btn danger"
+                onClick={() => setConfirmingDelete(true)}
+              >
+                Delete
+              </button>
+            ))}
         </div>
       </div>
 
