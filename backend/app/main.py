@@ -49,7 +49,11 @@ _CONTENT_SECURITY_POLICY = (
     "object-src 'none'; "
     "base-uri 'self'; "
     "frame-ancestors 'none'; "
-    "form-action 'self'"
+    "form-action 'self'; "
+    # Transparently upgrade any http:// sub-resource to https:// when the page
+    # is served over TLS, eliminating passive mixed-content warnings. Inert on
+    # plain-http (dev/localhost) requests.
+    "upgrade-insecure-requests"
 )
 
 # Interactive API docs (only exposed in dev mode) rely on inline scripts and a

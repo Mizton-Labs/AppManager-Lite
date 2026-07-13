@@ -24,17 +24,28 @@ export function resolveAppHref(app: Pick<Application, "url" | "url_type">): stri
  * Resolve an application icon/logo value to a loadable `src`.
  *
  * Inline data URIs and absolute URLs (http(s) or any scheme) are returned
- * unchanged. A bundled default-logo path is stored relative (e.g.
- * `logos/red-team-2.svg`) and is resolved against the document base URI at
- * render time, so it loads correctly under any origin or deployment path
- * prefix. An empty value yields an empty string (callers show a fallback).
+ * unchanged, except that an absolute `http:` URL is upgraded to `https:` when
+ * the page itself is served over TLS, so it cannot trigger a mixed-content
+ * warning or be blocked by the `upgrade-insecure-requests` CSP directive. A
+ * bundled default-logo path is stored relative (e.g. `logos/red-team-2.svg`)
+ * and is resolved against the document base URI at render time, so it loads
+ * correctly under any origin or deployment path prefix. An empty value yields
+ * an empty string (callers show a fallback).
  */
 export function resolveIconSrc(iconUrl: string): string {
   if (!iconUrl) {
     return "";
   }
-  // data: URIs and anything with an explicit scheme (e.g. https:) pass through.
+  // data: URIs and anything with an explicit scheme (e.g. https:) pass through,
+  // except an absolute http: URL on an https page, which is upgraded to https:.
   if (iconUrl.startsWith("data:") || /^[a-z][a-z0-9+.-]*:/i.test(iconUrl)) {
+    if (
+      typeof globalThis !== "undefined" &&
+      globalThis.location?.protocol === "https:" &&
+      /^http:\/\//i.test(iconUrl)
+    ) {
+      return iconUrl.replace(/^http:\/\//i, "https://");
+    }
     return iconUrl;
   }
   try {

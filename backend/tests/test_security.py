@@ -56,6 +56,9 @@ def test_content_security_policy_locks_down_origin(
     assert "frame-ancestors 'none'" in csp
     assert "base-uri 'self'" in csp
     assert "script-src 'self'" in csp
+    # Transparently upgrade http:// sub-resources to https:// on TLS pages so
+    # proxied/aliased content cannot raise a mixed-content warning.
+    assert "upgrade-insecure-requests" in csp
 
 
 def test_api_responses_are_not_cached(
