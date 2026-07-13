@@ -128,6 +128,22 @@ describe("ServersView", () => {
     expect(screen.getAllByText("50%").length).toBe(2);
   });
 
+  it("shows the Proxmox pool badge on a server card in the Servers section", async () => {
+    stubServersView({
+      is_admin: false,
+      owners: [
+        {
+          user_id: 7,
+          username: "morris@example.com",
+          derived_user_id: "morris",
+          servers: [server({ poolid: "team-morris" })],
+        },
+      ],
+    });
+    render(<ServersView currentUser={SELF} isAdmin={false} />);
+    expect(await screen.findByText("Pool: team-morris")).toBeInTheDocument();
+  });
+
   it("re-fetches stats when the timeframe changes", async () => {
     const fetchMock = stubServersView({
       is_admin: false,

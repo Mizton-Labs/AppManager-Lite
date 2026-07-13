@@ -1414,6 +1414,9 @@ textarea:focus-visible,
 
 .server-name {
   font-weight: 600;
+  /* Keep the full "name - ip" title on a single line; it should never wrap to
+     a second row (server names are not expected to be excessively long). */
+  white-space: nowrap;
 }
 
 .server-meta {
