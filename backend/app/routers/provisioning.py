@@ -1415,13 +1415,18 @@ def servers_overview(
         return groups[uid]
 
     if is_admin:
-        for srv in repository.list_all_servers(conn):
+        rows = repository.list_all_servers(conn)
+        # Resolve pools once for the whole overview (single provider call).
+        _attach_server_pools(conn, rows)
+        for srv in rows:
             grp = _group(srv["user_id"], srv.get("owner_username", ""))
             grp.servers.append(_server_out(srv, include_error=True))
     else:
         username = actor.get("username", "")
         grp = _group(actor["id"], username)
-        for srv in repository.list_user_servers(conn, actor["id"]):
+        rows = repository.list_user_servers(conn, actor["id"])
+        _attach_server_pools(conn, rows)
+        for srv in rows:
             grp.servers.append(_server_out(srv))
     owners = sorted(groups.values(), key=lambda g: g.username.lower())
     return ServersOverviewOut(is_admin=is_admin, owners=owners)

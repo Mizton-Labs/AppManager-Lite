@@ -2550,6 +2550,77 @@ def test_servers_overview_user_sees_only_their_own(admin, monkeypatch) -> None:
     assert len(body["owners"][0]["servers"]) == 1
 
 
+def test_servers_overview_admin_annotates_pool(admin, monkeypatch) -> None:
+    """The Servers overview annotates each guest's live Proxmox pool for an
+    administrator (all owner groups)."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    u1 = _create_member(client, csrf, username="morris@example.com")
+    _create_server_for(client, csrf, u1["user"]["id"], template["id"], name="a")
+
+    import app.proxmox as proxmox
+    # Every created server clones to vmid 120 in the fake provider.
+    monkeypatch.setattr(
+        proxmox, "get_guest_pools", lambda config, *, result: {120: "team-morris"}
+    )
+
+    body = client.get("/api/servers/overview").json()
+    owners = {o["username"]: o for o in body["owners"]}
+    assert owners["morris@example.com"]["servers"][0]["poolid"] == "team-morris"
+
+
+def test_servers_overview_member_annotates_pool(admin, monkeypatch) -> None:
+    """A non-admin sees their own server's live pool on the overview."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    client.patch(
+        "/api/settings/provisioning",
+        json={"provisioning_self_service": True},
+        headers={"X-CSRF-Token": csrf},
+    )
+    u1 = _create_member(
+        client, csrf, username="morris@example.com", self_service=True
+    )
+    _create_server_for(client, csrf, u1["user"]["id"], template["id"], name="a")
+
+    import app.proxmox as proxmox
+    monkeypatch.setattr(
+        proxmox, "get_guest_pools", lambda config, *, result: {120: "team-morris"}
+    )
+
+    member, _ = _login(client.app, "morris@example.com", u1["password"])
+    body = member.get("/api/servers/overview").json()
+    assert body["owners"][0]["servers"][0]["poolid"] == "team-morris"
+
+
+def test_servers_overview_survives_pool_provider_failure(admin, monkeypatch) -> None:
+    """A pool-resolution error never fails the overview; poolid stays empty."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    u1 = _create_member(client, csrf, username="morris@example.com")
+    _create_server_for(client, csrf, u1["user"]["id"], template["id"], name="a")
+
+    import app.proxmox as proxmox
+
+    def _boom(*a, **k):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr(proxmox, "get_guest_pools", _boom)
+    resp = client.get("/api/servers/overview")
+    assert resp.status_code == 200, resp.text
+    owners = {o["username"]: o for o in resp.json()["owners"]}
+    assert owners["morris@example.com"]["servers"][0]["poolid"] == ""
+
+
 def test_servers_overview_requires_auth(admin) -> None:
     client, _, _ = admin
     anon = TestClient(client.app)
