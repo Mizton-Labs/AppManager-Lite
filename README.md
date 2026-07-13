@@ -272,7 +272,11 @@ applications"**; the **move up/down** ordering controls act within each group
 and are hidden while a filter is active. When an approved alias application's
 reverse-proxy configuration is changed, saving surfaces the push outcome, and a
 highlighted **Push to reverse proxy** button appears next to Save whenever the
-change still needs applying — so it's clear a push is required. The **User
+change still needs applying — so it's clear a push is required. Each
+application row exposes **Edit**, **Disable/Enable**, and a **Delete** button
+directly in its action row, so an app can be removed without expanding the
+editor first; Delete asks for an inline confirmation, and the backend still
+restricts deletion to the app's owner or an administrator. The **User
 management** tab likewise collapses **Create user** behind an **Add user**
 button and offers a filter over username, user ID, role, and teams; user cards
 are **collapsed by default** (identity + badges only) and expand on demand to
@@ -802,6 +806,14 @@ the per-user limits; LXC disk can only be grown, and VMs hide the disk field
 entirely and show a reboot reminder after saving. A separate **Reboot** button
 (with a confirm step) is available on any eligible LXC or VM server to its
 self-service owner or an administrator.
+
+When a server belongs to a Proxmox pool, the card shows a **`Pool: <id>`**
+badge next to its LXC/VM tag. The pool is read live from Proxmox as the list
+loads (a single cluster-wide lookup for the whole list, best-effort: if the
+provider is unconfigured or unreachable, or the guest is in no pool, no badge
+is shown). This reflects the guest's *actual* current pool membership, so
+pools assigned directly in Proxmox appear too; it is a response-only hint and
+is never stored in AppManager's database.
 
 Deleting a server is **deferred and reversible for 24 hours**. After an
 explicit "this is permanent" confirmation, the server enters a **deletion
