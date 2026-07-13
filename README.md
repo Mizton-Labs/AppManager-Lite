@@ -972,6 +972,27 @@ When set, the backend injects a matching `<base href>` so relative links resolve
 under the prefix. Without it, the application still works behind the proxy
 normally.
 
+### Avoiding mixed-content warnings behind TLS
+
+AppManager sets the `Content-Security-Policy: ...; upgrade-insecure-requests`
+header on its own responses, so any `http://` sub-resource referenced by a
+portal page is transparently upgraded to `https://` on a TLS deployment (the
+directive is inert on plain-http/dev). This covers **AppManager's own pages**
+only. If the same reverse proxy also fronts other applications (for example
+aliased apps proxied under sibling paths), the proxy should set
+`upgrade-insecure-requests` **site-wide** so those proxied responses do not
+trigger a "some parts of this site are not secure" warning — AppManager cannot
+add headers to responses it does not generate. For nginx, add to the TLS
+`server {}` block:
+
+```nginx
+add_header Content-Security-Policy "upgrade-insecure-requests" always;
+```
+
+Note that an `add_header` inside a `location {}` block replaces (does not merge
+with) `server`-level `add_header` directives, so repeat it in any location that
+defines its own headers.
+
 ## Development
 
 ```bash

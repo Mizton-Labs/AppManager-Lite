@@ -29,7 +29,7 @@
       "framework": "FastAPI",
       "entrypoint": "backend/app/main.py:app",
       "keyModules": [
-        { "path": "backend/app/main.py", "role": "App factory, lifespan, security headers, SPA mounting, /api/health, router wiring." },
+        { "path": "backend/app/main.py", "role": "App factory, lifespan, security headers (CSP with upgrade-insecure-requests, HSTS, frame/COOP), SPA mounting, /api/health, router wiring." },
         { "path": "backend/app/config.py", "role": "Runtime configuration from APP_* environment variables." },
         { "path": "backend/app/db.py", "role": "SQLite connection, schema bootstrap, and additive idempotent migrations." },
         { "path": "backend/app/repository.py", "role": "Parameterized data-access helpers for users, teams, applications, settings, audit." },
