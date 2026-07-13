@@ -1888,6 +1888,93 @@ def test_list_survives_backfill_provider_failure(admin, monkeypatch) -> None:
     assert {s["name"] for s in resp.json()} == {"gap"}
 
 
+def test_list_annotates_server_pool_from_provider(admin, monkeypatch) -> None:
+    """The live Proxmox pool is attached to each guest on list; a guest with
+    no pool (and reference servers with no vmid) carry an empty poolid."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    created = _create_member(client, csrf)
+    user_id = created["user"]["id"]
+
+    from app.db import get_connection
+    from app import repository
+    with get_connection() as conn:
+        repository.create_user_server(
+            conn, user_id=user_id, name="in-pool", kind="lxc", vmid=120,
+            node="pve1", status="created",
+        )
+        repository.create_user_server(
+            conn, user_id=user_id, name="no-pool", kind="lxc", vmid=121,
+            node="pve1", status="created",
+        )
+        repository.create_user_server(
+            conn, user_id=user_id, name="ref", kind="lxc", status="reference",
+        )
+
+    import app.proxmox as proxmox
+    # Only vmid 120 is a member of a pool; 121 has none.
+    monkeypatch.setattr(
+        proxmox, "get_guest_pools", lambda config, *, result: {120: "team-alice"}
+    )
+
+    listed = {s["name"]: s for s in
+              client.get(f"/api/users/{user_id}/servers").json()}
+    assert listed["in-pool"]["poolid"] == "team-alice"
+    assert listed["no-pool"]["poolid"] == ""
+    # Reference server (no vmid) is never annotated.
+    assert listed["ref"]["poolid"] == ""
+
+
+def test_list_survives_pool_provider_failure(admin, monkeypatch) -> None:
+    """A provider error while resolving pools never fails the list."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    created = _create_member(client, csrf)
+    user_id = created["user"]["id"]
+    from app.db import get_connection
+    from app import repository
+    with get_connection() as conn:
+        repository.create_user_server(
+            conn, user_id=user_id, name="gap", kind="lxc", vmid=120,
+            node="pve1", status="created",
+        )
+    import app.proxmox as proxmox
+
+    def _boom(*a, **k):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr(proxmox, "get_guest_pools", _boom)
+    resp = client.get(f"/api/users/{user_id}/servers")
+    assert resp.status_code == 200
+    listed = {s["name"]: s for s in resp.json()}
+    assert listed["gap"]["poolid"] == ""
+
+
+def test_get_guest_pools_parses_cluster_resources(monkeypatch) -> None:
+    """get_guest_pools builds a {vmid: pool} map, skipping pool-less guests."""
+    import app.proxmox as proxmox
+
+    def fake_request(method, url, *, headers, verify, json_body=None):
+        assert "/cluster/resources" in url
+        return (200, {"data": [
+            {"vmid": 120, "type": "lxc", "pool": "team-alice"},
+            {"vmid": 121, "type": "qemu", "pool": ""},  # no pool -> skipped
+            {"vmid": 122, "type": "lxc"},               # missing -> skipped
+            {"name": "storage", "type": "storage"},     # no vmid -> skipped
+            {"vmid": 123, "type": "lxc", "pool": "team-bob"},
+        ]})
+
+    monkeypatch.setattr(proxmox, "_http_request", fake_request)
+    result = proxmox.ProxmoxResult()
+    pools = proxmox.get_guest_pools(_proxmox_cfg(), result=result)
+    assert pools == {120: "team-alice", 123: "team-bob"}
+    assert result.status == "ok"
+
+
 def test_duplicate_server_name_rejected(admin, monkeypatch) -> None:
     client, csrf, _ = admin
     _FakeProxmox(monkeypatch)

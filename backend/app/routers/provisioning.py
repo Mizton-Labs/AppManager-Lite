@@ -1263,6 +1263,41 @@ def _backfill_server_resources(
             )
 
 
+def _attach_server_pools(
+    conn: sqlite3.Connection,
+    rows: list[dict[str, Any]],
+) -> None:
+    """Annotate rows with their live Proxmox pool membership (response-only).
+
+    A single ``/cluster/resources`` read resolves the pool for every guest, so
+    this adds at most one provider call per list regardless of server count. The
+    resolved ``poolid`` is stored on the in-memory row dicts only (never
+    persisted) and surfaced through ``UserServerOut.poolid``. Fully guarded: any
+    provider error or missing config leaves the rows unannotated and never fails
+    or slows the list beyond the single attempt.
+    """
+    candidates = [
+        r for r in rows if r.get("vmid") and r.get("status") != "failed"
+    ]
+    if not candidates:
+        return
+    try:
+        settings_row = repository.get_settings_row(conn)
+        if not _provider_configured(settings_row):
+            return
+        result = proxmox.ProxmoxResult()
+        pools = proxmox.get_guest_pools(_provider_config(settings_row), result=result)
+    except Exception:  # noqa: BLE001
+        logger.exception("Pool annotation: could not resolve guest pools")
+        return
+    if not pools:
+        return
+    for server in candidates:
+        poolid = pools.get(int(server["vmid"]))
+        if poolid:
+            server["poolid"] = poolid
+
+
 @router.get("/users/{user_id}/servers", response_model=list[UserServerOut])
 def list_user_servers(
     user_id: int,
@@ -1287,6 +1322,9 @@ def list_user_servers(
     # set changed (e.g. an LXC that got its IP after creation). Bounded,
     # single-flight, best-effort.
     _maybe_remesh_trusted(conn, user_id)
+    # Annotate each guest with its live Proxmox pool (response-only). One
+    # provider call for the whole list; best-effort.
+    _attach_server_pools(conn, rows)
     if is_admin:
         # Admins see everything, including servers whose destroy failed, with
         # the failure detail for recovery.

@@ -353,6 +353,32 @@ def find_guest(
     return None
 
 
+def get_guest_pools(
+    config: dict[str, Any], *, result: ProxmoxResult
+) -> dict[int, str]:
+    """Return a cluster-wide ``{vmid: poolid}`` map for guests in a pool.
+
+    A single ``/cluster/resources`` call carries the ``pool`` membership for
+    every guest, so callers can resolve the pool for a whole server list without
+    a per-guest request. Guests with no pool are omitted. Best-effort: on any
+    provider error an empty map is returned (the failure is recorded in
+    ``result``); this never raises.
+    """
+    data = _call(config, "GET", "/cluster/resources?type=vm", result=result)
+    if result.status != "ok":
+        return {}
+    pools: dict[int, str] = {}
+    for item in data or []:
+        if not isinstance(item, dict):
+            continue
+        vmid = item.get("vmid")
+        poolid = str(item.get("pool", "") or "").strip()
+        if isinstance(vmid, int) and poolid:
+            pools[vmid] = poolid
+    result.log(f"Resolved pool membership for {len(pools)} guest(s)")
+    return pools
+
+
 def next_vmid(config: dict[str, Any], *, result: ProxmoxResult) -> int | None:
     data = _call(config, "GET", "/cluster/nextid", result=result)
     if result.status != "ok":

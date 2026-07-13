@@ -137,6 +137,24 @@ describe("UserServersPanel", () => {
     expect(screen.queryByRole("button", { name: /add server/i })).toBeNull();
   });
 
+  it("shows the Proxmox pool badge next to the kind tag when set", async () => {
+    stubServers([makeServer({ poolid: "team-alice" })]);
+    render(
+      <UserServersPanel userId={7} canCreate={false} canDelete={false} />,
+    );
+    expect(await screen.findByText("coder box - 10.0.7.42")).toBeInTheDocument();
+    expect(screen.getByText("Pool: team-alice")).toBeInTheDocument();
+  });
+
+  it("omits the pool badge when no pool is set", async () => {
+    stubServers([makeServer({ poolid: "" })]);
+    render(
+      <UserServersPanel userId={7} canCreate={false} canDelete={false} />,
+    );
+    expect(await screen.findByText("coder box - 10.0.7.42")).toBeInTheDocument();
+    expect(screen.queryByText(/^Pool:/)).toBeNull();
+  });
+
   it("creates a server with pubkey users and shows success", async () => {
     const fetchMock = stubServers();
     render(

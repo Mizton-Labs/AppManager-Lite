@@ -1322,6 +1322,10 @@ class UserServerOut(BaseModel):
     # was deleted is not an apps-server). Drives the App-management
     # apps-server dropdown.
     is_apps_server: bool = False
+    # Transient, response-only Proxmox pool membership, resolved live from the
+    # provider on list (empty when the provider is unconfigured/unreachable or
+    # the guest is not in a pool). Never persisted.
+    poolid: str = ""
 
 
 class CreateUserServerRequest(BaseModel):

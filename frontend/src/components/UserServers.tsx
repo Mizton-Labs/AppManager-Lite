@@ -703,6 +703,11 @@ export function ServerCard(props: {
               {server.ip_address ? ` - ${server.ip_address}` : ""}
             </span>
             <span className="role-badge">{server.kind.toUpperCase()}</span>
+            {server.poolid ? (
+              <span className="role-badge pool" title="Proxmox pool">
+                Pool: {server.poolid}
+              </span>
+            ) : null}
             {server.deletion_failed ? (
               <span className="status-badge rejected">deletion failed</span>
             ) : server.deletion_pending ? (

@@ -304,6 +304,8 @@ export interface UserServer {
   reboot_required?: boolean;
   /** True when cloned from a template flagged as an apps server. */
   is_apps_server?: boolean;
+  /** Live Proxmox pool membership, resolved on list; transient, never persisted. */
+  poolid?: string;
 }
 
 export interface CreateUserServerInput {

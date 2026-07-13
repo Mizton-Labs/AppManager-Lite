@@ -997,6 +997,16 @@ textarea:focus-visible,
   color: var(--muted);
 }
 
+/* Proxmox pool membership: keep the pool id readable (no uppercasing) and
+   tint it with the accent to distinguish it from the LXC/VM kind badge. */
+.role-badge.pool {
+  text-transform: none;
+  letter-spacing: normal;
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-card));
+  color: var(--text);
+}
+
 .status-badge {
   font-size: 0.7rem;
   padding: 0.1rem 0.45rem;
