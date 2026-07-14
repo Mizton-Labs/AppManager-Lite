@@ -697,7 +697,11 @@ access default on):
   normalize behavior only ever applies to this configured main user — never to
   extra OS usernames a caller lists explicitly when creating a server, so a
   self-service request can't be used to conjure arbitrary accounts.
-- **Sudo access** — adds the main user to the server's sudo/wheel group.
+- **Sudo access** — AppManager reasserts passwordless full sudo for the main
+  user on every provision through its validated
+  `/etc/sudoers.d/90-appmanager-<user>` drop-in, then verifies it with
+  `sudo -n true`. This ensures the template's first-boot setup cannot leave the
+  configured account without effective passwordless sudo.
 - **Trusted SSH access** — establishes a full SSH mesh across the user's
   servers that share the same main user: each server generates its own keypair
   locally (private keys never leave the servers or touch AppManager) and every
@@ -714,8 +718,11 @@ access default on):
   authorize the admin key for root** (`PermitRootLogin` + the key in root's
   `authorized_keys`); when it doesn't, the mesh records a clear, actionable
   error instead of silently doing nothing. Each per-server mesh outcome
-  (established / skipped / failed, with the reason) is recorded on the server's
-  provisioning log and in the audit trail (`server_mesh`). Transient
+  (established / unverified / skipped / failed, with the reason) is recorded on
+  the server's provisioning log and in the audit trail (`server_mesh`). An
+  established result means each directed server-to-server SSH connection was
+  tested as the shared OS user; an unverified result is retried by the deferred
+  reconciler. Transient
   "sshd not ready yet" conditions are retried briefly and otherwise re-tried on
   the next reconcile.
 
