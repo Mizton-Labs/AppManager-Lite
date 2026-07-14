@@ -608,6 +608,9 @@ def download_account_bundle(
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         def _write(name: str, data: str, mode: int) -> None:
             info = zipfile.ZipInfo(name)
+            # Explicit Unix metadata keeps permission bits meaningful for
+            # extractors that honor the ZIP's create-system field.
+            info.create_system = 3
             # Include the regular-file type bit so every extractor treats these
             # as files (not directories) and preserves the permission bits.
             info.external_attr = (stat.S_IFREG | mode) << 16
@@ -618,6 +621,21 @@ def download_account_bundle(
         _write(key_name + ".pub", key["public_key"] + "\n", 0o644)
         for filename, script in scripts:
             _write(filename, script, 0o755)
+        _write(
+            "README.txt",
+            "SSH bundle usage\n"
+            "================\n\n"
+            "Run a connect script from this extracted directory:\n"
+            "  ./connect_server_<name>.sh\n\n"
+            "If Windows, WSL, or an archive tool removed its executable bit, use:\n"
+            "  sh connect_server_<name>.sh\n\n"
+            "The scripts use the private key shipped beside them. Keep the private "
+            "key confidential and do not copy it to an untrusted location. The "
+            "scripts attempt to set it to mode 600; if WSL files under /mnt do not "
+            "preserve Unix permissions, copy the bundle to your Linux home directory "
+            "before running it.\n",
+            0o644,
+        )
 
     audit.record(
         conn,

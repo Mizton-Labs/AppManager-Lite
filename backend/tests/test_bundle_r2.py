@@ -572,6 +572,7 @@ def test_bundle_zip_includes_key_and_connect_scripts(admin) -> None:
     assert _mode(key_name + ".pub") == 0o644
     assert _mode("config") == 0o644
     assert _mode("connect_server_alpha.sh") == 0o755
+    assert archive.getinfo("connect_server_alpha.sh").create_system == 3
 
     # The config is the canonical drop-into-~/.ssh artifact (manual use).
     assert f"IdentityFile ~/.ssh/{key_name}" in members["config"].decode()
@@ -580,8 +581,11 @@ def test_bundle_zip_includes_key_and_connect_scripts(admin) -> None:
     # from the unzip directory.
     assert "connect_server_alpha.sh" in members
     assert "connect_server_beta.sh" in members
+    assert "README.txt" in members
+    assert "sh connect_server_<name>.sh" in members["README.txt"].decode()
     script = members["connect_server_alpha.sh"].decode()
     assert script.startswith("#!/bin/sh")
+    assert 'chmod +x "$0" 2>/dev/null || true' in script
     # cd into the script's own dir so the key beside it (./ <key>) resolves
     # when run in place; the identity is the bundled key, targeting the IP.
     assert 'cd "$(dirname "$0")"' in script
@@ -715,6 +719,7 @@ def test_connect_script_resolves_key_run_in_place(tmp_path) -> None:
             ["/bin/sh", str(script_path)],
             cwd="/tmp", env=env, check=True,
         )
+        assert (bundle / key_name).stat().st_mode & 0o777 == 0o600
         lines = log.read_text().split()
         # Two identities recorded (final host + bastion), both resolved OK.
         recorded = [l for l in log.read_text().splitlines()]
