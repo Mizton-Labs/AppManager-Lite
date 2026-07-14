@@ -208,7 +208,7 @@ def test_invalid_main_os_user_rejected(admin) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_key_installed_only_for_main_user_with_sudo(admin, monkeypatch) -> None:
+def test_key_installed_only_for_main_user_with_passwordless_sudo(admin, monkeypatch) -> None:
     client, csrf, _ = admin
     _FakeProxmox(monkeypatch)
     ssh = _FakeSsh(monkeypatch)
@@ -221,7 +221,7 @@ def test_key_installed_only_for_main_user_with_sudo(admin, monkeypatch) -> None:
     server = _mk_server(client, csrf, uid, template["id"], "box")
     assert server["status"] == "created"
     # The install command targets 'coder' (main user), not the derived user id,
-    # and includes the sudo group step.
+    # and reasserts a validated AppManager-owned passwordless sudoers drop-in.
     install_cmds = [c for c in ssh.commands if "authorized_keys" in c[-1]]
     assert install_cmds
     joined = install_cmds[-1][-1]
@@ -229,7 +229,14 @@ def test_key_installed_only_for_main_user_with_sudo(admin, monkeypatch) -> None:
     assert "chown -R coder:" in joined
     assert "chown -R tuser" not in joined
     assert "getent passwd coder" in joined
-    assert "usermod -aG sudo coder" in joined
+    # The AppManager drop-in is authoritative; do not additionally grant the
+    # distribution-defined sudo/wheel group policy.
+    assert "usermod -aG sudo coder" not in joined
+    assert "usermod -aG wheel coder" not in joined
+    assert "/etc/sudoers.d/90-appmanager-coder" in joined
+    assert "coder ALL=(ALL) NOPASSWD:ALL" in joined
+    assert 'visudo -cf "$tmp"' in joined
+    assert "sudo -n true" in joined
 
 
 def test_no_sudo_step_when_disabled(admin, monkeypatch) -> None:
@@ -244,10 +251,10 @@ def test_no_sudo_step_when_disabled(admin, monkeypatch) -> None:
     _mk_server(client, csrf, uid, template["id"], "box")
     install_cmds = [c for c in ssh.commands if "authorized_keys" in c[-1]]
     assert install_cmds
-    # No sudo/wheel group assignment (shell normalization is independent of
-    # enable_sudo and may still issue its own usermod -s call).
-    assert all("usermod -aG sudo" not in c[-1] for c in install_cmds)
-    assert all("usermod -aG wheel" not in c[-1] for c in install_cmds)
+    # No AppManager sudoers drop-in (shell
+    # normalization is independent of enable_sudo and may still issue usermod -s).
+    assert all("/etc/sudoers.d/90-appmanager-" not in c[-1] for c in install_cmds)
+    assert all("NOPASSWD:ALL" not in c[-1] for c in install_cmds)
 
 
 def test_main_os_user_account_defaults_to_bash(admin, monkeypatch) -> None:
@@ -350,6 +357,42 @@ def test_reconcile_trusted_mesh_unit(monkeypatch) -> None:
     assert len(installs) == 2
     # Mesh keys are stamped as AppManager-managed trusted keys.
     assert all("AppManager-trusted:coder" in c[-1] for c in installs)
+    # Every directed pair is verified as the shared OS user after key install.
+    verifies = [c for c in ssh.commands if "BatchMode=yes" in c[-1]]
+    assert len(verifies) == 2
+    assert all("su -s /bin/sh - coder" in c[-1] for c in verifies)
+
+
+def test_reconcile_trusted_mesh_reports_unverified_peer(monkeypatch) -> None:
+    """Key installation alone is not success: a failing A->B SSH probe leaves
+    the mesh unverified so the deferred reconciler can retry it later."""
+    commands: list[list[str]] = []
+
+    def fake_run(argv, *, timeout=20):
+        commands.append(argv)
+        remote = argv[-1]
+        if "ssh-keygen" in remote and "cat" in remote:
+            return subprocess.CompletedProcess(
+                argv, returncode=0,
+                stdout="ssh-ed25519 AAAAMESHKEY generated@server\n", stderr="",
+            )
+        if "BatchMode=yes" in remote and "10.0.0.2" in remote:
+            return subprocess.CompletedProcess(
+                argv, returncode=1, stdout="", stderr="Permission denied",
+            )
+        return subprocess.CompletedProcess(argv, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(servers, "_run", fake_run)
+    result = proxmox.ProxmoxResult()
+    status = servers.reconcile_trusted_mesh(
+        servers=[{"ip_address": "10.0.0.1"}, {"ip_address": "10.0.0.2"}],
+        admin_key_path="/keys/admin",
+        os_user="coder",
+        result=result,
+    )
+    assert status == "unverified"
+    assert "10.0.0.1->10.0.0.2" in result.transcript
+    assert "Trusted access verification failed" in result.transcript
 
 
 def test_trusted_mesh_noop_single_server(monkeypatch) -> None:

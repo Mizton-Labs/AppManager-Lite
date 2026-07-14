@@ -29,6 +29,9 @@ _SSH_TIMEOUT = 20
 # with a short backoff so provisioning never hangs, then defer/fail clearly.
 _MESH_SSH_ATTEMPTS = 3
 _MESH_SSH_BACKOFF_SECONDS = 2.0
+# Peer verification is directed N^2 work. Bound it so a large or unreachable
+# trusted group cannot make provisioning (or a lazy re-mesh) wait indefinitely.
+_MESH_VERIFY_BUDGET_SECONDS = 30.0
 _OS_USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 # Server display names are capped at the DNS hostname length (63) so a fully
 # composed name (template-userid-suffix) still fits both the record and the
@@ -259,8 +262,9 @@ def install_public_key(
     then a single canonical line is appended, so re-runs converge to exactly one
     entry (and an old differently-commented copy is replaced rather than
     duplicated). Only the public key travels; the admin key stays on this server
-    (path passed to ssh -i). When ``enable_sudo`` is set, each OS user is added
-    to the sudo/wheel group. When ``marker`` is set, the installed line's
+    (path passed to ssh -i). When ``enable_sudo`` is set, each OS user receives
+    a validated AppManager-owned NOPASSWD sudoers drop-in and is also added to
+    the sudo/wheel group. When ``marker`` is set, the installed line's
     comment is rewritten to it (e.g. ``AppManager-managed:<user_id>``) so the
     key is clearly attributable to AppManager on the remote host.
 
@@ -300,12 +304,20 @@ def install_public_key(
             result.fail(f"invalid OS username {os_user!r}")
             return False
         quoted_user = shlex.quote(os_user)
-        # Add-to-sudo step: try the Debian 'sudo' group then RHEL 'wheel';
-        # tolerate absence of either group so key install still succeeds.
+        # Reassert passwordless sudo after ensuring the account exists. Template
+        # first-boot setup must not be able to leave a newly provisioned account
+        # with a stale or missing sudoers entry. The dedicated drop-in is
+        # validated, then sudo -n confirms it is effective for this user.
         sudo_step = (
-            f"usermod -aG sudo {quoted_user} 2>/dev/null || "
-            f"usermod -aG wheel {quoted_user} 2>/dev/null || "
-            'echo "warning: could not add to sudo/wheel group"; '
+            f"sudoers=/etc/sudoers.d/90-appmanager-{os_user}; "
+            'tmp="$sudoers.tmp.$$"; '
+            f"printf '%s\\n' {shlex.quote(f'{os_user} ALL=(ALL) NOPASSWD:ALL')} "
+            '> "$tmp"; chmod 440 "$tmp"; '
+            'visudo -cf "$tmp" >/dev/null || { '
+            'rm -f "$tmp"; echo "passwordless sudo validation failed"; exit 1; }; '
+            'mv "$tmp" "$sudoers"; '
+            f"su -s /bin/sh {quoted_user} -c 'sudo -n true' >/dev/null 2>&1 || "
+            '{ echo "passwordless sudo verification failed"; exit 1; }; '
             if enable_sudo
             else ""
         )
@@ -373,7 +385,7 @@ def install_public_key(
         if proc.returncode == 0:
             msg = f"Installed public key for OS user '{os_user}'"
             if enable_sudo:
-                msg += " (sudo access enabled)"
+                msg += " (passwordless sudo verified)"
             if ensure_account_shell is not None and shell_warning in (
                 proc.stdout or ""
             ):
@@ -454,6 +466,47 @@ def _ensure_local_key_and_read_pub(
     return pub[-1]
 
 
+def _verify_mesh_pair(
+    *,
+    from_ip: str,
+    to_ip: str,
+    admin_key_path: str,
+    os_user: str,
+    result: ProxmoxResult,
+) -> bool:
+    """Verify passwordless SSH from one meshed guest to another.
+
+    The check enters ``from_ip`` with its template admin key, then runs ssh as
+    the shared OS user using that guest's locally generated private key. A mesh
+    is only established when every directed pair passes this real connection
+    test, not merely when the public keys were written successfully.
+    """
+    peer_command = (
+        # The app has no authoritative host-key registry for guest IPs. Keep
+        # first-use acceptance isolated to this probe rather than persisting a
+        # potentially stale key in the shared user's known_hosts on IP reuse.
+        "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "
+        "-o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null "
+        f"-o ConnectTimeout=5 {shlex.quote(to_ip)} true"
+    )
+    remote = "sh -c " + shlex.quote(
+        f"su -s /bin/sh - {shlex.quote(os_user)} -c {shlex.quote(peer_command)}"
+    )
+    proc = _run_mesh_ssh(admin_key_path, from_ip, remote)
+    pair = f"{from_ip}->{to_ip}"
+    if proc.returncode == 0:
+        result.log(f"Trusted access verified: {pair} as '{os_user}'")
+        return True
+    detail = (proc.stderr or proc.stdout or "").strip()[:200]
+    # This is a recoverable mesh state: the deferred reconciler should retry it
+    # once a fresh guest's sshd/key state has settled, so do not mark the whole
+    # provisioning result as failed.
+    result.log(
+        f"Trusted access verification failed: {pair} as '{os_user}': {detail}"
+    )
+    return False
+
+
 def reconcile_trusted_mesh(
     *,
     servers: list[dict[str, Any]],
@@ -469,9 +522,10 @@ def reconcile_trusted_mesh(
     on the servers; the app only relays public keys. Idempotent.
 
     ``servers`` is a list of dicts with an ``ip_address`` (reachable ones
-    only). Returns a status string (issue_023): ``"established"``,
-    ``"single_server"`` (fewer than two reachable -- nothing to mesh),
-    ``"invalid_user"``, or ``"failed"``.
+    only). Returns a status string: ``"established"`` when every directed
+    peer-to-peer SSH check works, ``"unverified"`` when keys were installed but
+    one or more checks failed, ``"single_server"`` (fewer than two reachable --
+    nothing to mesh), ``"invalid_user"``, or ``"failed"``.
     """
     reachable = [s for s in servers if s.get("ip_address")]
     if len(reachable) < 2:
@@ -517,12 +571,38 @@ def reconcile_trusted_mesh(
                 retry=True,
             ):
                 ok = False
-    if ok:
+    if not ok:
+        return "failed"
+
+    verified = True
+    verify_deadline = time.monotonic() + _MESH_VERIFY_BUDGET_SECONDS
+    for source in reachable:
+        source_ip = source["ip_address"]
+        for target in reachable:
+            target_ip = target["ip_address"]
+            if source_ip == target_ip:
+                continue
+            if time.monotonic() >= verify_deadline:
+                result.log(
+                    "Trusted access verification budget exhausted; remaining "
+                    "peer checks will retry on the next reconcile"
+                )
+                return "unverified"
+            if not _verify_mesh_pair(
+                from_ip=source_ip,
+                to_ip=target_ip,
+                admin_key_path=_key_for(source),
+                os_user=os_user,
+                result=result,
+            ):
+                verified = False
+    if verified:
         result.log(
             f"Trusted access mesh established across {len(reachable)} servers "
             f"for OS user '{os_user}'"
         )
-    return "established" if ok else "failed"
+        return "established"
+    return "unverified"
 
 
 def rotate_public_key(

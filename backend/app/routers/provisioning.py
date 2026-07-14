@@ -1761,10 +1761,12 @@ def _clone_and_persist_server(
             server = repository.create_user_server(
                 conn, name=fallback, **row_kwargs
             )
-    # Trusted-access mesh: once the new server record exists, reconcile the SSH
-    # mesh across all of this user's trusted servers created from templates that
-    # enable trusted access. Best-effort and fully guarded: a mesh failure must
-    # never propagate and lose the server record for the already-cloned guest.
+    # Trusted-access mesh: once the new server record exists, reconcile and
+    # verify the SSH mesh across all of this user's trusted servers created from
+    # templates that enable trusted access. The mesh SSH runner has bounded
+    # sshd-readiness retries for a freshly booted guest; failures remain
+    # best-effort so they never lose the already-cloned server record, and the
+    # deferred re-mesh remains the convergence safety net.
     if server["status"] == "created" and server["ip_address"] and bool(
         template.get("enable_trusted_access", False)
     ):
@@ -2049,6 +2051,7 @@ def _reconcile_and_record_mesh(
     if statuses:
         overall = (
             "failed" if any(v == "failed" for v in statuses.values())
+            else "unverified" if any(v == "unverified" for v in statuses.values())
             else "no_main_user" if any(
                 v == "no_main_user" for v in statuses.values()
             ) and all(
