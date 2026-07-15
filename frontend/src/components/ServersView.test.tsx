@@ -75,7 +75,13 @@ function stubServersView(
       return json(server());
     }
     if (/\/servers\/\d+\/reset-access$/.test(url) && method === "POST") {
-      return json(server());
+      return json(server({
+        access_reset: [
+          { target_type: "server", target_name: "coder box", account: "cdt-coder", status: "verified", detail: "current bundle key reconciled" },
+          { target_type: "jump_server", target_name: "jump.example", account: "cdt-jumper", status: "verified", detail: "current bundle key reconciled" },
+          { target_type: "trusted_mesh", target_name: "owner servers", account: "", status: "completed", detail: "cross-account trusted access reconciled" },
+        ],
+      }));
     }
     if (/\/users\/\d+\/servers\/\d+$/.test(url) && method === "PATCH") {
       const body = init?.body ? JSON.parse(init.body as string) : {};
@@ -345,6 +351,8 @@ describe("ServersView", () => {
           (i?.method ?? "").toUpperCase() === "POST",
       ),
     ).toBe(true);
+    expect(await screen.findByText(/Access reset results/i)).toBeInTheDocument();
+    expect(screen.getByText(/jump server: jump.example/i)).toBeInTheDocument();
   });
 
   it("shows read-only own servers for a non-self-service user (no delete)", async () => {

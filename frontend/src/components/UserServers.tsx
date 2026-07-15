@@ -1,6 +1,6 @@
 import { FormEvent, ReactNode, useEffect, useState } from "react";
 import { api, ApiError } from "../api";
-import type { ServerTemplateOption, ServerUsage, UserServer } from "../types";
+import type { AccessResetOutcome, ServerTemplateOption, ServerUsage, UserServer } from "../types";
 
 /**
  * Per-user server list + Add Server form (issue_015 phase 3).
@@ -550,6 +550,7 @@ export function ServerCard(props: {
   const [editingResources, setEditingResources] = useState(false);
   const [confirmingReboot, setConfirmingReboot] = useState(false);
   const [confirmingAccessReset, setConfirmingAccessReset] = useState(false);
+  const [accessResetOutcomes, setAccessResetOutcomes] = useState<AccessResetOutcome[]>([]);
   const [rebootAdvisory, setRebootAdvisory] = useState(false);
 
   const needsIp = server.kind === "vm" && !server.ip_address &&
@@ -699,8 +700,9 @@ export function ServerCard(props: {
     setBusy(true);
     setError(null);
     try {
-      await api.resetUserServerAccess(server.user_id, server.id);
+      const updated = await api.resetUserServerAccess(server.user_id, server.id);
       setConfirmingAccessReset(false);
+      setAccessResetOutcomes(updated.access_reset ?? []);
       await props.onChanged();
     } catch (err) {
       setError(
@@ -784,6 +786,18 @@ export function ServerCard(props: {
             </>
           )}
         </p>
+      )}
+      {accessResetOutcomes.length > 0 && (
+        <div className="access-reset-outcomes" role="status">
+          <strong>Access reset results</strong>
+          {accessResetOutcomes.map((outcome, index) => (
+            <div key={`${outcome.target_type}-${outcome.target_name}-${index}`}>
+              {outcome.target_type.replace("_", " ")}: {outcome.target_name}
+              {outcome.account ? ` (${outcome.account})` : ""} - {outcome.status}
+              {outcome.detail ? `: ${outcome.detail}` : ""}
+            </div>
+          ))}
+        </div>
       )}
       {error && (
         <p className="alert error" role="alert">

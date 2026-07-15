@@ -306,6 +306,15 @@ export interface UserServer {
   is_apps_server?: boolean;
   /** Live Proxmox pool membership, resolved on list; transient, never persisted. */
   poolid?: string;
+  access_reset?: AccessResetOutcome[];
+}
+
+export interface AccessResetOutcome {
+  target_type: "server" | "jump_server" | "trusted_mesh";
+  target_name: string;
+  account: string;
+  status: string;
+  detail: string;
 }
 
 export interface CreateUserServerInput {
