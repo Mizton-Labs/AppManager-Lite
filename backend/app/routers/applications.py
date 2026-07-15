@@ -399,6 +399,11 @@ def list_applications(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Unknown team"
             )
+        if not is_admin and team not in set(user["teams"]):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not permitted for this team",
+            )
         apps = repository.list_applications_for_team(
             conn, team, active_only=active_only
         )
@@ -472,7 +477,7 @@ def record_application_launch(
 
 @router.get("/application-statistics", response_model=ApplicationStatisticsOut)
 def application_statistics(
-    days: int = Query(default=30, ge=1, le=365),
+    days: int = Query(default=30, ge=1, le=90),
     _: dict[str, Any] = Depends(require_admin),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> ApplicationStatisticsOut:

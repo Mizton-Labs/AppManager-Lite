@@ -105,7 +105,7 @@ def test_member_team_query_returns_team_apps(admin) -> None:
     assert names == {"Hunt One", "Shared Case"}
 
 
-def test_member_can_view_other_team_section(admin) -> None:
+def test_member_cannot_view_other_team_section(admin) -> None:
     client, csrf, _ = admin
     _seed_app(client, csrf, "Hunt Tool", "https://example.com/hunt", ["Threat Hunting"])
     password = _create_member(client, csrf, "redder2", ["Red Team"])
@@ -114,8 +114,7 @@ def test_member_can_view_other_team_section(admin) -> None:
             "/api/auth/login", json={"username": "redder2", "password": password}
         )
         resp = member.get("/api/applications", params={"team": "Threat Hunting"})
-    assert resp.status_code == 200, resp.text
-    assert {a["name"] for a in resp.json()} == {"Hunt Tool"}
+    assert resp.status_code == 403, resp.text
 
 
 def test_team_query_keeps_visibility_but_reports_publisher_team(admin) -> None:

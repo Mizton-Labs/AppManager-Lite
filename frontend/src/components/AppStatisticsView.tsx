@@ -23,7 +23,7 @@ export function AppStatisticsView() {
   return <div className="stack wide app-statistics-view">
     <div className="view-head"><div><h1>App Statistics</h1><p className="muted">Authenticated portal launches and favorites. Launches indicate card activations, not destination HTTP requests.</p></div>
       <label className="stats-toggle"><input type="checkbox" checked={showCards} onChange={toggle} /> Show 7-day launch counts on app cards</label></div>
-    <div className="stats-period">{[7,30,90,365].map(value => <button type="button" className={days===value ? "btn active" : "btn ghost"} onClick={() => setDays(value)} key={value}>{value} days</button>)}</div>
+    <div className="stats-period">{[7,30,90].map(value => <button type="button" className={days===value ? "btn active" : "btn ghost"} onClick={() => setDays(value)} key={value}>{value} days</button>)}</div>
     {error && <p className="alert error">{error}</p>}
     {!data ? <p role="status">Loading application statistics...</p> : <>
       <div className="stats-kpis"><Kpi label="Launches" value={data.launches}/><Kpi label="Unique users" value={data.unique_users}/><Kpi label="Favorites" value={data.favorites}/></div>
