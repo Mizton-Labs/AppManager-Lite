@@ -74,6 +74,9 @@ function stubServersView(
     if (/\/servers\/\d+\/reboot$/.test(url) && method === "POST") {
       return json(server());
     }
+    if (/\/servers\/\d+\/reset-access$/.test(url) && method === "POST") {
+      return json(server());
+    }
     if (/\/users\/\d+\/servers\/\d+$/.test(url) && method === "PATCH") {
       const body = init?.body ? JSON.parse(init.body as string) : {};
       return json(server(body));
@@ -324,6 +327,21 @@ describe("ServersView", () => {
       fetchMock.mock.calls.some(
         ([u, i]) =>
           /\/api\/users\/7\/servers\/1\/reboot$/.test(String(u)) &&
+          (i?.method ?? "").toUpperCase() === "POST",
+      ),
+    ).toBe(true);
+
+    // Reset access -> confirm -> POST for the owner's trusted set.
+    await userEvent.click(
+      screen.getByRole("button", { name: /^Reset access on servers$/ }),
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: /^Confirm reset access$/ }),
+    );
+    expect(
+      fetchMock.mock.calls.some(
+        ([u, i]) =>
+          /\/api\/users\/7\/servers\/1\/reset-access$/.test(String(u)) &&
           (i?.method ?? "").toUpperCase() === "POST",
       ),
     ).toBe(true);

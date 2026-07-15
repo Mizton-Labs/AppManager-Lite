@@ -364,6 +364,13 @@ export const api = {
       { method: "POST" },
     ),
 
+  /** Force the owner's trusted-server access and sudo reconciliation. */
+  resetUserServerAccess: (userId: number, serverId: number) =>
+    request<UserServer>(
+      `users/${userId}/servers/${serverId}/reset-access`,
+      { method: "POST" },
+    ),
+
   /** Admin-only: force-remove a server record (even if its destroy failed). */
   forceRemoveServer: (userId: number, serverId: number) =>
     request<{ detail: string }>(

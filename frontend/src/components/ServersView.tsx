@@ -162,6 +162,7 @@ function ServerRow(props: {
   timeframe: StatsTimeframe;
   isAdmin: boolean;
   allowResourceEdit: boolean;
+  allowAccessReset: boolean;
   canDelete: boolean;
   onChanged: () => void | Promise<void>;
 }) {
@@ -175,6 +176,7 @@ function ServerRow(props: {
       userId={props.ownerId}
       isAdmin={props.isAdmin}
       allowResourceEdit={props.allowResourceEdit}
+      allowAccessReset={props.allowAccessReset}
       canDelete={props.canDelete}
       onChanged={props.onChanged}
       charts={
@@ -207,6 +209,8 @@ function OwnerGroup(props: {
   // this too); an admin may delete any server.
   const canDelete =
     props.isAdmin || (isOwnGroup && props.currentUser.self_service);
+  const allowAccessReset =
+    props.isAdmin || (isOwnGroup && props.currentUser.self_service);
   const visible = owner.servers.filter((s) =>
     serverMatches(s, owner, props.filter),
   );
@@ -236,6 +240,7 @@ function OwnerGroup(props: {
               timeframe={props.timeframe}
               isAdmin={props.isAdmin}
               allowResourceEdit={allowResourceEdit}
+              allowAccessReset={allowAccessReset}
               canDelete={canDelete}
               onChanged={props.onChanged}
             />

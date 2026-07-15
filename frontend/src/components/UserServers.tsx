@@ -128,6 +128,7 @@ export function UserServersPanel(props: {
               canDelete={props.canDelete}
               isAdmin={props.isAdmin ?? false}
               allowResourceEdit={props.allowResourceEdit ?? false}
+              allowAccessReset={props.canDelete}
               userId={props.userId}
               onChanged={refresh}
             />
@@ -528,6 +529,7 @@ export function ServerCard(props: {
   canDelete: boolean;
   isAdmin: boolean;
   allowResourceEdit: boolean;
+  allowAccessReset: boolean;
   userId: number;
   onChanged: () => void | Promise<void>;
   /**
@@ -547,6 +549,7 @@ export function ServerCard(props: {
   const [confirmingForce, setConfirmingForce] = useState(false);
   const [editingResources, setEditingResources] = useState(false);
   const [confirmingReboot, setConfirmingReboot] = useState(false);
+  const [confirmingAccessReset, setConfirmingAccessReset] = useState(false);
   const [rebootAdvisory, setRebootAdvisory] = useState(false);
 
   const needsIp = server.kind === "vm" && !server.ip_address &&
@@ -638,6 +641,13 @@ export function ServerCard(props: {
     !!server.vmid &&
     server.status !== "failed" &&
     !server.deletion_pending;
+  // Access repair is an ownership/self-service operation, not a resource-size
+  // edit; use the same caller gate the backend enforces for Reboot.
+  const canResetAccess =
+    props.allowAccessReset &&
+    !!server.vmid &&
+    server.status !== "failed" &&
+    !server.deletion_pending;
 
   async function saveResources(next: {
     cpus: number;
@@ -679,6 +689,24 @@ export function ServerCard(props: {
     } catch (err) {
       setError(
         err instanceof ApiError ? err.message : "Unable to reboot the server.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resetAccess() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.resetUserServerAccess(server.user_id, server.id);
+      setConfirmingAccessReset(false);
+      await props.onChanged();
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : "Unable to reset access on servers.",
       );
     } finally {
       setBusy(false);
@@ -857,6 +885,38 @@ export function ServerCard(props: {
               disabled={busy}
             >
               Reboot
+            </button>
+          ))}
+
+        {canResetAccess &&
+          (confirmingAccessReset ? (
+            <>
+              <button
+                type="button"
+                className="btn danger"
+                onClick={resetAccess}
+                disabled={busy}
+              >
+                Confirm reset access
+              </button>
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => setConfirmingAccessReset(false)}
+                disabled={busy}
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              className="btn"
+              onClick={() => setConfirmingAccessReset(true)}
+              disabled={busy}
+              title="Reconcile passwordless sudo and cross-account SSH access for all of this user's trusted servers"
+            >
+              Reset access on servers
             </button>
           ))}
 
