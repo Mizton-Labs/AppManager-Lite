@@ -716,8 +716,12 @@ access default on):
   root** (`PermitRootLogin` + the key in root's `authorized_keys`); when it
   doesn't, the mesh records a clear, actionable error instead of silently doing
   nothing. The **Reset access on servers** card action (self-service owner or
-  admin) forces a full owner-set reconciliation, including the managed
-  passwordless-sudo drop-ins. Each mesh outcome (established / unverified /
+  admin) forces a full owner-set reconciliation: it verifies the current
+  downloadable bundle keypair, reasserts that public key on every eligible
+  template-main account, reconciles the managed passwordless-sudo drop-ins,
+  repairs the configured jump-server entry, and then verifies the trusted mesh.
+  The jump repair replaces only that user's `AppManager-managed:user-<id>`
+  entry; legacy unmanaged jump keys are preserved. Each mesh outcome (established / unverified /
   skipped / failed, with the reason) is recorded on the server's provisioning
   log and in the audit trail (`server_mesh`). An established result means every
   directed source-account to peer-account SSH connection was tested; an
