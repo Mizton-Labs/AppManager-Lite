@@ -548,7 +548,15 @@ export interface Application {
   pending_alias_auth_required?: boolean | null;
   /** True when current approved proxy config needs an admin push. */
   needs_push?: boolean;
+  is_favorite?: boolean;
+  visits_7d?: number | null;
+  show_statistics?: boolean;
 }
+
+export interface ApplicationTrendPoint { date: string; launches: number; unique_users: number; }
+export interface ApplicationStatisticsRow { application_id: number; name: string; launches: number; unique_users: number; favorites: number; visits_7d: number; }
+export interface ApplicationStatistics { days: number; launches: number; unique_users: number; favorites: number; trend: ApplicationTrendPoint[]; applications: ApplicationStatisticsRow[]; }
+export interface ApplicationStatisticsSettings { show_app_statistics: boolean; }
 
 export interface AliasConfig {
   status: string;

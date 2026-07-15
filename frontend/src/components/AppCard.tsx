@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+import { api } from "../api";
 import type { Application } from "../types";
 import { resolveAppHref, resolveIconSrc } from "../lib/links";
 
@@ -26,6 +28,15 @@ function publisherLabel(username: string | null | undefined): string {
  */
 export function AppCard({ app, editHref }: { app: Application; editHref?: string }) {
   const iconSrc = resolveIconSrc(app.icon_url);
+  const [favorite, setFavorite] = useState(!!app.is_favorite);
+  useEffect(() => setFavorite(!!app.is_favorite), [app.id, app.is_favorite]);
+  async function toggleFavorite() {
+    const next = !favorite;
+    setFavorite(next);
+    try { await (next ? api.favoriteApplication(app.id) : api.unfavoriteApplication(app.id)); }
+    catch { setFavorite(!next); }
+  }
+  function recordLaunch() { void api.recordApplicationLaunch(app.id).catch(() => undefined); }
   return (
     <div className="app-card">
       <a
@@ -33,6 +44,7 @@ export function AppCard({ app, editHref }: { app: Application; editHref?: string
         href={resolveAppHref(app)}
         target="_blank"
         rel="noopener noreferrer"
+        onClick={recordLaunch}
       >
         <span className="app-card-icon" aria-hidden="true">
           {iconSrc ? (
@@ -58,6 +70,12 @@ export function AppCard({ app, editHref }: { app: Application; editHref?: string
           </span>
         )}
       </a>
+      <button type="button" className={favorite ? "app-card-star active" : "app-card-star"} onClick={toggleFavorite} aria-label={favorite ? `Remove ${app.name} from favorites` : `Add ${app.name} to favorites`}>
+        {favorite ? "★" : "☆"}
+      </button>
+      {app.show_statistics && app.visits_7d !== null && app.visits_7d !== undefined && (
+        <span className="app-card-visits">{app.visits_7d} launches · 7 days</span>
+      )}
       {editHref && (
         <a className="app-card-edit" href={editHref}>
           Edit

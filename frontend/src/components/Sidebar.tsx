@@ -79,6 +79,9 @@ export function Sidebar(props: {
           collapsed={collapsed}
         />
         {isAdmin && (
+          <SideLink to="/app-statistics" icon={<ListIcon />} label="App Statistics" collapsed={collapsed} />
+        )}
+        {isAdmin && (
           <SideLink
             to="/audit"
             icon={<ListIcon />}

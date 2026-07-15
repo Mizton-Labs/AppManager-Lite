@@ -1897,6 +1897,7 @@ textarea:focus-visible,
 }
 
 .app-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 0.45rem;
@@ -1907,6 +1908,17 @@ textarea:focus-visible,
   color: var(--text);
   transition: border-color 0.15s, transform 0.15s;
 }
+
+.app-card-star { position: absolute; top: .55rem; right: .55rem; border: 0; background: transparent; color: var(--muted); font-size: 1.35rem; cursor: pointer; }
+.app-card-star.active { color: var(--accent); }
+.app-card-visits { position: absolute; right: .65rem; bottom: .55rem; font-size: .72rem; color: var(--muted); }
+.stats-toggle { display: flex; align-items: center; gap: .45rem; font-size: .85rem; }
+.stats-period { display: flex; gap: .5rem; flex-wrap: wrap; }
+.stats-kpis { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 1rem; }
+.stats-kpi { display: grid; gap: .35rem; }.stats-kpi strong { font-size: 2rem; color: var(--accent); }
+.stats-panel { display: grid; gap: .75rem; }.stats-bars { height: 180px; display: flex; align-items: end; gap: 3px; }.stats-bars div { flex: 1; min-width: 3px; background: var(--accent); border-radius: 3px 3px 0 0; opacity: .85; }
+.stats-table { display: grid; gap: .45rem; }.stats-row { display: grid; grid-template-columns: 1fr auto auto auto; gap: 1rem; padding: .55rem 0; border-bottom: 1px solid var(--border); font-size: .85rem; }
+@media (max-width: 700px) { .stats-kpis { grid-template-columns: 1fr; }.stats-row { grid-template-columns: 1fr auto; }.stats-row span { text-align: right; } }
 
 .app-card-main {
   display: flex;

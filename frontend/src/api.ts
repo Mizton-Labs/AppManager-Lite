@@ -210,6 +210,13 @@ export const api = {
   listManagedApplications: () =>
     request<Application[]>("applications/manage"),
 
+  favoriteApplication: (id: number) => request(`applications/${id}/favorite`, { method: "POST" }),
+  unfavoriteApplication: (id: number) => request(`applications/${id}/favorite`, { method: "DELETE" }),
+  recordApplicationLaunch: (id: number) => request<void>(`applications/${id}/launch`, { method: "POST" }),
+  getApplicationStatistics: (days: number) => request<import("./types").ApplicationStatistics>(`application-statistics?days=${days}`),
+  getApplicationStatisticsSettings: () => request<import("./types").ApplicationStatisticsSettings>("application-statistics/settings"),
+  updateApplicationStatisticsSettings: (show_app_statistics: boolean) => request<import("./types").ApplicationStatisticsSettings>("application-statistics/settings", { method: "PATCH", body: { show_app_statistics } }),
+
   /** Audit-log entries, optionally filtered by category (administrators only). */
   listAuditLog: (category?: string) =>
     request<AuditEntry[]>(
