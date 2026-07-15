@@ -329,23 +329,25 @@ def test_trusted_mesh_established_on_second_server(admin, monkeypatch) -> None:
     keygen_cmds = [c for c in ssh.commands if "ssh-keygen" in c[-1]]
     # Both servers get a keygen/read-pub step.
     assert len(keygen_cmds) == 2
-    # Each server has the other's pubkey installed for 'coder'.
+    # Each server has the other's pubkey installed for its own template user.
     mesh_installs = [
         c for c in ssh.commands
         if "authorized_keys" in c[-1] and "AAAAMESHKEY" in c[-1]
     ]
     assert len(mesh_installs) >= 2
     for c in mesh_installs:
-        assert "coder" in c[-1]
+        assert "AppManager-trusted:" in c[-1]
 
 
 def test_reconcile_trusted_mesh_unit(monkeypatch) -> None:
     ssh = _FakeSsh(monkeypatch)
     result = proxmox.ProxmoxResult()
     status = servers.reconcile_trusted_mesh(
-        servers=[{"ip_address": "10.0.0.1"}, {"ip_address": "10.0.0.2"}],
+        servers=[
+            {"ip_address": "10.0.0.1", "os_user": "cdt-coder"},
+            {"ip_address": "10.0.0.2", "os_user": "apps"},
+        ],
         admin_key_path="/keys/admin",
-        os_user="coder",
         result=result,
     )
     assert status == "established"
@@ -355,12 +357,16 @@ def test_reconcile_trusted_mesh_unit(monkeypatch) -> None:
                 if "authorized_keys" in c[-1] and "AAAAMESHKEY" in c[-1]]
     assert len(keygen) == 2
     assert len(installs) == 2
-    # Mesh keys are stamped as AppManager-managed trusted keys.
-    assert all("AppManager-trusted:coder" in c[-1] for c in installs)
-    # Every directed pair is verified as the shared OS user after key install.
+    # Cross-account keys are installed into the target account on each peer.
+    assert any("chown -R apps:" in c[-1] for c in installs)
+    assert any("chown -R cdt-coder:" in c[-1] for c in installs)
+    # Every directed pair is verified with source and target template accounts.
     verifies = [c for c in ssh.commands if "BatchMode=yes" in c[-1]]
     assert len(verifies) == 2
-    assert all("su -s /bin/sh - coder" in c[-1] for c in verifies)
+    assert any("su -s /bin/sh - cdt-coder" in c[-1] and "-l apps" in c[-1]
+               for c in verifies)
+    assert any("su -s /bin/sh - apps" in c[-1] and "-l cdt-coder" in c[-1]
+               for c in verifies)
 
 
 def test_reconcile_trusted_mesh_reports_unverified_peer(monkeypatch) -> None:
@@ -385,9 +391,11 @@ def test_reconcile_trusted_mesh_reports_unverified_peer(monkeypatch) -> None:
     monkeypatch.setattr(servers, "_run", fake_run)
     result = proxmox.ProxmoxResult()
     status = servers.reconcile_trusted_mesh(
-        servers=[{"ip_address": "10.0.0.1"}, {"ip_address": "10.0.0.2"}],
+        servers=[
+            {"ip_address": "10.0.0.1", "os_user": "cdt-coder"},
+            {"ip_address": "10.0.0.2", "os_user": "apps"},
+        ],
         admin_key_path="/keys/admin",
-        os_user="coder",
         result=result,
     )
     assert status == "unverified"
@@ -399,12 +407,45 @@ def test_trusted_mesh_noop_single_server(monkeypatch) -> None:
     ssh = _FakeSsh(monkeypatch)
     result = proxmox.ProxmoxResult()
     status = servers.reconcile_trusted_mesh(
-        servers=[{"ip_address": "10.0.0.1"}],
-        admin_key_path="/k", os_user="coder", result=result,
+        servers=[{"ip_address": "10.0.0.1", "os_user": "cdt-coder"}],
+        admin_key_path="/k", result=result,
     )
     assert status == "single_server"
     assert ssh.commands == []
     assert "fewer than two" in result.transcript
+
+
+def test_reset_access_reconciles_cross_account_owner_set(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    ssh = _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    coder = _add_template(
+        client, csrf, name="Coder", main_os_user="cdt-coder",
+        enable_sudo=True, enable_trusted_access=True,
+    )
+    apps = _add_template(
+        client, csrf, name="Apps", main_os_user="apps",
+        enable_sudo=True, enable_trusted_access=True,
+    )
+    created = _create_member(client, csrf)
+    uid = created["user"]["id"]
+    first = _mk_server(client, csrf, uid, coder["id"], "coder")
+    _mk_server(client, csrf, uid, apps["id"], "apps")
+    ssh.commands.clear()
+
+    response = client.post(
+        f"/api/users/{uid}/servers/{first['id']}/reset-access",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert response.status_code == 200, response.text
+    commands = [c[-1] for c in ssh.commands]
+    assert sum("ssh-keygen" in command for command in commands) == 2
+    assert any("chown -R apps:" in command for command in commands)
+    assert any("chown -R cdt-coder:" in command for command in commands)
+    assert any("BatchMode=yes" in command and "-l apps" in command for command in commands)
+    events = client.get("/api/audit", params={"category": "user"}).json()
+    assert any(event["action"] == "server_access_reset" for event in events)
 
 
 def test_trusted_enabled_without_main_user_notes_and_skips(admin, monkeypatch) -> None:

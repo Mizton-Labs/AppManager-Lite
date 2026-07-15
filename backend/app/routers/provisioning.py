@@ -1036,6 +1036,8 @@ _sweep_lock = threading.Lock()
 _mesh_lock = threading.Lock()
 _mesh_signatures: dict[int, str] = {}
 _mesh_inflight: set[int] = set()
+_mesh_reset_at: dict[int, float] = {}
+_MESH_RESET_COOLDOWN_SECONDS = 60.0
 _MESH_REMESH_BUDGET_SECONDS = 120.0
 # Tests set this False to run the re-mesh inline (deterministic assertions);
 # in production it runs in a background thread so the list request is not held.
@@ -2008,7 +2010,7 @@ def _reconcile_and_record_mesh(
     mesh_result = servers.ProxmoxResult()
     statuses: dict[str, str] = {}
     try:
-        groups = _trusted_groups_for(conn, user_id)
+        trusted_servers, missing_main_user = _trusted_servers_for(conn, user_id)
         # Surface the common misconfiguration: trusted access is on for the
         # triggering server but its template has no main OS user, so it can
         # never join a mesh.
@@ -2025,19 +2027,23 @@ def _reconcile_and_record_mesh(
                 "user; it cannot join a mesh (a shared OS account is required)."
             )
             statuses["<no-main-user>"] = "no_main_user"
-        if not groups:
+        if missing_main_user:
             mesh_result.log(
-                "Trusted access: no reachable server groups to mesh yet."
+                "Trusted access: skipped server(s) whose templates have no main OS user."
             )
-        for main_user, group in sorted(groups.items()):
-            mesh_result.log(f"Reconciling trusted mesh for OS user '{main_user}'")
+            statuses["<no-main-user>"] = "no_main_user"
+        if not trusted_servers:
+            mesh_result.log(
+                "Trusted access: no reachable trusted servers to mesh yet."
+            )
+        else:
+            mesh_result.log("Reconciling cross-account trusted mesh for owner servers")
             status = servers.reconcile_trusted_mesh(
-                servers=group,
+                servers=trusted_servers,
                 admin_key_path=admin_key_path,
-                os_user=main_user,
                 result=mesh_result,
             )
-            statuses[main_user] = status
+            statuses["<owner-set>"] = status
     except Exception as exc:  # noqa: BLE001 - best-effort, never fatal
         mesh_result.fail(f"trusted mesh error: {exc.__class__.__name__}")
         statuses["<error>"] = "failed"
@@ -2077,21 +2083,24 @@ def _reconcile_and_record_mesh(
     return updated or server
 
 
-def _trusted_groups_for(
+def _trusted_servers_for(
     conn: sqlite3.Connection, user_id: int
-) -> dict[str, list[dict[str, Any]]]:
-    """Group the user's reachable trusted-access servers by their template's
-    main OS user (issue_023).
+) -> tuple[list[dict[str, Any]], bool]:
+    """Return one owner's reachable trusted servers and a missing-user flag.
 
-    Only servers that are non-failed, have an IP, and whose template both
-    enables trusted access and defines a (non-empty) main OS user are
-    included; each server dict is annotated with its resolved ``admin_key_path``
-    so the mesh can reach it with its own admin key. Servers whose template
-    has no main OS user are omitted (they cannot mesh -- reported separately).
+    Every included server carries its *own* template ``os_user``. The mesh is
+    cross-account: e.g. ``cdt-coder@coder-box`` trusts ``apps@apps-box`` for
+    the same owner, rather than grouping only same-named accounts.
     """
-    groups: dict[str, list[dict[str, Any]]] = {}
+    trusted: list[dict[str, Any]] = []
+    missing_main_user = False
     for s in repository.list_user_servers(conn, user_id):
-        if s["status"] == "failed" or not s["ip_address"]:
+        if (
+            s["status"] == "failed"
+            or not s["ip_address"]
+            or s.get("deletion_requested_at")
+            or s.get("deletion_error")
+        ):
             continue
         # Defense in depth: only mesh to a well-formed IPv4 target. All SSH
         # runs via argv arrays (shell=False) so this is not an injection guard,
@@ -2107,6 +2116,7 @@ def _trusted_groups_for(
             continue
         main_user = (tpl.get("main_os_user") or "").strip()
         if not main_user:
+            missing_main_user = True
             continue
         annotated = dict(s)
         annotated["admin_key_path"] = servers.resolve_ssh_key(
@@ -2114,23 +2124,18 @@ def _trusted_groups_for(
             s.get("admin_ssh_key_id"),
             fallback_path=(s.get("admin_ssh_key_path") or "").strip(),
         )
-        groups.setdefault(main_user, []).append(annotated)
-    return groups
+        annotated["os_user"] = main_user
+        annotated["enable_sudo"] = bool(tpl.get("enable_sudo", True))
+        trusted.append(annotated)
+    return trusted, missing_main_user
 
 
-def _mesh_signature(meshable: dict[str, list[dict[str, Any]]]) -> str:
-    """A stable signature of a user's meshable trusted set.
-
-    Keyed by main OS user plus each member's IP and resolved admin key path, so
-    a changed reachable set OR a rotated admin key re-triggers a reconcile.
-    """
+def _mesh_signature(meshable: list[dict[str, Any]]) -> str:
+    """Stable signature of an owner's cross-account trusted server set."""
     return "|".join(
-        f"{u}:"
-        + ",".join(
-            f"{s['ip_address']}@{(s.get('admin_key_path') or '')}"
-            for s in sorted(g, key=lambda x: x["ip_address"])
-        )
-        for u, g in sorted(meshable.items())
+        f"{s['ip_address']}:{s['os_user']}:{int(bool(s.get('enable_sudo')))}"
+        f"@{(s.get('admin_key_path') or '')}"
+        for s in sorted(meshable, key=lambda x: (x["ip_address"], x["os_user"]))
     )
 
 
@@ -2143,13 +2148,12 @@ def _maybe_remesh_trusted(conn: sqlite3.Connection, user_id: int) -> None:
     the list request returns immediately. Never raises.
     """
     try:
-        groups = _trusted_groups_for(conn, user_id)
+        trusted_servers, _ = _trusted_servers_for(conn, user_id)
     except Exception:  # noqa: BLE001 - never fail the list on this
         return
-    meshable = {u: g for u, g in groups.items() if len(g) >= 2}
-    if not meshable:
+    if len(trusted_servers) < 2:
         return
-    signature = _mesh_signature(meshable)
+    signature = _mesh_signature(trusted_servers)
     with _mesh_lock:
         if _mesh_signatures.get(user_id) == signature:
             return  # nothing new since the last successful reconcile
@@ -2176,70 +2180,62 @@ def _maybe_remesh_trusted(conn: sqlite3.Connection, user_id: int) -> None:
 
 def _remesh_worker(user_id: int, signature: str) -> None:
     """Background trusted-mesh reconcile for one user, bounded by a wall-clock
-    budget. Records the signature only when EVERY group reconciles cleanly, so a
+    budget. Records the signature only when the owner's full set reconciles, so a
     transient failure is retried on the next list load."""
     deadline = time.monotonic() + _MESH_REMESH_BUDGET_SECONDS
     try:
         with db.get_connection() as conn:
-            groups = _trusted_groups_for(conn, user_id)
-            meshable = {u: g for u, g in groups.items() if len(g) >= 2}
+            trusted_servers, _ = _trusted_servers_for(conn, user_id)
             # The set may have changed between trigger and run; only cache the
             # signature we actually meshed against.
-            current_sig = _mesh_signature(meshable)
+            current_sig = _mesh_signature(trusted_servers)
+            if len(trusted_servers) < 2:
+                return
             all_ok = True
-            for main_user, group in sorted(meshable.items()):
-                if time.monotonic() >= deadline:
-                    all_ok = False  # ran out of budget; retry next load
-                    break
-                # Skip servers we cannot reach (no resolvable admin key) so one
-                # keyless server never fails the whole group's mesh.
-                usable = [s for s in group if (s.get("admin_key_path") or "").strip()]
-                if len(usable) < 2:
-                    # Not enough reachable-with-a-key members to mesh. Treat as a
-                    # terminal skip (not a failure) so it doesn't churn on every
-                    # list load; a later key/IP change re-triggers via signature.
-                    logger.info(
-                        "Trusted re-mesh: group '%s' for user=%s has fewer than "
-                        "two servers with a resolvable admin key; skipping",
-                        main_user, user_id,
-                    )
-                    continue
-                anchor = usable[0]
-                mesh_result = servers.ProxmoxResult()
-                status_str = "failed"
-                try:
-                    status_str = servers.reconcile_trusted_mesh(
-                        servers=usable,
-                        admin_key_path=(anchor.get("admin_key_path") or ""),
-                        os_user=main_user,
-                        result=mesh_result,
-                    )
-                except Exception as exc:  # noqa: BLE001 - best-effort
-                    mesh_result.fail(
-                        f"trusted mesh error: {exc.__class__.__name__}"
-                    )
-                if status_str not in ("established", "single_server"):
-                    all_ok = False
-                fresh = repository.get_user_server(conn, user_id, anchor["id"])
-                if fresh is not None:
-                    merged = (
-                        fresh["last_log"]
-                        + "\n\n--- trusted access (re-mesh) ---\n"
-                        + mesh_result.transcript
-                    ).strip()
-                    repository.update_user_server(
-                        conn, user_id, anchor["id"], last_log=merged
-                    )
-                    audit.record(
-                        conn,
-                        category=audit.CATEGORY_USER,
-                        action="server_mesh",
-                        actor=None,
-                        target_type="user_server",
-                        target_id=anchor["id"],
-                        target_name=anchor["name"],
-                        detail=f"status={status_str}; {main_user} (re-mesh)"[:500],
-                    )
+            if time.monotonic() >= deadline:
+                all_ok = False
+                return
+            usable = [
+                s for s in trusted_servers if (s.get("admin_key_path") or "").strip()
+            ]
+            if len(usable) < 2:
+                logger.info(
+                    "Trusted re-mesh: user=%s has fewer than two servers with "
+                    "a resolvable admin key; skipping",
+                    user_id,
+                )
+                return
+            anchor = usable[0]
+            mesh_result = servers.ProxmoxResult()
+            status_str = "failed"
+            try:
+                status_str = servers.reconcile_trusted_mesh(
+                    servers=usable,
+                    admin_key_path=(anchor.get("admin_key_path") or ""),
+                    result=mesh_result,
+                )
+            except Exception as exc:  # noqa: BLE001 - best-effort
+                mesh_result.fail(f"trusted mesh error: {exc.__class__.__name__}")
+            if status_str not in ("established", "single_server"):
+                all_ok = False
+            fresh = repository.get_user_server(conn, user_id, anchor["id"])
+            if fresh is not None:
+                merged = (
+                    fresh["last_log"]
+                    + "\n\n--- trusted access (re-mesh) ---\n"
+                    + mesh_result.transcript
+                ).strip()
+                repository.update_user_server(conn, user_id, anchor["id"], last_log=merged)
+                audit.record(
+                    conn,
+                    category=audit.CATEGORY_USER,
+                    action="server_mesh",
+                    actor=None,
+                    target_type="user_server",
+                    target_id=anchor["id"],
+                    target_name=anchor["name"],
+                    detail=f"status={status_str}; owner-set (re-mesh)"[:500],
+                )
             if all_ok:
                 with _mesh_lock:
                     _mesh_signatures[user_id] = current_sig
@@ -2411,6 +2407,95 @@ def update_user_server(
         ),
     )
     return _server_out(updated, reboot_required=reboot_required)
+
+
+@router.post(
+    "/users/{user_id}/servers/{server_id}/reset-access",
+    response_model=UserServerOut,
+)
+def reset_user_server_access(
+    user_id: int,
+    server_id: int,
+    actor: dict[str, Any] = Depends(get_current_user),
+    __: None = Depends(verify_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> UserServerOut:
+    """Force cross-account mesh and sudo reconciliation for one owner's set.
+
+    The action is deliberately attached to a server card, but it applies to all
+    reachable trusted servers belonging to that owner. It bypasses the lazy
+    mesh signature cache and synchronously records the full transcript so an
+    operator can immediately see whether access was restored.
+    """
+    is_admin = _require_self_or_admin(actor, user_id)
+    server = repository.get_user_server(conn, user_id, server_id)
+    if server is None:
+        raise HTTPException(status_code=404, detail="Server not found")
+    if not is_admin and not actor.get("self_service"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only self-service users may reset server access",
+        )
+    if server["status"] == "failed":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This server failed provisioning and cannot reset access",
+        )
+    if server.get("deletion_requested_at") or server.get("deletion_error"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This server has a deletion pending and cannot reset access",
+        )
+    with _mesh_lock:
+        if user_id in _mesh_inflight:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Server access reconciliation is already in progress",
+            )
+        last_reset = _mesh_reset_at.get(user_id, 0.0)
+        remaining = _MESH_RESET_COOLDOWN_SECONDS - (time.monotonic() - last_reset)
+        if remaining > 0:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Server access was reset recently; retry in {int(remaining) + 1}s",
+            )
+        _mesh_inflight.add(user_id)
+        _mesh_signatures.pop(user_id, None)
+    try:
+        # Resolve once before the full owner-set reconcile; the reconcile uses
+        # each peer's own resolved key internally.
+        admin_key_path = servers.resolve_ssh_key(
+            conn,
+            server.get("admin_ssh_key_id"),
+            fallback_path=(server.get("admin_ssh_key_path") or "").strip(),
+        )
+        with _mesh_lock:
+            _mesh_reset_at[user_id] = time.monotonic()
+        updated = _reconcile_and_record_mesh(
+            conn,
+            user_id,
+            server,
+            admin_key_path,
+            actor=actor,
+        )
+    finally:
+        with _mesh_lock:
+            _mesh_inflight.discard(user_id)
+    audit.record(
+        conn,
+        category=audit.CATEGORY_USER,
+        action="server_access_reset",
+        actor=actor,
+        target_type="user_server",
+        target_id=server_id,
+        target_name=server["name"],
+        detail="forced cross-account mesh and passwordless sudo reconciliation",
+    )
+    logger.info(
+        "Server access reset requested by user=%r for server id=%s (owner=%s)",
+        actor.get("username"), server_id, user_id,
+    )
+    return _server_out(updated, include_error=is_admin)
 
 
 @router.post(

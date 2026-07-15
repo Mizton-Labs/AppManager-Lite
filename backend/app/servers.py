@@ -32,6 +32,10 @@ _MESH_SSH_BACKOFF_SECONDS = 2.0
 # Peer verification is directed N^2 work. Bound it so a large or unreachable
 # trusted group cannot make provisioning (or a lazy re-mesh) wait indefinitely.
 _MESH_VERIFY_BUDGET_SECONDS = 30.0
+# Covers key collection, public-key installation, and peer verification for a
+# forced reset. Prevents a self-service request from holding a worker in remote
+# root SSH operations indefinitely.
+_MESH_RECONCILE_BUDGET_SECONDS = 60.0
 _OS_USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 # Server display names are capped at the DNS hostname length (63) so a fully
 # composed name (template-userid-suffix) still fits both the record and the
@@ -471,15 +475,16 @@ def _verify_mesh_pair(
     from_ip: str,
     to_ip: str,
     admin_key_path: str,
-    os_user: str,
+    from_user: str,
+    to_user: str,
     result: ProxmoxResult,
 ) -> bool:
     """Verify passwordless SSH from one meshed guest to another.
 
     The check enters ``from_ip`` with its template admin key, then runs ssh as
-    the shared OS user using that guest's locally generated private key. A mesh
-    is only established when every directed pair passes this real connection
-    test, not merely when the public keys were written successfully.
+    that server's template account to the peer server's template account. A
+    mesh is only established when every directed pair passes this real
+    connection test, not merely when public keys were written successfully.
     """
     peer_command = (
         # The app has no authoritative host-key registry for guest IPs. Keep
@@ -487,22 +492,22 @@ def _verify_mesh_pair(
         # potentially stale key in the shared user's known_hosts on IP reuse.
         "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "
         "-o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null "
-        f"-o ConnectTimeout=5 {shlex.quote(to_ip)} true"
+        f"-o ConnectTimeout=5 -l {shlex.quote(to_user)} {shlex.quote(to_ip)} true"
     )
     remote = "sh -c " + shlex.quote(
-        f"su -s /bin/sh - {shlex.quote(os_user)} -c {shlex.quote(peer_command)}"
+        f"su -s /bin/sh - {shlex.quote(from_user)} -c {shlex.quote(peer_command)}"
     )
     proc = _run_mesh_ssh(admin_key_path, from_ip, remote)
     pair = f"{from_ip}->{to_ip}"
     if proc.returncode == 0:
-        result.log(f"Trusted access verified: {pair} as '{os_user}'")
+        result.log(f"Trusted access verified: {pair} ({from_user}->{to_user})")
         return True
     detail = (proc.stderr or proc.stdout or "").strip()[:200]
     # This is a recoverable mesh state: the deferred reconciler should retry it
     # once a fresh guest's sshd/key state has settled, so do not mark the whole
     # provisioning result as failed.
     result.log(
-        f"Trusted access verification failed: {pair} as '{os_user}': {detail}"
+        f"Trusted access verification failed: {pair} ({from_user}->{to_user}): {detail}"
     )
     return False
 
@@ -511,15 +516,14 @@ def reconcile_trusted_mesh(
     *,
     servers: list[dict[str, Any]],
     admin_key_path: str,
-    os_user: str,
     result: ProxmoxResult,
 ) -> str:
-    """Establish a full SSH mesh across the user's trusted servers.
+    """Establish a cross-account SSH mesh across one owner's trusted servers.
 
-    For each server: ensure the main user has a locally-generated keypair and
-    collect its public key. Then install every collected public key into every
-    server's main-user authorized_keys. Private keys are generated on and stay
-    on the servers; the app only relays public keys. Idempotent.
+    Each server dict carries its own template ``os_user``. For every directed
+    pair, the source server's account key is installed into the target server's
+    account authorized_keys, then verified as ``source_user@source`` to
+    ``target_user@target``. Private keys stay on their source servers.
 
     ``servers`` is a list of dicts with an ``ip_address`` (reachable ones
     only). Returns a status string: ``"established"`` when every directed
@@ -533,9 +537,11 @@ def reconcile_trusted_mesh(
             "Trusted access: fewer than two reachable servers; nothing to mesh"
         )
         return "single_server"
-    if not _OS_USER_RE.match(os_user):
-        result.fail(f"trusted mesh: invalid OS username {os_user!r}")
-        return "invalid_user"
+    for srv in reachable:
+        os_user = (srv.get("os_user") or "").strip()
+        if not _OS_USER_RE.match(os_user):
+            result.fail(f"trusted mesh: invalid OS username {os_user!r}")
+            return "invalid_user"
 
     def _key_for(srv: dict[str, Any]) -> str:
         # Each server is reached with ITS OWN admin key (templates sharing a
@@ -543,31 +549,51 @@ def reconcile_trusted_mesh(
         # caller-supplied key when a server carries none.
         return (srv.get("admin_key_path") or "").strip() or admin_key_path
 
+    deadline = time.monotonic() + _MESH_RECONCILE_BUDGET_SECONDS
+
+    def _within_budget(stage: str) -> bool:
+        if time.monotonic() < deadline:
+            return True
+        result.log(
+            f"Trusted access reconciliation budget exhausted during {stage}; "
+            "remaining work will retry on the next reconcile"
+        )
+        return False
+
     # 1. Collect each server's public key (generating one if needed).
-    pubkeys: dict[str, str] = {}
+    pubkeys: dict[str, tuple[str, str]] = {}
     for srv in reachable:
+        if not _within_budget("key collection"):
+            return "unverified"
         ip = srv["ip_address"]
+        os_user = srv["os_user"]
         pub = _ensure_local_key_and_read_pub(
             ip=ip, admin_key_path=_key_for(srv), os_user=os_user, result=result
         )
         if pub is None:
             return "failed"
-        pubkeys[ip] = pub
+        pubkeys[ip] = (os_user, pub)
 
     # 2. Install every collected pubkey into every server's authorized_keys.
     ok = True
     for srv in reachable:
         ip = srv["ip_address"]
-        for source_ip, pub in pubkeys.items():
+        target_user = srv["os_user"]
+        for source_ip, (source_user, pub) in pubkeys.items():
             if source_ip == ip:
                 continue  # a server does not need its own key installed
+            if not _within_budget("key installation"):
+                return "unverified"
             if not install_public_key(
                 ip=ip,
                 admin_key_path=_key_for(srv),
-                os_users=[os_user],
+                os_users=[target_user],
                 public_key=pub,
                 result=result,
-                marker=f"AppManager-trusted:{os_user}",
+                # The target user is visible in the command itself; include
+                # source and target identities in the marker for traceability.
+                marker=f"AppManager-trusted:{source_user}->{target_user}",
+                enable_sudo=bool(srv.get("enable_sudo", False)),
                 retry=True,
             ):
                 ok = False
@@ -575,9 +601,12 @@ def reconcile_trusted_mesh(
         return "failed"
 
     verified = True
-    verify_deadline = time.monotonic() + _MESH_VERIFY_BUDGET_SECONDS
+    verify_deadline = min(
+        deadline, time.monotonic() + _MESH_VERIFY_BUDGET_SECONDS
+    )
     for source in reachable:
         source_ip = source["ip_address"]
+        source_user = source["os_user"]
         for target in reachable:
             target_ip = target["ip_address"]
             if source_ip == target_ip:
@@ -592,14 +621,15 @@ def reconcile_trusted_mesh(
                 from_ip=source_ip,
                 to_ip=target_ip,
                 admin_key_path=_key_for(source),
-                os_user=os_user,
+                from_user=source_user,
+                to_user=target["os_user"],
                 result=result,
             ):
                 verified = False
     if verified:
         result.log(
             f"Trusted access mesh established across {len(reachable)} servers "
-            f"for OS user '{os_user}'"
+            "using their template accounts"
         )
         return "established"
     return "unverified"
