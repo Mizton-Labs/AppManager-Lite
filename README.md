@@ -702,27 +702,26 @@ access default on):
   `/etc/sudoers.d/90-appmanager-<user>` drop-in, then verifies it with
   `sudo -n true`. This ensures the template's first-boot setup cannot leave the
   configured account without effective passwordless sudo.
-- **Trusted SSH access** — establishes a full SSH mesh across the user's
-  servers that share the same main user: each server generates its own keypair
-  locally (private keys never leave the servers or touch AppManager) and every
-  server's public key is installed on the others, so the user's servers can
-  reach each other. **A main OS user is required** — trusted access needs a
-  shared OS account to key, so a template with trusted access enabled but no
-  main user forms no mesh (the template editor warns about this). The mesh is
-  reconciled whenever a trusted server is created, a VM's IP is entered, and
+- **Trusted SSH access** — establishes a cross-account mesh across one user's
+  trusted servers. Each server's template main user generates a keypair locally
+  (private keys never leave the servers or touch AppManager); its public key is
+  installed in every peer server's own template-user account. For example,
+  `cdt-coder@coder-server` can reach `apps@apps-server`, and vice versa. **A
+  main OS user is required** on every participating template; a trusted server
+  with no main user is skipped (the template editor warns about this). The mesh
+  is reconciled whenever a trusted server is created, a VM's IP is entered, and
   lazily when the server list is loaded if a server acquired its IP only after
-  creation (so an LXC whose address arrived late is still joined). Every
-  reachable group of the user's trusted servers sharing a main user is meshed,
-  even across different templates. The mesh reaches each server as **root**
-  using that server's template admin key, so the **template image must
-  authorize the admin key for root** (`PermitRootLogin` + the key in root's
-  `authorized_keys`); when it doesn't, the mesh records a clear, actionable
-  error instead of silently doing nothing. Each per-server mesh outcome
-  (established / unverified / skipped / failed, with the reason) is recorded on
-  the server's provisioning log and in the audit trail (`server_mesh`). An
-  established result means each directed server-to-server SSH connection was
-  tested as the shared OS user; an unverified result is retried by the deferred
-  reconciler. Transient
+  creation. The mesh reaches each server as **root** using that server's
+  template admin key, so the **template image must authorize the admin key for
+  root** (`PermitRootLogin` + the key in root's `authorized_keys`); when it
+  doesn't, the mesh records a clear, actionable error instead of silently doing
+  nothing. The **Reset access on servers** card action (self-service owner or
+  admin) forces a full owner-set reconciliation, including the managed
+  passwordless-sudo drop-ins. Each mesh outcome (established / unverified /
+  skipped / failed, with the reason) is recorded on the server's provisioning
+  log and in the audit trail (`server_mesh`). An established result means every
+  directed source-account to peer-account SSH connection was tested; an
+  unverified result is retried by the deferred reconciler. Transient
   "sshd not ready yet" conditions are retried briefly and otherwise re-tried on
   the next reconcile.
 
