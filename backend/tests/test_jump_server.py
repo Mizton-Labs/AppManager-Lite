@@ -362,10 +362,14 @@ def test_onboard_stamps_key_with_appmanager_marker(monkeypatch) -> None:
     # Hardened for jump-only use: nologin shell + restrict,port-forwarding.
     assert "nologin" in remote
     assert "restrict,port-forwarding" in remote
-    # Idempotent install: existing lines for this blob are removed then the
-    # canonical line is appended (blob-based dedupe).
-    assert "grep -vF" in remote
+    # Idempotent install: exact key blobs and exact owner markers are removed
+    # before the canonical line is appended, without touching other users.
+    assert "awk -v b=" in remote
     assert "AAAAC3Nz" in remote
+    # A stale previous key owned by the same AppManager user is replaced by
+    # marker without touching unrelated/unmanaged keys in the shared account.
+    assert "AppManager-managed:alice" in remote
+    assert "grep -Fqx" in remote
 
 
 def test_onboard_uses_separate_stamp_id_for_shared_account(monkeypatch) -> None:
@@ -569,7 +573,7 @@ def test_install_public_key_stamps_and_dedupes(monkeypatch) -> None:
     remote = ssh.commands[0][-1]
     assert "AppManager-managed:coder" in remote
     assert "coder@old" not in remote
-    assert "grep -vF" in remote  # removes any prior copy of this blob first
+    assert "awk -v b=" in remote  # removes any prior copy of this blob first
     # The rewrite is atomic (temp file then rename), never truncating the live
     # authorized_keys in place.
     assert "mv " in remote

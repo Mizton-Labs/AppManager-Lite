@@ -747,10 +747,7 @@ def _rotate_key_on_servers(
     verification summary. Nothing here raises.
     """
     summary: list[ServerKeyRotationOut] = []
-    owner_uid = user.get("user_id") or repository.derive_user_id(
-        user.get("username", "") or ""
-    )
-    owner_marker = f"AppManager-managed:{owner_uid}"
+    owner_marker = sshkeys.managed_marker(user["id"])
     for server in repository.list_user_servers(conn, user["id"]):
         entry = ServerKeyRotationOut(
             server=server["name"],
@@ -849,7 +846,7 @@ def _rotate_key_on_servers(
             installed = jumpserver.onboard_user(
                 jump_config, os_user=account,
                 public_key=new_public_key, result=jresult,
-                stamp_id=owner_id,
+                stamp_id=f"user-{user['id']}",
             )
             removed = jumpserver.offboard_user(
                 jump_config, os_user=account,

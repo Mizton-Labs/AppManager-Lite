@@ -439,10 +439,10 @@ def test_regenerate_jump_key_targets_shared_account(admin, monkeypatch) -> None:
     new_blob = resp.json()["public_key"].split()[1]
     old_blob = old_pub.split()[1]
     # Install (onboard): appends the new key to the shared account, stamped
-    # with the OWNER's provenance id -- not the shared account name.
+    # with the OWNER's immutable provenance ID -- not the shared account name.
     installs = [
         s for s in jump_cmds
-        if "AppManager-managed:rotuser" in s and new_blob in s
+        if f"AppManager-managed:user-{created['user']['id']}" in s and new_blob in s
     ]
     assert installs, "expected a stamped new-key install on the shared account"
     # Removal (offboard): filters the OLD blob out of the shared account's

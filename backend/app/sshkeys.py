@@ -42,6 +42,11 @@ def stamp_public_key(public_key: str, marker: str) -> str:
     return f"{parts[0]} {parts[1]} {safe}"
 
 
+def managed_marker(user_id: int) -> str:
+    """Return immutable remote-key provenance for an AppManager user row."""
+    return f"AppManager-managed:user-{user_id}"
+
+
 def generate_keypair(comment: str = "") -> tuple[str, str]:
     """Return ``(private_key_openssh, public_key_openssh)`` for a new key.
 

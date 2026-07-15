@@ -124,6 +124,7 @@ def onboard_user(
     public_key: str,
     result: ProxmoxResult,
     stamp_id: str = "",
+    remove_markers: list[str] | None = None,
 ) -> bool:
     """Create the hardened jump account (if missing) and install the key.
 
@@ -160,6 +161,15 @@ def onboard_user(
     qu = shlex.quote(os_user)
     qk = shlex.quote(hardened_line)
     qb = shlex.quote(blob)
+    marker = f"AppManager-managed:{stamp_id or os_user}"
+    markers = [value for value in (remove_markers or [marker]) if value]
+    awk_args = " ".join(
+        f"-v m{index}={shlex.quote(value)}"
+        for index, value in enumerate(markers, start=1)
+    )
+    marker_conditions = " && ".join(
+        f"$NF != m{index}" for index in range(1, len(markers) + 1)
+    ) or "1"
     # Create the account (hardened, nologin shell) if missing, then rewrite
     # authorized_keys atomically: build the deduped content (minus any existing
     # line for this blob) plus the canonical hardened+stamped line in a temp
@@ -175,10 +185,13 @@ def onboard_user(
         '[ -n "$h" ] || { echo no-home; exit 1; }; '
         'mkdir -p "$h/.ssh"; chmod 700 "$h/.ssh"; '
         'f="$h/.ssh/authorized_keys"; touch "$f"; t="$f.appmgr.tmp"; '
-        f"{{ grep -vF {qb} \"$f\" || [ $? -eq 1 ]; }} > \"$t\"; "
+        f"awk -v b={qb} {awk_args} "
+        + shlex.quote(f"index($0, b) == 0 && {marker_conditions}")
+        + ' "$f" > "$t"; '
         f"printf '%s\\n' {qk} >> \"$t\"; "
         'chmod 600 "$t"; mv "$t" "$f"; '
-        f'chown -R {qu}: "$h/.ssh"; echo onboarded'
+        f'chown -R {qu}: "$h/.ssh"; '
+        f"grep -Fqx {qk} \"$f\" >/dev/null; echo onboarded"
     )
     proc = _run_remote(config, remote)
     if proc.returncode == 0:
@@ -276,7 +289,7 @@ def sync_user(
         result = ProxmoxResult()
         ok = onboard_user(
             config, os_user=account, public_key=public_key, result=result,
-            stamp_id=owner_id,
+            stamp_id=f"user-{user['id']}",
         )
         last = result.steps[-1] if result.steps else ""
         return ("onboarded" if ok else "failed"), last

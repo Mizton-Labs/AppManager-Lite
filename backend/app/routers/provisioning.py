@@ -43,6 +43,7 @@ from ..schemas import (
     ProvisioningSettingsOut,
     RealmOut,
     OwnerServersOut,
+    AccessResetOut,
     ResourceUsageOut,
     ServerAccessOut,
     ServersOverviewOut,
@@ -959,6 +960,7 @@ def _server_out(
     *,
     include_error: bool = False,
     reboot_required: bool = False,
+    access_reset: list[AccessResetOut] | None = None,
 ) -> UserServerOut:
     """Serialize a server row, deriving the deferred-deletion flags.
 
@@ -981,6 +983,8 @@ def _server_out(
     if not include_error:
         data["last_log"] = ""
     data["reboot_required"] = reboot_required
+    if access_reset is not None:
+        data["access_reset"] = access_reset
     return UserServerOut(**data)
 
 
@@ -1038,6 +1042,8 @@ _mesh_signatures: dict[int, str] = {}
 _mesh_inflight: set[int] = set()
 _mesh_reset_at: dict[int, float] = {}
 _MESH_RESET_COOLDOWN_SECONDS = 60.0
+_ACCESS_RESET_BUDGET_SECONDS = 90.0
+_ACCESS_RESET_MAX_SERVERS = 32
 _MESH_REMESH_BUDGET_SECONDS = 120.0
 # Tests set this False to run the re-mesh inline (deterministic assertions);
 # in production it runs in a background thread so the list request is not held.
@@ -1714,7 +1720,7 @@ def _clone_and_persist_server(
         os_users=os_users,
         admin_key_path=admin_key_path,
         enable_sudo=bool(template.get("enable_sudo", True)),
-        owner_marker=f"AppManager-managed:{owner_uid}",
+        owner_marker=sshkeys.managed_marker(user_id),
         ensure_account_shell=ensure_shell,
     )
     # Persist which registry key was used, so rotation can reuse it.
@@ -2462,6 +2468,79 @@ def reset_user_server_access(
         _mesh_inflight.add(user_id)
         _mesh_signatures.pop(user_id, None)
     try:
+        outcomes: list[AccessResetOut] = []
+        deadline = time.monotonic() + _ACCESS_RESET_BUDGET_SECONDS
+        owner_key = repository.get_user_ssh_key(conn, user_id)
+        if owner_key is None:
+            raise HTTPException(status_code=404, detail="Current account SSH key is unavailable")
+        derived_public = sshkeys.public_key_from_private(owner_key["private_key"])
+        normalize = lambda value: " ".join((value or "").split()[:2])
+        if normalize(derived_public) != normalize(owner_key["public_key"]):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Current bundle SSH key is inconsistent; regenerate the account key first",
+            )
+        owner_row = conn.execute(
+            "SELECT username FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        owner_marker = sshkeys.managed_marker(user_id)
+        legacy_marker = f"AppManager-managed:{repository.derive_user_id(owner_row['username'])}"
+        # Only remove a legacy derived-name marker when it uniquely identifies
+        # this user. Immutable user-ID markers prevent cross-user collisions.
+        legacy_conflict = any(
+            repository.derive_user_id(row["username"])
+            == repository.derive_user_id(owner_row["username"])
+            for row in conn.execute("SELECT id, username FROM users WHERE id != ?", (user_id,))
+        )
+        remove_markers = [owner_marker] + ([] if legacy_conflict else [legacy_marker])
+        # Reassert the current downloadable account key for every eligible
+        # template main account, including templates not in the trusted mesh.
+        candidates = repository.list_user_servers(conn, user_id)
+        if len(candidates) > _ACCESS_RESET_MAX_SERVERS:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Reset access supports at most 32 servers per owner",
+            )
+        for candidate in candidates:
+            if time.monotonic() >= deadline:
+                outcomes.append(AccessResetOut(target_type="server", target_name=candidate["name"], status="skipped", detail="access reset time budget exhausted"))
+                continue
+            if candidate["status"] == "failed" or candidate.get("deletion_requested_at") or candidate.get("deletion_error"):
+                outcomes.append(AccessResetOut(target_type="server", target_name=candidate["name"], status="skipped", detail="server is failed or pending deletion"))
+                continue
+            template = repository.get_server_template(conn, candidate.get("template_id")) if candidate.get("template_id") else None
+            account = (template or {}).get("main_os_user", "").strip()
+            if not candidate.get("ip_address") or not servers._IP_RE.match(candidate.get("ip_address", "")) or not account:
+                outcomes.append(AccessResetOut(target_type="server", target_name=candidate["name"], account=account, status="skipped", detail="missing reachable template main account"))
+                continue
+            result = proxmox.ProxmoxResult()
+            key_path = servers.resolve_ssh_key(conn, candidate.get("admin_ssh_key_id"), fallback_path=(candidate.get("admin_ssh_key_path") or "").strip())
+            ok = bool(key_path) and servers.install_public_key(
+                ip=candidate["ip_address"], admin_key_path=key_path, os_users=[account],
+                public_key=owner_key["public_key"], result=result,
+                marker=owner_marker, remove_markers=remove_markers,
+                ensure_account_shell="/bin/bash", enable_sudo=bool((template or {}).get("enable_sudo", False)), retry=True,
+            )
+            outcomes.append(AccessResetOut(target_type="server", target_name=candidate["name"], account=account, status="verified" if ok else "failed", detail="current bundle key reconciled" if ok else "server access reconciliation failed"))
+        try:
+            jump = jumpserver.load_config(conn)
+            if time.monotonic() >= deadline:
+                outcomes.append(AccessResetOut(target_type="jump_server", target_name="jump server", status="skipped", detail="access reset time budget exhausted before jump reconciliation"))
+            elif not jump.enabled:
+                outcomes.append(AccessResetOut(target_type="jump_server", target_name="jump server", status="skipped", detail="jump server is disabled"))
+            elif not jump.ready:
+                outcomes.append(AccessResetOut(target_type="jump_server", target_name="jump server", status="failed", detail="jump server is not fully configured"))
+            else:
+                account = jumpserver.target_account(jump, dict(owner_row))
+                result = proxmox.ProxmoxResult()
+                ok = jumpserver.onboard_user(
+                    jump, os_user=account, public_key=owner_key["public_key"],
+                    result=result, stamp_id=f"user-{user_id}",
+                    remove_markers=remove_markers,
+                )
+                outcomes.append(AccessResetOut(target_type="jump_server", target_name=jump.host, account=account, status="verified" if ok else "failed", detail="current bundle key reconciled" if ok else "jump access reconciliation failed"))
+        except Exception:
+            outcomes.append(AccessResetOut(target_type="jump_server", target_name="jump server", status="failed", detail="jump access reconciliation failed"))
         # Resolve once before the full owner-set reconcile; the reconcile uses
         # each peer's own resolved key internally.
         admin_key_path = servers.resolve_ssh_key(
@@ -2471,13 +2550,25 @@ def reset_user_server_access(
         )
         with _mesh_lock:
             _mesh_reset_at[user_id] = time.monotonic()
-        updated = _reconcile_and_record_mesh(
-            conn,
-            user_id,
-            server,
-            admin_key_path,
-            actor=actor,
-        )
+        if time.monotonic() >= deadline:
+            updated = server
+            outcomes.append(AccessResetOut(target_type="trusted_mesh", target_name="owner servers", status="skipped", detail="access reset time budget exhausted before mesh"))
+        else:
+            updated = _reconcile_and_record_mesh(
+                conn,
+                user_id,
+                server,
+                admin_key_path,
+                actor=actor,
+            )
+            mesh_log = (updated.get("last_log") or "").lower()
+            mesh_status = (
+                "failed" if "trusted mesh error:" in mesh_log
+                else "unverified" if "verification failed" in mesh_log
+                else "skipped" if "no reachable trusted servers" in mesh_log
+                else "verified"
+            )
+            outcomes.append(AccessResetOut(target_type="trusted_mesh", target_name="owner servers", status=mesh_status, detail="cross-account trusted access reconciled"))
     finally:
         with _mesh_lock:
             _mesh_inflight.discard(user_id)
@@ -2495,7 +2586,7 @@ def reset_user_server_access(
         "Server access reset requested by user=%r for server id=%s (owner=%s)",
         actor.get("username"), server_id, user_id,
     )
-    return _server_out(updated, include_error=is_admin)
+    return _server_out(updated, include_error=is_admin, access_reset=outcomes)
 
 
 @router.post(

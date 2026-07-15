@@ -258,6 +258,7 @@ def install_public_key(
     result: ProxmoxResult,
     enable_sudo: bool = False,
     marker: str = "",
+    remove_markers: list[str] | None = None,
     ensure_account_shell: str | None = None,
     retry: bool = False,
 ) -> bool:
@@ -271,7 +272,10 @@ def install_public_key(
     a validated AppManager-owned NOPASSWD sudoers drop-in and is also added to
     the sudo/wheel group. When ``marker`` is set, the installed line's
     comment is rewritten to it (e.g. ``AppManager-managed:<user_id>``) so the
-    key is clearly attributable to AppManager on the remote host.
+    key is clearly attributable to AppManager on the remote host. When
+    ``remove_markers`` may contain exact comment tokens to remove, allowing a
+    current bundle key to replace a stale rotated key without touching other
+    users' or unmanaged keys. Markers must be immutable identifiers.
 
     ``ensure_account_shell``, when set to one of ``_ALLOWED_ACCOUNT_SHELLS``,
     changes the default strict behavior (fail if the OS user doesn't exist):
@@ -304,6 +308,14 @@ def install_public_key(
     ok = True
     quoted_key = shlex.quote(stamped)
     quoted_blob = shlex.quote(blob)
+    markers = [value for value in (remove_markers or []) if value]
+    awk_args = " ".join(
+        f"-v m{index}={shlex.quote(value)}"
+        for index, value in enumerate(markers, start=1)
+    )
+    marker_conditions = " && ".join(
+        f"$NF != m{index}" for index in range(1, len(markers) + 1)
+    ) or "1"
     for os_user in os_users:
         if not _OS_USER_RE.match(os_user):  # defense in depth
             result.fail(f"invalid OS username {os_user!r}")
@@ -374,11 +386,14 @@ def install_public_key(
                 + ensure_step
                 + 'mkdir -p "$h/.ssh"; chmod 700 "$h/.ssh"; '
                 'f="$h/.ssh/authorized_keys"; touch "$f"; t="$f.appmgr.tmp"; '
-                f"{{ grep -vF {quoted_blob} \"$f\" || [ $? -eq 1 ]; }} > \"$t\"; "
-                f"printf '%s\\n' {quoted_key} >> \"$t\"; "
+                f"awk -v b={quoted_blob} {awk_args} "
+                + shlex.quote(f"index($0, b) == 0 && {marker_conditions}")
+                + ' "$f" > "$t"; '
+                + f"printf '%s\\n' {quoted_key} >> \"$t\"; "
                 'chmod 600 "$t"; mv "$t" "$f"; '
                 f'chown -R {quoted_user}: "$h/.ssh"; '
                 + sudo_step
+                + (f"grep -Fqx {quoted_key} \"$f\" >/dev/null; " if marker else "")
                 + "true"
             )
         )

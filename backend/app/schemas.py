@@ -1287,6 +1287,14 @@ class CreateServerTemplateRequest(BaseModel):
         return _validate_admin_key_path(value)
 
 
+class AccessResetOut(BaseModel):
+    target_type: str
+    target_name: str
+    account: str = ""
+    status: str
+    detail: str = ""
+
+
 class UserServerOut(BaseModel):
     id: int
     user_id: int
@@ -1326,6 +1334,9 @@ class UserServerOut(BaseModel):
     # provider on list (empty when the provider is unconfigured/unreachable or
     # the guest is not in a pool). Never persisted.
     poolid: str = ""
+    # Transient result returned by Reset access on servers. It contains only
+    # target/account/status metadata, never SSH key material or admin paths.
+    access_reset: list[AccessResetOut] = Field(default_factory=list)
 
 
 class CreateUserServerRequest(BaseModel):
