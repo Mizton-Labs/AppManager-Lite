@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { Application } from "../types";
 import { resolveAppHref, resolveIconSrc } from "../lib/links";
+import { StarIcon } from "./icons";
 
 /** First letters of up to the first two words, e.g. "Hunt Workbench" -> "HW". */
 function monogram(name: string): string {
@@ -70,8 +71,8 @@ export function AppCard({ app, editHref }: { app: Application; editHref?: string
           </span>
         )}
       </a>
-      <button type="button" className={favorite ? "app-card-star active" : "app-card-star"} onClick={toggleFavorite} aria-label={favorite ? `Remove ${app.name} from favorites` : `Add ${app.name} to favorites`}>
-        {favorite ? "★" : "☆"}
+      <button type="button" className={favorite ? "app-card-star active" : "app-card-star"} onClick={toggleFavorite} aria-pressed={favorite} title={favorite ? "Remove from favorites" : "Add to favorites"} aria-label={favorite ? `Remove ${app.name} from favorites` : `Add ${app.name} to favorites`}>
+        <StarIcon filled={favorite} />
       </button>
       {app.show_statistics && app.visits_7d !== null && app.visits_7d !== undefined && (
         <span className="app-card-visits">{app.visits_7d} launches · 7 days</span>

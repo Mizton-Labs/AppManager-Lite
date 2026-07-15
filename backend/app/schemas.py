@@ -561,6 +561,37 @@ class ApplicationStatisticsRow(BaseModel):
     visits_7d: int
 
 
+class ApplicationTrendSeries(BaseModel):
+    application_id: int
+    name: str
+    launches: int
+    points: list[ApplicationTrendPoint]
+
+
+class ApplicationUserActivityOut(BaseModel):
+    user_id: str
+    launches: int
+    active_days: int
+    last_activity: str
+
+
+class ApplicationFavoriteUserOut(BaseModel):
+    user_id: str
+    starred_at: str
+
+
+class ApplicationStatisticsDetailOut(BaseModel):
+    application_id: int
+    activity_users: list[ApplicationUserActivityOut]
+    favorite_users: list[ApplicationFavoriteUserOut]
+
+
+class UserActivityRow(BaseModel):
+    user_id: str
+    launches: int
+    applications_used: int
+
+
 class ApplicationStatisticsOut(BaseModel):
     days: int
     launches: int
@@ -568,6 +599,8 @@ class ApplicationStatisticsOut(BaseModel):
     favorites: int
     trend: list[ApplicationTrendPoint]
     applications: list[ApplicationStatisticsRow]
+    app_trends: list[ApplicationTrendSeries]
+    user_activity: list[UserActivityRow]
 
 
 class AliasConfigOut(BaseModel):

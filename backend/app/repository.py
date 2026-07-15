@@ -506,6 +506,9 @@ def delete_user(
     delete_apps: bool = False,
     transfer_to_user_id: int | None = None,
 ) -> bool:
+    # Analytics visitor keys deliberately retain no FK, so remove the user's
+    # activity explicitly before the numeric ID can ever be reused.
+    conn.execute("DELETE FROM application_usage_daily WHERE visitor_key = ?", (f"user:{user_id}",))
     if delete_apps:
         conn.execute("DELETE FROM applications WHERE created_by = ?", (user_id,))
     else:

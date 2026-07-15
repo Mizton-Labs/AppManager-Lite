@@ -35,6 +35,11 @@ from ..schemas import (
     ApplicationStatisticsSettingsOut,
     ApplicationStatisticsSettingsUpdate,
     ApplicationTrendPoint,
+    ApplicationTrendSeries,
+    ApplicationStatisticsDetailOut,
+    ApplicationUserActivityOut,
+    ApplicationFavoriteUserOut,
+    UserActivityRow,
 )
 
 router = APIRouter(tags=["applications"])
@@ -496,13 +501,66 @@ def application_statistics(
         "GROUP BY a.id ORDER BY launches DESC, favorites DESC, a.name",
         (f"-{days - 1} days",),
     ).fetchall()
+    top_apps = apps[:10]
+    top_ids = [row["id"] for row in top_apps]
+    series_by_id: dict[int, dict[str, int]] = {app_id: {} for app_id in top_ids}
+    if top_ids:
+        marks = ",".join("?" for _ in top_ids)
+        for row in conn.execute(
+            f"SELECT application_id, usage_date, SUM(launch_count) launches "
+            f"FROM application_usage_daily WHERE application_id IN ({marks}) "
+            f"AND usage_date >= date('now', ?) GROUP BY application_id, usage_date",
+            (*top_ids, f"-{days - 1} days"),
+        ):
+            series_by_id[row["application_id"]][row["usage_date"]] = row["launches"]
+    dates = [point.date for point in trend]
+    app_trends = [
+        ApplicationTrendSeries(
+            application_id=row["id"], name=row["name"], launches=row["launches"],
+            points=[ApplicationTrendPoint(date=date, launches=series_by_id[row["id"]].get(date, 0), unique_users=0) for date in dates],
+        ) for row in top_apps
+    ]
+    user_rows = conn.execute(
+        "SELECT u.username, SUM(d.launch_count) launches, COUNT(DISTINCT d.application_id) applications_used "
+        "FROM application_usage_daily d JOIN users u ON d.visitor_key = ('user:' || u.id) "
+        "WHERE d.usage_date >= date('now', ?) GROUP BY u.id ORDER BY launches DESC, u.id LIMIT 10",
+        (f"-{days - 1} days",),
+    ).fetchall()
     total_launches = sum(point.launches for point in trend)
     unique_users = conn.execute(
         "SELECT COUNT(DISTINCT visitor_key) c FROM application_usage_daily WHERE usage_date >= date('now', ?)",
         (f"-{days - 1} days",),
     ).fetchone()["c"]
     favorites = conn.execute("SELECT COUNT(*) c FROM application_favorites").fetchone()["c"]
-    return ApplicationStatisticsOut(days=days, launches=total_launches, unique_users=unique_users, favorites=favorites, trend=trend, applications=[ApplicationStatisticsRow(application_id=row["id"], name=row["name"], launches=row["launches"], unique_users=row["unique_users"], favorites=row["favorites"], visits_7d=row["visits_7d"]) for row in apps])
+    return ApplicationStatisticsOut(days=days, launches=total_launches, unique_users=unique_users, favorites=favorites, trend=trend, applications=[ApplicationStatisticsRow(application_id=row["id"], name=row["name"], launches=row["launches"], unique_users=row["unique_users"], favorites=row["favorites"], visits_7d=row["visits_7d"]) for row in apps], app_trends=app_trends, user_activity=[UserActivityRow(user_id=repository.derive_user_id(row["username"]), launches=row["launches"], applications_used=row["applications_used"]) for row in user_rows])
+
+
+@router.get("/application-statistics/{application_id}/users", response_model=ApplicationStatisticsDetailOut)
+def application_statistics_users(
+    application_id: int,
+    days: int = Query(default=30, ge=1, le=90),
+    _: dict[str, Any] = Depends(require_admin),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> ApplicationStatisticsDetailOut:
+    if repository.get_application(conn, application_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
+    activity = conn.execute(
+        "SELECT u.username, SUM(d.launch_count) launches, COUNT(DISTINCT d.usage_date) active_days, MAX(d.usage_date) last_activity "
+        "FROM application_usage_daily d JOIN users u ON d.visitor_key = ('user:' || u.id) "
+        "WHERE d.application_id = ? AND d.usage_date >= date('now', ?) "
+        "GROUP BY u.id ORDER BY launches DESC, last_activity DESC",
+        (application_id, f"-{days - 1} days"),
+    ).fetchall()
+    favorites = conn.execute(
+        "SELECT u.username, f.created_at FROM application_favorites f JOIN users u ON u.id = f.user_id "
+        "WHERE f.application_id = ? ORDER BY f.created_at DESC",
+        (application_id,),
+    ).fetchall()
+    return ApplicationStatisticsDetailOut(
+        application_id=application_id,
+        activity_users=[ApplicationUserActivityOut(user_id=repository.derive_user_id(row["username"]), launches=row["launches"], active_days=row["active_days"], last_activity=row["last_activity"]) for row in activity],
+        favorite_users=[ApplicationFavoriteUserOut(user_id=repository.derive_user_id(row["username"]), starred_at=row["created_at"]) for row in favorites],
+    )
 
 
 @router.get("/application-statistics/settings", response_model=ApplicationStatisticsSettingsOut)

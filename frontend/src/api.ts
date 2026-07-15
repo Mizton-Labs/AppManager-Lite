@@ -214,6 +214,7 @@ export const api = {
   unfavoriteApplication: (id: number) => request(`applications/${id}/favorite`, { method: "DELETE" }),
   recordApplicationLaunch: (id: number) => request<void>(`applications/${id}/launch`, { method: "POST" }),
   getApplicationStatistics: (days: number) => request<import("./types").ApplicationStatistics>(`application-statistics?days=${days}`),
+  getApplicationStatisticsUsers: (id: number, days: number) => request<import("./types").ApplicationStatisticsDetail>(`application-statistics/${id}/users?days=${days}`),
   getApplicationStatisticsSettings: () => request<import("./types").ApplicationStatisticsSettings>("application-statistics/settings"),
   updateApplicationStatisticsSettings: (show_app_statistics: boolean) => request<import("./types").ApplicationStatisticsSettings>("application-statistics/settings", { method: "PATCH", body: { show_app_statistics } }),
 

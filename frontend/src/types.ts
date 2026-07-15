@@ -555,7 +555,12 @@ export interface Application {
 
 export interface ApplicationTrendPoint { date: string; launches: number; unique_users: number; }
 export interface ApplicationStatisticsRow { application_id: number; name: string; launches: number; unique_users: number; favorites: number; visits_7d: number; }
-export interface ApplicationStatistics { days: number; launches: number; unique_users: number; favorites: number; trend: ApplicationTrendPoint[]; applications: ApplicationStatisticsRow[]; }
+export interface ApplicationStatistics { days: number; launches: number; unique_users: number; favorites: number; trend: ApplicationTrendPoint[]; applications: ApplicationStatisticsRow[]; app_trends: ApplicationTrendSeries[]; user_activity: UserActivityRow[]; }
+export interface ApplicationTrendSeries { application_id: number; name: string; launches: number; points: ApplicationTrendPoint[]; }
+export interface UserActivityRow { user_id: string; launches: number; applications_used: number; }
+export interface ApplicationUserActivity { user_id: string; launches: number; active_days: number; last_activity: string; }
+export interface ApplicationFavoriteUser { user_id: string; starred_at: string; }
+export interface ApplicationStatisticsDetail { application_id: number; activity_users: ApplicationUserActivity[]; favorite_users: ApplicationFavoriteUser[]; }
 export interface ApplicationStatisticsSettings { show_app_statistics: boolean; }
 
 export interface AliasConfig {
