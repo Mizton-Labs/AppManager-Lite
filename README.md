@@ -277,6 +277,21 @@ application row exposes **Edit**, **Disable/Enable**, and a **Delete** button
 directly in its action row, so an app can be removed without expanding the
 editor first; Delete asks for an inline confirmation, and the backend still
 restricts deletion to the app's owner or an administrator. The **User
+
+### Application statistics
+
+Administrators have an **App Statistics** sidebar view with portal-launch,
+unique-user, and favorite summaries plus daily trends and per-application
+rankings. A launch records an authenticated application-card activation; it is
+not a destination HTTP-request counter, so it works consistently for external
+URLs and reverse-proxy aliases. The dashboard toggle controls whether Home and
+team cards show their seven-day launch count. Users can always star/unstar
+visible applications; stars remain available when card statistics are hidden.
+Analytics store daily aggregate launch counts and do not expose named-user
+activity in the dashboard. Per-user daily rows are retained for 90 days to
+calculate unique-user trends, then purged during launch recording.
+
+The **User
 management** tab likewise collapses **Create user** behind an **Add user**
 button and offers a filter over username, user ID, role, and teams; user cards
 are **collapsed by default** (identity + badges only) and expand on demand to

@@ -230,6 +230,8 @@
       { "method": "GET", "path": "/api/account/ssh-key", "auth": "user", "csrf": false, "summary": "The signed-in user's SSH public key, derived user-id, and generation time (never the private key)." },
       { "method": "GET", "path": "/api/account/ssh-key/download", "auth": "user", "csrf": false, "summary": "Download the signed-in user's own SSH key; requires part=private|public. Private downloads are audited (metadata only)." },
       { "method": "POST", "path": "/api/account/ssh-key/regenerate", "auth": "user", "csrf": true, "summary": "Replace the signed-in user's SSH keypair and rotate it on their servers (remove old public key, install new), and on the jump server using the account for the configured jump account model (the shared jumper account in shared mode, the user's own account otherwise); returns a per-server summary (audited, no key material)." },
+      { "method": "GET", "path": "/api/application-statistics", "auth": "admin", "csrf": false, "summary": "Aggregate authenticated portal-launch and favorite statistics over a bounded date range." },
+      { "method": "POST", "path": "/api/applications/{id}/launch", "auth": "user", "csrf": true, "summary": "Record an authenticated portal launch for a visible approved application." },
       { "method": "GET", "path": "/api/teams", "auth": "user", "csrf": false, "summary": "List teams (name, order, icon) for any signed-in user." },
       { "method": "GET", "path": "/api/users", "auth": "admin", "csrf": false, "summary": "List users." },
       { "method": "POST", "path": "/api/users", "auth": "admin", "csrf": true, "summary": "Create a user (returns a generated password and per-template auto-provisioning results)." },
