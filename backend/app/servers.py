@@ -493,7 +493,7 @@ def _verify_mesh_pair(
         # Always use the AppManager-generated mesh key. A template may ship an
         # SSH config or several identities that would otherwise select a
         # different key and make a correctly-installed mesh key look broken.
-        'ssh -i "$HOME/.ssh/id_ed25519" -o IdentitiesOnly=yes '
+        'ssh -F /dev/null -i "$HOME/.ssh/id_ed25519" -o IdentitiesOnly=yes '
         "-o BatchMode=yes -o StrictHostKeyChecking=accept-new "
         "-o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null "
         f"-o ConnectTimeout=5 -l {shlex.quote(to_user)} {shlex.quote(to_ip)} true"
