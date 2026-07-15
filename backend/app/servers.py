@@ -36,6 +36,7 @@ _MESH_VERIFY_BUDGET_SECONDS = 30.0
 # forced reset. Prevents a self-service request from holding a worker in remote
 # root SSH operations indefinitely.
 _MESH_RECONCILE_BUDGET_SECONDS = 60.0
+_MESH_KEY_NAME = "id_ed25519_appmanager_mesh"
 _OS_USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 # Server display names are capped at the DNS hostname length (63) so a fully
 # composed name (template-userid-suffix) still fits both the record and the
@@ -435,13 +436,14 @@ def _ensure_local_key_and_read_pub(
         f"h=$(getent passwd {quoted_user} | cut -d: -f6); "
         '[ -n "$h" ] || { echo "no such user"; exit 1; }; '
         'mkdir -p "$h/.ssh"; chmod 700 "$h/.ssh"; '
-        'if [ ! -f "$h/.ssh/id_ed25519" ]; then '
+        f'k="$h/.ssh/{_MESH_KEY_NAME}"; '
+        'if [ ! -f "$k" ]; then '
         f"su -s /bin/sh {quoted_user} "
-        "-c 'ssh-keygen -t ed25519 -N \"\" -f \"$HOME/.ssh/id_ed25519\" -q' "
-        '|| ssh-keygen -t ed25519 -N "" -f "$h/.ssh/id_ed25519" -q; '
+        f"-c 'ssh-keygen -t ed25519 -N \"\" -f \"$HOME/.ssh/{_MESH_KEY_NAME}\" -q' "
+        '|| ssh-keygen -t ed25519 -N "" -f "$k" -q; '
         'fi; '
         f'chown -R {quoted_user}: "$h/.ssh"; '
-        'cat "$h/.ssh/id_ed25519.pub"'
+        'cat "$k.pub"'
     )
     proc = _run_mesh_ssh(admin_key_path, ip, remote)
     if proc.returncode != 0:
@@ -493,7 +495,7 @@ def _verify_mesh_pair(
         # Always use the AppManager-generated mesh key. A template may ship an
         # SSH config or several identities that would otherwise select a
         # different key and make a correctly-installed mesh key look broken.
-        'ssh -F /dev/null -i "$HOME/.ssh/id_ed25519" -o IdentitiesOnly=yes '
+        f'ssh -F /dev/null -i "$HOME/.ssh/{_MESH_KEY_NAME}" -o IdentitiesOnly=yes '
         "-o BatchMode=yes -o StrictHostKeyChecking=accept-new "
         "-o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null "
         f"-o ConnectTimeout=5 -l {shlex.quote(to_user)} {shlex.quote(to_ip)} true"

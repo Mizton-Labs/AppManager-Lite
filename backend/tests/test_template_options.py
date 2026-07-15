@@ -369,7 +369,7 @@ def test_reconcile_trusted_mesh_unit(monkeypatch) -> None:
                for c in verifies)
     assert any("su -s /bin/sh - apps" in c[-1] and "-l cdt-coder" in c[-1]
                for c in verifies)
-    assert all('ssh -F /dev/null -i "$HOME/.ssh/id_ed25519" -o IdentitiesOnly=yes' in c[-1]
+    assert all('ssh -F /dev/null -i "$HOME/.ssh/id_ed25519_appmanager_mesh" -o IdentitiesOnly=yes' in c[-1]
                for c in verifies)
 
 
