@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -48,6 +49,35 @@ def _seed_app(client, csrf, name, url, teams):
     )
     assert resp.status_code == 201, resp.text
     return resp.json()
+
+
+def test_statistics_zero_fill_complete_date_range(admin) -> None:
+    client, csrf, _ = admin
+    app = _seed_app(client, csrf, "One Day App", "https://example.com/one", ["Red Team"])
+    _seed_app(client, csrf, "No Activity App", "https://example.com/zero", ["Red Team"])
+    from app.db import get_connection
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO application_usage_daily "
+            "(application_id, usage_date, visitor_key, launch_count) "
+            "VALUES (?, date('now'), 'user:1', 3)",
+            (app["id"],),
+        )
+    response = client.get("/api/application-statistics", params={"days": 7})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert len(body["trend"]) == 7
+    assert len(body["app_trends"]) == 1
+    points = body["app_trends"][0]["points"]
+    assert len(points) == 7
+    assert sum(point["launches"] for point in points) == 3
+    assert points[-1]["date"] == datetime.now(timezone.utc).date().isoformat()
+    assert [series["name"] for series in body["app_trends"]] == ["One Day App"]
+    for days in (30, 90):
+        ranged = client.get("/api/application-statistics", params={"days": days})
+        assert ranged.status_code == 200
+        assert len(ranged.json()["trend"]) == days
+        assert len(ranged.json()["app_trends"][0]["points"]) == days
 
 
 def test_clean_install_has_no_applications(admin) -> None:

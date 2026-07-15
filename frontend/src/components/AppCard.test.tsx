@@ -4,6 +4,12 @@ import { AppCard } from "./AppCard";
 import { makeApp } from "../test/fixtures";
 
 describe("AppCard", () => {
+  it("renders the favorite control as an accessible SVG toggle", () => {
+    render(<AppCard app={makeApp({ is_favorite: true })} />);
+    const button = screen.getByRole("button", { name: /remove .* favorites/i });
+    expect(button).toHaveAttribute("aria-pressed", "true");
+    expect(button.querySelector("svg")).not.toBeNull();
+  });
   it("links to the application URL and opens safely in a new tab", () => {
     render(<AppCard app={makeApp()} />);
 

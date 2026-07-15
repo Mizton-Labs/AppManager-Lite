@@ -17,6 +17,7 @@ import logging
 import sqlite3
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -491,7 +492,20 @@ def application_statistics(
         "FROM application_usage_daily WHERE usage_date >= date('now', ?) GROUP BY usage_date ORDER BY usage_date",
         (f"-{days - 1} days",),
     ).fetchall()
-    trend = [ApplicationTrendPoint(date=row["usage_date"], launches=row["launches"], unique_users=row["unique_users"]) for row in rows]
+    totals_by_date = {
+        row["usage_date"]: (row["launches"], row["unique_users"])
+        for row in rows
+    }
+    first_day = datetime.now(timezone.utc).date() - timedelta(days=days - 1)
+    dates = [(first_day + timedelta(days=offset)).isoformat() for offset in range(days)]
+    trend = [
+        ApplicationTrendPoint(
+            date=usage_date,
+            launches=totals_by_date.get(usage_date, (0, 0))[0],
+            unique_users=totals_by_date.get(usage_date, (0, 0))[1],
+        )
+        for usage_date in dates
+    ]
     apps = conn.execute(
         "SELECT a.id, a.name, COALESCE(SUM(u.launch_count), 0) launches, "
         "COUNT(DISTINCT u.visitor_key) unique_users, "
@@ -501,7 +515,7 @@ def application_statistics(
         "GROUP BY a.id ORDER BY launches DESC, favorites DESC, a.name",
         (f"-{days - 1} days",),
     ).fetchall()
-    top_apps = apps[:10]
+    top_apps = [row for row in apps if row["launches"] > 0][:10]
     top_ids = [row["id"] for row in top_apps]
     series_by_id: dict[int, dict[str, int]] = {app_id: {} for app_id in top_ids}
     if top_ids:
@@ -513,7 +527,6 @@ def application_statistics(
             (*top_ids, f"-{days - 1} days"),
         ):
             series_by_id[row["application_id"]][row["usage_date"]] = row["launches"]
-    dates = [point.date for point in trend]
     app_trends = [
         ApplicationTrendSeries(
             application_id=row["id"], name=row["name"], launches=row["launches"],
