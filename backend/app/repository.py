@@ -1074,6 +1074,62 @@ def count_applications(conn: sqlite3.Connection) -> int:
     ).fetchone()["c"]
 
 
+def set_application_favorite(conn: sqlite3.Connection, user_id: int, application_id: int) -> None:
+    conn.execute(
+        "INSERT OR IGNORE INTO application_favorites (user_id, application_id) VALUES (?, ?)",
+        (user_id, application_id),
+    )
+
+
+def remove_application_favorite(conn: sqlite3.Connection, user_id: int, application_id: int) -> None:
+    conn.execute(
+        "DELETE FROM application_favorites WHERE user_id = ? AND application_id = ?",
+        (user_id, application_id),
+    )
+
+
+def record_application_launch(conn: sqlite3.Connection, application_id: int, visitor_key: str) -> None:
+    conn.execute(
+        "INSERT INTO application_usage_daily (application_id, usage_date, visitor_key, launch_count) "
+        "VALUES (?, date('now'), ?, 1) "
+        "ON CONFLICT(application_id, usage_date, visitor_key) "
+        "DO UPDATE SET launch_count = launch_count + 1",
+        (application_id, visitor_key),
+    )
+    # Daily rows retain user-linked uniqueness only long enough for the
+    # dashboard's supported 90-day range; this avoids indefinite activity
+    # history in the operational database.
+    conn.execute(
+        "DELETE FROM application_usage_daily WHERE usage_date < date('now', '-90 days')"
+    )
+
+
+def application_card_statistics(
+    conn: sqlite3.Connection, application_ids: list[int], user_id: int | None
+) -> tuple[set[int], dict[int, int]]:
+    if not application_ids:
+        return set(), {}
+    marks = ",".join("?" for _ in application_ids)
+    favorites: set[int] = set()
+    if user_id:
+        favorites = {
+            row["application_id"] for row in conn.execute(
+                f"SELECT application_id FROM application_favorites "
+                f"WHERE user_id = ? AND application_id IN ({marks})",
+                (user_id, *application_ids),
+            )
+        }
+    visits = {
+        row["application_id"]: row["launches"] for row in conn.execute(
+            f"SELECT application_id, SUM(launch_count) AS launches "
+            f"FROM application_usage_daily WHERE usage_date >= date('now', '-6 days') "
+            f"AND application_id IN ({marks}) GROUP BY application_id",
+            application_ids,
+        )
+    }
+    return favorites, visits
+
+
 def list_all_applications(
     conn: sqlite3.Connection, *, active_only: bool = True
 ) -> list[dict[str, Any]]:

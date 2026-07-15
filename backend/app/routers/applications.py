@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -28,15 +30,25 @@ from ..schemas import (
     CreateApplicationRequest,
     MessageOut,
     UpdateApplicationRequest,
+    ApplicationStatisticsOut,
+    ApplicationStatisticsRow,
+    ApplicationStatisticsSettingsOut,
+    ApplicationStatisticsSettingsUpdate,
+    ApplicationTrendPoint,
 )
 
 router = APIRouter(tags=["applications"])
 
 logger = logging.getLogger(__name__)
+_launch_lock = threading.Lock()
+_launch_last_seen: dict[tuple[int, int], float] = {}
+_LAUNCH_MIN_INTERVAL_SECONDS = 5.0
 
 
 def _app_out(
-    app: dict[str, Any], *, include_creator: bool = False
+    app: dict[str, Any], *, include_creator: bool = False,
+    is_favorite: bool = False, visits_7d: int | None = None,
+    show_statistics: bool = False,
 ) -> ApplicationOut:
     return ApplicationOut(
         id=app["id"],
@@ -66,7 +78,33 @@ def _app_out(
             app.get("pending_alias_auth_required") if include_creator else None
         ),
         needs_push=bool(app.get("needs_push")) if include_creator else False,
+        is_favorite=is_favorite,
+        visits_7d=visits_7d,
+        show_statistics=show_statistics,
     )
+
+
+def _visible_app(conn: sqlite3.Connection, app_id: int, user: dict[str, Any]) -> dict[str, Any] | None:
+    app = repository.get_application(conn, app_id)
+    if not app or not app["is_active"] or app["approval_status"] != "approved":
+        return None
+    if user["role"] == "admin":
+        return app
+    visible = repository.list_applications_for_teams(conn, user["teams"])
+    return next((candidate for candidate in visible if candidate["id"] == app_id), None)
+
+
+def _list_out(conn: sqlite3.Connection, apps: list[dict[str, Any],], user: dict[str, Any]) -> list[ApplicationOut]:
+    show = bool(repository.get_settings_row(conn).get("show_app_statistics", 0))
+    favorites, visits = repository.application_card_statistics(
+        conn, [app["id"] for app in apps], user.get("id")
+    )
+    return [
+        _app_out(app, is_favorite=app["id"] in favorites,
+                 visits_7d=visits.get(app["id"]) if show else None,
+                 show_statistics=show)
+        for app in apps
+    ]
 
 
 def resolve_user_apps_server_host(
@@ -369,7 +407,7 @@ def list_applications(
     else:
         apps = repository.list_applications_for_teams(conn, user["teams"])
 
-    return [_app_out(a) for a in apps]
+    return _list_out(conn, apps, user)
 
 
 @router.get("/applications/mine", response_model=list[ApplicationOut])
@@ -383,6 +421,105 @@ def list_my_applications(
         return []
     apps = repository.list_applications_for_owner(conn, user["id"])
     return [_app_out(a, include_creator=True) for a in apps]
+
+
+@router.post("/applications/{application_id}/favorite", response_model=MessageOut)
+def favorite_application(
+    application_id: int,
+    user: dict[str, Any] = Depends(get_current_user),
+    _: None = Depends(verify_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> MessageOut:
+    app = _visible_app(conn, application_id, user)
+    if app is None or not user.get("id"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
+    repository.set_application_favorite(conn, user["id"], application_id)
+    return MessageOut(detail="Application favorited")
+
+
+@router.delete("/applications/{application_id}/favorite", response_model=MessageOut)
+def unfavorite_application(
+    application_id: int,
+    user: dict[str, Any] = Depends(get_current_user),
+    _: None = Depends(verify_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> MessageOut:
+    app = _visible_app(conn, application_id, user)
+    if app is None or not user.get("id"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
+    repository.remove_application_favorite(conn, user["id"], application_id)
+    return MessageOut(detail="Application unfavorited")
+
+
+@router.post("/applications/{application_id}/launch", status_code=status.HTTP_204_NO_CONTENT)
+def record_application_launch(
+    application_id: int,
+    user: dict[str, Any] = Depends(get_current_user),
+    _: None = Depends(verify_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> None:
+    if _visible_app(conn, application_id, user) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
+    user_id = int(user.get("id", 0) or 0)
+    key = (user_id, application_id)
+    now = time.monotonic()
+    with _launch_lock:
+        if now - _launch_last_seen.get(key, 0.0) < _LAUNCH_MIN_INTERVAL_SECONDS:
+            return
+        _launch_last_seen[key] = now
+    repository.record_application_launch(conn, application_id, f"user:{user_id or 'local'}")
+
+
+@router.get("/application-statistics", response_model=ApplicationStatisticsOut)
+def application_statistics(
+    days: int = Query(default=30, ge=1, le=365),
+    _: dict[str, Any] = Depends(require_admin),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> ApplicationStatisticsOut:
+    rows = conn.execute(
+        "SELECT usage_date, SUM(launch_count) launches, COUNT(DISTINCT visitor_key) unique_users "
+        "FROM application_usage_daily WHERE usage_date >= date('now', ?) GROUP BY usage_date ORDER BY usage_date",
+        (f"-{days - 1} days",),
+    ).fetchall()
+    trend = [ApplicationTrendPoint(date=row["usage_date"], launches=row["launches"], unique_users=row["unique_users"]) for row in rows]
+    apps = conn.execute(
+        "SELECT a.id, a.name, COALESCE(SUM(u.launch_count), 0) launches, "
+        "COUNT(DISTINCT u.visitor_key) unique_users, "
+        "(SELECT COUNT(*) FROM application_favorites f WHERE f.application_id = a.id) favorites, "
+        "(SELECT COALESCE(SUM(launch_count),0) FROM application_usage_daily d WHERE d.application_id=a.id AND d.usage_date>=date('now','-6 days')) visits_7d "
+        "FROM applications a LEFT JOIN application_usage_daily u ON u.application_id=a.id AND u.usage_date>=date('now', ?) "
+        "GROUP BY a.id ORDER BY launches DESC, favorites DESC, a.name",
+        (f"-{days - 1} days",),
+    ).fetchall()
+    total_launches = sum(point.launches for point in trend)
+    unique_users = conn.execute(
+        "SELECT COUNT(DISTINCT visitor_key) c FROM application_usage_daily WHERE usage_date >= date('now', ?)",
+        (f"-{days - 1} days",),
+    ).fetchone()["c"]
+    favorites = conn.execute("SELECT COUNT(*) c FROM application_favorites").fetchone()["c"]
+    return ApplicationStatisticsOut(days=days, launches=total_launches, unique_users=unique_users, favorites=favorites, trend=trend, applications=[ApplicationStatisticsRow(application_id=row["id"], name=row["name"], launches=row["launches"], unique_users=row["unique_users"], favorites=row["favorites"], visits_7d=row["visits_7d"]) for row in apps])
+
+
+@router.get("/application-statistics/settings", response_model=ApplicationStatisticsSettingsOut)
+def application_statistics_settings(
+    _: dict[str, Any] = Depends(require_admin), conn: sqlite3.Connection = Depends(get_db)
+) -> ApplicationStatisticsSettingsOut:
+    return ApplicationStatisticsSettingsOut(show_app_statistics=bool(repository.get_settings_row(conn).get("show_app_statistics", 0)))
+
+
+@router.patch("/application-statistics/settings", response_model=ApplicationStatisticsSettingsOut)
+def update_application_statistics_settings(
+    payload: ApplicationStatisticsSettingsUpdate,
+    actor: dict[str, Any] = Depends(require_admin), _: None = Depends(verify_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> ApplicationStatisticsSettingsOut:
+    conn.execute("INSERT OR IGNORE INTO settings (id) VALUES (1)")
+    conn.execute(
+        "UPDATE settings SET show_app_statistics = ?, updated_at = datetime('now') WHERE id = 1",
+        (int(payload.show_app_statistics),),
+    )
+    audit.record(conn, category=audit.CATEGORY_SYSTEM, action="application_statistics_settings", actor=actor, target_type="settings", target_id=1, target_name="application statistics", detail=f"show_app_statistics={int(payload.show_app_statistics)}")
+    return ApplicationStatisticsSettingsOut(show_app_statistics=payload.show_app_statistics)
 
 
 @router.get("/applications/manage", response_model=list[ApplicationOut])

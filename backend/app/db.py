@@ -101,6 +101,21 @@ CREATE TABLE IF NOT EXISTS application_teams (
     PRIMARY KEY (application_id, team_id)
 );
 
+CREATE TABLE IF NOT EXISTS application_favorites (
+    user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    application_id INTEGER NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, application_id)
+);
+
+CREATE TABLE IF NOT EXISTS application_usage_daily (
+    application_id INTEGER NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+    usage_date     TEXT NOT NULL,
+    visitor_key    TEXT NOT NULL,
+    launch_count   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (application_id, usage_date, visitor_key)
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
@@ -235,6 +250,7 @@ CREATE TABLE IF NOT EXISTS settings (
     -- issue_025: when on, each created guest is added to its owner's Proxmox
     -- pool (created if missing). Default on.
     provisioning_add_to_pool      INTEGER NOT NULL DEFAULT 1,
+    show_app_statistics           INTEGER NOT NULL DEFAULT 0,
     updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -243,6 +259,10 @@ CREATE INDEX IF NOT EXISTS idx_sso_auth_flows_expires ON sso_auth_flows(expires_
 CREATE INDEX IF NOT EXISTS idx_user_teams_team ON user_teams(team_id);
 CREATE INDEX IF NOT EXISTS idx_application_teams_team
     ON application_teams(team_id);
+CREATE INDEX IF NOT EXISTS idx_application_favorites_app
+    ON application_favorites(application_id);
+CREATE INDEX IF NOT EXISTS idx_application_usage_daily_date
+    ON application_usage_daily(usage_date);
 CREATE INDEX IF NOT EXISTS idx_audit_category_id ON audit_log(category, id);
 CREATE INDEX IF NOT EXISTS idx_bundle_template_mappings_template
     ON bundle_template_mappings(template_id);
@@ -596,6 +616,9 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     _add_column(conn, "settings", "proxmox_pool_prefix", "TEXT NOT NULL DEFAULT ''")
     _add_column(
         conn, "settings", "provisioning_add_to_pool", "INTEGER NOT NULL DEFAULT 1"
+    )
+    _add_column(
+        conn, "settings", "show_app_statistics", "INTEGER NOT NULL DEFAULT 0"
     )
 
     # Reference servers imported without a template carry their own admin

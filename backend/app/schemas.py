@@ -533,6 +533,41 @@ class ApplicationOut(BaseModel):
     pending_is_active: bool | None = None
     pending_alias_auth_required: bool | None = None
     needs_push: bool = False
+    is_favorite: bool = False
+    visits_7d: int | None = None
+    show_statistics: bool = False
+
+
+class ApplicationStatisticsSettingsOut(BaseModel):
+    show_app_statistics: bool = False
+
+
+class ApplicationStatisticsSettingsUpdate(BaseModel):
+    show_app_statistics: bool
+
+
+class ApplicationTrendPoint(BaseModel):
+    date: str
+    launches: int
+    unique_users: int
+
+
+class ApplicationStatisticsRow(BaseModel):
+    application_id: int
+    name: str
+    launches: int
+    unique_users: int
+    favorites: int
+    visits_7d: int
+
+
+class ApplicationStatisticsOut(BaseModel):
+    days: int
+    launches: int
+    unique_users: int
+    favorites: int
+    trend: list[ApplicationTrendPoint]
+    applications: list[ApplicationStatisticsRow]
 
 
 class AliasConfigOut(BaseModel):
