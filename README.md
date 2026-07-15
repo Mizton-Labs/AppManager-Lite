@@ -282,7 +282,9 @@ restricts deletion to the app's owner or an administrator. The **User
 
 Administrators have an **App Statistics** sidebar view with portal-launch,
 unique-user, and favorite summaries plus daily trends and per-application
-rankings. A launch records an authenticated application-card activation; it is
+rankings. The dashboard plots the top 10 application launch series and the top
+10 active derived account IDs; expanding an application row loads derived-ID
+activity and favorite detail for administrators. A launch records an authenticated application-card activation; it is
 not a destination HTTP-request counter, so it works consistently for external
 URLs and reverse-proxy aliases. The dashboard toggle controls whether Home and
 team cards show their seven-day launch count. Users can always star/unstar
