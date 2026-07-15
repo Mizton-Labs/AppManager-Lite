@@ -490,7 +490,11 @@ def _verify_mesh_pair(
         # The app has no authoritative host-key registry for guest IPs. Keep
         # first-use acceptance isolated to this probe rather than persisting a
         # potentially stale key in the shared user's known_hosts on IP reuse.
-        "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "
+        # Always use the AppManager-generated mesh key. A template may ship an
+        # SSH config or several identities that would otherwise select a
+        # different key and make a correctly-installed mesh key look broken.
+        'ssh -i "$HOME/.ssh/id_ed25519" -o IdentitiesOnly=yes '
+        "-o BatchMode=yes -o StrictHostKeyChecking=accept-new "
         "-o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null "
         f"-o ConnectTimeout=5 -l {shlex.quote(to_user)} {shlex.quote(to_ip)} true"
     )
@@ -532,9 +536,9 @@ def reconcile_trusted_mesh(
     nothing to mesh), ``"invalid_user"``, or ``"failed"``.
     """
     reachable = [s for s in servers if s.get("ip_address")]
-    if len(reachable) < 2:
+    if not reachable:
         result.log(
-            "Trusted access: fewer than two reachable servers; nothing to mesh"
+            "Trusted access: no reachable servers; nothing to reconcile"
         )
         return "single_server"
     for srv in reachable:
@@ -548,6 +552,38 @@ def reconcile_trusted_mesh(
         # main OS user may reference different admin keys); fall back to the
         # caller-supplied key when a server carries none.
         return (srv.get("admin_key_path") or "").strip() or admin_key_path
+
+    if len(reachable) == 1:
+        # A single trusted server has no peer mesh, but Reset access must still
+        # reassert its template-controlled sudo entitlement. Ensure its local
+        # key and install that key back into its own account to use the same
+        # validated key/sudo setup path as a multi-server reconcile.
+        only = reachable[0]
+        only_user = only["os_user"]
+        only_key = _ensure_local_key_and_read_pub(
+            ip=only["ip_address"],
+            admin_key_path=_key_for(only),
+            os_user=only_user,
+            result=result,
+        )
+        if only_key is None:
+            return "failed"
+        if not install_public_key(
+            ip=only["ip_address"],
+            admin_key_path=_key_for(only),
+            os_users=[only_user],
+            public_key=only_key,
+            result=result,
+            marker=f"AppManager-trusted:{only_user}->self",
+            enable_sudo=bool(only.get("enable_sudo", False)),
+            retry=True,
+        ):
+            return "failed"
+        result.log(
+            "Trusted access: one reachable server; passwordless sudo reconciled, "
+            "no peer mesh required"
+        )
+        return "single_server"
 
     deadline = time.monotonic() + _MESH_RECONCILE_BUDGET_SECONDS
 

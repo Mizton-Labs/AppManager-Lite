@@ -270,8 +270,10 @@ def test_main_os_user_account_defaults_to_bash(admin, monkeypatch) -> None:
     _mk_server(client, csrf, uid, template["id"], "box")
     install_cmds = [c for c in ssh.commands if "authorized_keys" in c[-1]]
     assert install_cmds
-    assert all("useradd -m -s /bin/bash cdt-coder" in c[-1] for c in install_cmds)
-    assert all("usermod -s /bin/bash cdt-coder" in c[-1] for c in install_cmds)
+    # Initial provisioning ensures the template account; the subsequent
+    # single-server access reconcile uses the existing account strictly.
+    assert any("useradd -m -s /bin/bash cdt-coder" in c[-1] for c in install_cmds)
+    assert any("usermod -s /bin/bash cdt-coder" in c[-1] for c in install_cmds)
 
 
 def test_free_form_pubkey_users_never_auto_creates_accounts(admin, monkeypatch) -> None:
@@ -317,10 +319,10 @@ def test_trusted_mesh_established_on_second_server(admin, monkeypatch) -> None:
     created = _create_member(client, csrf)
     uid = created["user"]["id"]
 
-    # First server: only one server, so no mesh yet.
+    # First server has no peer mesh, but its local access/sudo is reconciled.
     _mk_server(client, csrf, uid, template["id"], "s1")
     keygen_after_first = [c for c in ssh.commands if "ssh-keygen" in c[-1]]
-    assert keygen_after_first == []  # <2 servers, mesh skipped
+    assert len(keygen_after_first) == 1
 
     ssh.commands.clear()
     # Second server: mesh reconciles across both.
@@ -367,6 +369,8 @@ def test_reconcile_trusted_mesh_unit(monkeypatch) -> None:
                for c in verifies)
     assert any("su -s /bin/sh - apps" in c[-1] and "-l cdt-coder" in c[-1]
                for c in verifies)
+    assert all('ssh -i "$HOME/.ssh/id_ed25519" -o IdentitiesOnly=yes' in c[-1]
+               for c in verifies)
 
 
 def test_reconcile_trusted_mesh_reports_unverified_peer(monkeypatch) -> None:
@@ -411,8 +415,8 @@ def test_trusted_mesh_noop_single_server(monkeypatch) -> None:
         admin_key_path="/k", result=result,
     )
     assert status == "single_server"
-    assert ssh.commands == []
-    assert "fewer than two" in result.transcript
+    assert any("ssh-keygen" in c[-1] for c in ssh.commands)
+    assert "passwordless sudo reconciled" in result.transcript
 
 
 def test_reset_access_reconciles_cross_account_owner_set(admin, monkeypatch) -> None:
