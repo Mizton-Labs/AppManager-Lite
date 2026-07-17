@@ -296,6 +296,18 @@ authorization check bound to its immutable application ID and current alias, so
 stale, disabled, rejected, renamed, private, or unauthorized alias blocks fail
 closed even when somebody knows the URL.
 
+The **Rewrite root paths** toggle (alias apps) is for upstreams that assume they
+run at `/` and emit root-absolute links (e.g. `/assets/…`), which otherwise show
+a blank page under an alias sub-path. When enabled, the generated nginx block
+strips the `/alias` prefix inbound and rewrites the upstream's root-absolute
+responses back under `/alias/`: `proxy_redirect` for 30x `Location` headers and
+`sub_filter` for HTML `href`/`src`/`action` attributes (which requires disabling
+upstream compression). **Limitation:** it only rewrites server-emitted links in
+the response body/headers — it cannot fix paths an app builds at runtime in
+JavaScript (SPA `fetch`, dynamic imports, WebSocket URLs), so a JS-root-assuming
+single-page app may still not work fully; such apps ultimately need to be served
+at their own root (dedicated origin/subdomain). Off by default.
+
 Creating an application is collapsed behind a **New application** button. The
 list has a **filter** box (case-insensitive match across name, description, URL,
 teams, and owner). For an administrator, their own applications are shown first
