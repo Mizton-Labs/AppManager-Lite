@@ -69,9 +69,9 @@ describe("AppCard", () => {
   });
 
   it("shows a separate edit link when provided", () => {
-    render(<AppCard app={makeApp()} editHref="/settings?editApp=1" />);
+    render(<AppCard app={makeApp()} editHref="/app-manager?editApp=1" />);
     const edit = screen.getByRole("link", { name: /^edit$/i });
-    expect(edit).toHaveAttribute("href", "/settings?editApp=1");
+    expect(edit).toHaveAttribute("href", "/app-manager?editApp=1");
     expect(screen.getByRole("link", { name: /Hunt Workbench/ })).toHaveAttribute(
       "target",
       "_blank",

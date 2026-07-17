@@ -65,7 +65,7 @@ describe("HomeView", () => {
     ).toBeTruthy();
     expect(within(ownedSection).getByRole("link", { name: /^edit$/i })).toHaveAttribute(
       "href",
-      "/settings?editApp=10",
+      "/app-manager?editApp=10",
     );
     expect(within(sharedSection).queryByRole("link", { name: /^edit$/i })).toBeNull();
   });

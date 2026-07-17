@@ -1049,7 +1049,7 @@ describe("ApplicationManager", () => {
   });
 
   it("opens and preloads an alias app from the editApp query", async () => {
-    window.history.pushState({}, "", "/settings?editApp=42");
+    window.history.pushState({}, "", "/app-manager?editApp=42");
     stubBackend([
       makeApp({
         id: 42,

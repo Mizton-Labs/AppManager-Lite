@@ -73,7 +73,7 @@ export function HomeView(props: { teams: readonly string[] }) {
             {owned.length === 0 ? (
               <p className="muted">
                 You have not published any applications yet. Add one from
-                Settings.
+                App Manager.
               </p>
             ) : (
               <div className="card-grid">
@@ -81,7 +81,7 @@ export function HomeView(props: { teams: readonly string[] }) {
                   <AppCard
                     key={app.id}
                     app={app}
-                    editHref={`/settings?editApp=${app.id}`}
+                    editHref={`/app-manager?editApp=${app.id}`}
                   />
                 ))}
               </div>
