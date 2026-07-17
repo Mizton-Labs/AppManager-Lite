@@ -1032,6 +1032,7 @@ def _row_to_application(
         "apps_port": row["apps_port"],
         "apps_path": row["apps_path"],
         "alias_auth_required": bool(row["alias_auth_required"]),
+        "is_private": bool(row["is_private"]),
         "pending_alias": row["pending_alias"],
         "pending_is_active": (
             None if row["pending_is_active"] is None else bool(row["pending_is_active"])
@@ -1044,6 +1045,7 @@ def _row_to_application(
         "needs_push": bool(row["needs_push"]),
         "publisher_team": publisher_teams[0] if publisher_teams else "",
         "teams": list_application_teams(conn, row["id"]),
+        "shared_user_ids": list_application_user_ids(conn, row["id"]),
     }
     if "created_by_username" in row.keys():
         data["created_by_username"] = row["created_by_username"]
@@ -1052,6 +1054,7 @@ def _row_to_application(
         data["last_push_status"] = row["last_push_status"]
         data["last_push_log"] = row["last_push_log"]
         data["last_push_at"] = row["last_push_at"]
+        data["shared_users"] = list_application_shared_users(conn, row["id"])
     return data
 
 
@@ -1069,6 +1072,54 @@ def list_application_teams(
         (application_id,),
     ).fetchall()
     return [r["name"] for r in rows]
+
+
+def list_application_user_ids(conn: sqlite3.Connection, application_id: int) -> list[int]:
+    return [row["user_id"] for row in conn.execute(
+        "SELECT user_id FROM application_user_shares WHERE application_id = ? ORDER BY user_id",
+        (application_id,),
+    )]
+
+
+def list_application_shared_users(conn: sqlite3.Connection, application_id: int) -> list[dict[str, Any]]:
+    return [
+        {"id": row["id"], "username": row["username"], "user_id": derive_user_id(row["username"])}
+        for row in conn.execute(
+            "SELECT u.id, u.username FROM application_user_shares s "
+            "JOIN users u ON u.id = s.user_id WHERE s.application_id = ? ORDER BY u.username COLLATE NOCASE",
+            (application_id,),
+        )
+    ]
+
+
+def set_application_users(conn: sqlite3.Connection, application_id: int, user_ids: list[int]) -> None:
+    conn.execute("DELETE FROM application_user_shares WHERE application_id = ?", (application_id,))
+    for user_id in dict.fromkeys(user_ids):
+        conn.execute(
+            "INSERT INTO application_user_shares (application_id, user_id) VALUES (?, ?)",
+            (application_id, user_id),
+        )
+
+
+def can_access_application(conn: sqlite3.Connection, app: dict[str, Any], user: dict[str, Any] | None) -> bool:
+    if not app["is_active"] or app["approval_status"] != "approved":
+        return False
+    if user is None:
+        return not app["is_private"] and not app["alias_auth_required"]
+    if user.get("role") == "admin" or (user.get("id") and app.get("created_by") == user["id"]):
+        return True
+    if app["is_private"] or not user.get("id"):
+        return False
+    if user["id"] in app.get("shared_user_ids", []):
+        return True
+    return bool(set(app.get("teams", [])) & set(user.get("teams", [])))
+
+
+def list_visible_applications(
+    conn: sqlite3.Connection, user: dict[str, Any], *, active_only: bool = True
+) -> list[dict[str, Any]]:
+    apps = list_all_applications(conn, active_only=active_only)
+    return [app for app in apps if can_access_application(conn, app, user)]
 
 
 def count_applications(conn: sqlite3.Connection) -> int:
@@ -1315,6 +1366,8 @@ def create_application(
     apps_port: str = "",
     apps_path: str = "",
     alias_auth_required: bool = True,
+    is_private: bool = False,
+    shared_user_ids: list[int] | None = None,
 ) -> dict[str, Any]:
     cur = conn.execute(
         """
@@ -1322,8 +1375,8 @@ def create_application(
             (name, description, url, url_type, icon_url, is_active,
              approval_status, created_by, sort_order, apps_server, apps_protocol,
              apps_port, apps_path,
-             alias_auth_required)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             alias_auth_required, is_private)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             name,
@@ -1340,10 +1393,12 @@ def create_application(
             apps_port,
             apps_path,
             int(alias_auth_required),
+            int(is_private),
         ),
     )
     application_id = int(cur.lastrowid)
     set_application_teams(conn, application_id, teams)
+    set_application_users(conn, application_id, shared_user_ids or [])
     row = conn.execute(
         "SELECT * FROM applications WHERE id = ?", (application_id,)
     ).fetchone()
@@ -1395,6 +1450,8 @@ def update_application(
     apps_port: str | None = None,
     apps_path: str | None = None,
     alias_auth_required: bool | None = None,
+    is_private: bool | None = None,
+    shared_user_ids: list[int] | None = None,
     pending_alias: str | None = None,
     pending_is_active: bool | None = None,
     clear_pending_is_active: bool = False,
@@ -1435,6 +1492,8 @@ def update_application(
         columns["apps_path"] = apps_path
     if alias_auth_required is not None:
         columns["alias_auth_required"] = int(alias_auth_required)
+    if is_private is not None:
+        columns["is_private"] = int(is_private)
     if pending_alias is not None:
         columns["pending_alias"] = pending_alias
     if pending_is_active is not None:
@@ -1457,6 +1516,8 @@ def update_application(
         )
     if teams is not None:
         set_application_teams(conn, application_id, teams)
+    if shared_user_ids is not None:
+        set_application_users(conn, application_id, shared_user_ids)
     return get_application(conn, application_id)
 
 

@@ -5,6 +5,17 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 
+def _proxy_app(*, auth_required: bool = True, private: bool = False) -> int:
+    from app.db import get_connection
+    with get_connection() as conn:
+        cur = conn.execute(
+            "INSERT INTO applications (name,url,url_type,is_active,approval_status,alias_auth_required,is_private) "
+            "VALUES ('Proxy app','proxy-app','alias',1,'approved',?,?)",
+            (int(auth_required), int(private)),
+        )
+        return int(cur.lastrowid)
+
+
 def test_health_ok(client: TestClient) -> None:
     resp = client.get("/api/health")
     assert resp.status_code == 200
@@ -23,7 +34,8 @@ def test_protected_route_requires_auth(client: TestClient) -> None:
 
 
 def test_proxy_check_requires_session(client: TestClient) -> None:
-    resp = client.get("/api/auth/proxy-check")
+    app_id = _proxy_app()
+    resp = client.get("/api/auth/proxy-check", params={"application_id": app_id, "alias": "proxy-app"})
     assert resp.status_code == 401
 
 
@@ -54,14 +66,59 @@ def test_login_sets_forced_change_flag(client: TestClient) -> None:
 
 
 def test_proxy_check_accepts_valid_session(client: TestClient) -> None:
+    app_id = _proxy_app()
     login = client.post(
         "/api/auth/login",
         json={"username": "admin", "password": client.admin_password},  # type: ignore[attr-defined]
     )
     assert login.status_code == 200
-    resp = client.get("/api/auth/proxy-check")
+    resp = client.get("/api/auth/proxy-check", params={"application_id": app_id, "alias": "proxy-app"})
     assert resp.status_code == 204
     assert not resp.content
+
+
+def test_proxy_check_allows_anonymous_public_alias(client: TestClient) -> None:
+    app_id = _proxy_app(auth_required=False)
+    response = client.get(
+        "/api/auth/proxy-check",
+        params={"application_id": app_id, "alias": "proxy-app"},
+    )
+    assert response.status_code == 204
+
+
+def test_proxy_check_rejects_stale_alias_even_with_session(client: TestClient) -> None:
+    app_id = _proxy_app()
+    client.post("/api/auth/login", json={"username": "admin", "password": client.admin_password})  # type: ignore[attr-defined]
+    response = client.get(
+        "/api/auth/proxy-check",
+        params={"application_id": app_id, "alias": "old-proxy-app"},
+    )
+    assert response.status_code == 403
+
+
+def test_proxy_check_auth_disabled_allows_nonprivate_but_denies_private(client_no_auth: TestClient) -> None:
+    public_id = _proxy_app(auth_required=True)
+    public = client_no_auth.get("/api/auth/proxy-check", params={"application_id": public_id, "alias": "proxy-app"})
+    assert public.status_code == 204
+    private_id = _proxy_app(private=True)
+    private = client_no_auth.get("/api/auth/proxy-check", params={"application_id": private_id, "alias": "proxy-app"})
+    assert private.status_code == 401
+
+    shared_id = _proxy_app()
+    created = client_no_auth.post(
+        "/api/users",
+        json={"username": "shared@example.com", "role": "user", "teams": []},
+    )
+    assert created.status_code == 201
+    from app.db import get_connection
+    with get_connection() as conn:
+        user_id = conn.execute("SELECT id FROM users ORDER BY id LIMIT 1").fetchone()["id"]
+        conn.execute(
+            "INSERT INTO application_user_shares (application_id, user_id) VALUES (?, ?)",
+            (shared_id, user_id),
+        )
+    shared = client_no_auth.get("/api/auth/proxy-check", params={"application_id": shared_id, "alias": "proxy-app"})
+    assert shared.status_code == 401
 
 
 def test_state_change_requires_csrf(client: TestClient) -> None:

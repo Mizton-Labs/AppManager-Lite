@@ -22,6 +22,7 @@ from ..schemas import (
     TeamOut,
     UpdateUserRequest,
     UserOut,
+    ApplicationShareUserOut,
 )
 from .provisioning import provision_default_servers
 
@@ -87,6 +88,28 @@ def list_users(
     conn: sqlite3.Connection = Depends(get_db),
 ) -> list[UserOut]:
     return [_user_out(u) for u in repository.list_users(conn)]
+
+
+@router.get("/users/resolve", response_model=ApplicationShareUserOut)
+def resolve_share_user(
+    identity: str = Query(min_length=1, max_length=254),
+    _: dict[str, Any] = Depends(get_current_user),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> ApplicationShareUserOut:
+    needle = identity.strip().casefold()
+    matches = [
+        user for user in repository.list_users(conn)
+        if user["is_active"] and (
+            user["username"].casefold() == needle
+            or user["user_id"].casefold() == needle
+        )
+    ]
+    if not matches:
+        raise HTTPException(status_code=404, detail="User not found")
+    if len({user["id"] for user in matches}) != 1:
+        raise HTTPException(status_code=409, detail="User identity is ambiguous")
+    user = matches[0]
+    return ApplicationShareUserOut(id=user["id"], username=user["username"], user_id=user["user_id"])
 
 
 @router.post("/users", response_model=GeneratedPasswordOut, status_code=201)

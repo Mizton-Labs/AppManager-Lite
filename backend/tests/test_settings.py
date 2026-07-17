@@ -37,7 +37,7 @@ def test_reverse_proxy_settings_default_template(admin) -> None:
     body = resp.json()
     # Seeded with the default alias template; secrets/keys are never stored.
     assert "location /ALIAS/" in body["alias_template"]
-    assert "auth_request /api/auth/proxy-check;" in body["alias_template"]
+    assert "auth_request /api/auth/proxy-check?application_id=APPLICATION_ID&alias=ALIAS;" in body["alias_template"]
     assert body["nginx_host"] == ""
     assert body["ssh_key_path"] == ""
 
@@ -891,7 +891,9 @@ def test_owner_alias_change_is_staged_not_applied(admin, monkeypatch) -> None:
         mcsrf = login.json()["csrf_token"]
         resp = member.patch(
             f"/api/applications/{app_id}",
-            json={"url": "graf-new", "url_type": "alias"},
+            # The UI always submits unchanged scope fields alongside edits;
+            # their mere presence must not be treated as a scope change.
+            json={"url": "graf-new", "url_type": "alias", "is_private": False, "shared_user_ids": []},
             headers={"X-CSRF-Token": mcsrf},
         )
     assert resp.status_code == 200, resp.text

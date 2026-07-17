@@ -104,7 +104,7 @@ def test_init_db_migrates_legacy_database(legacy_db: Path) -> None:
         acols = {
             r["name"] for r in conn.execute("PRAGMA table_info(applications)")
         }
-        assert {"created_by", "url_type", "approval_status"} <= acols
+        assert {"created_by", "url_type", "approval_status", "is_private"} <= acols
         # Applications gained their own apps server/port, pending config fields,
         # and a push-needed flag.
         assert {
@@ -126,6 +126,7 @@ def test_init_db_migrates_legacy_database(legacy_db: Path) -> None:
         }
         assert "audit_log" in tables
         assert "settings" in tables
+        assert "application_user_shares" in tables
         # The settings table gained an optional SSH user column plus branding.
         scols = {r["name"] for r in conn.execute("PRAGMA table_info(settings)")}
         assert "nginx_user" in scols

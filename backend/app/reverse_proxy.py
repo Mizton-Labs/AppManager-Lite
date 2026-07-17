@@ -65,7 +65,7 @@ DEFAULT_ALIAS_TEMPLATE = """\
 \t\treturn 301 /ALIAS/;
 \t}
 \tlocation /ALIAS/ {
-\t\tauth_request /api/auth/proxy-check;
+\t\tauth_request /api/auth/proxy-check?application_id=APPLICATION_ID&alias=ALIAS;
 \t\terror_page 401 = @appmanager_login;
 \t\tproxy_pass APPS_PROTOCOL://APPS_SERVER:APPS_PORTAPPS_PATH;
 \t\tproxy_read_timeout 7200s;
@@ -179,10 +179,8 @@ def parse_alias_config_block(block: str) -> AliasConfigResult:
     result.apps_server = proxy_match.group("server")
     result.apps_port = proxy_match.group("port")
     result.apps_path = proxy_match.group("path") or ""
-    result.alias_auth_required = (
-        "auth_request /api/auth/proxy-check;" in block
-        and "error_page 401 = @appmanager_login;" in block
-    )
+    auth_mode = re.search(r"# appmanager-auth-required:\s*([01])", block)
+    result.alias_auth_required = bool(int(auth_mode.group(1))) if auth_mode else True
     result.log("[OK] Parsed deployed alias config from nginx.")
     return result
 
@@ -197,6 +195,7 @@ def render_alias_block(
     apps_protocol: str = "http",
     apps_path: str = "",
     alias_auth_required: bool = True,
+    app_id: int = 0,
     timestamp: int | None = None,
 ) -> str:
     """Render the alias template by substituting the placeholders.
@@ -214,6 +213,8 @@ def render_alias_block(
         apps_path = f"/{apps_path}"
     if not _ALIAS_RE.match(alias):
         raise ReverseProxyError(f"Invalid alias for nginx push: {alias!r}")
+    if int(app_id) <= 0:
+        raise ReverseProxyError(f"Invalid application id: {app_id!r}")
     if apps_protocol not in ("http", "https"):
         raise ReverseProxyError(f"Invalid apps protocol: {apps_protocol!r}")
     if not _HOST_RE.match(apps_server):
@@ -232,14 +233,36 @@ def render_alias_block(
     block = block.replace("APPS_PORT", apps_port)
     block = block.replace("APPS_PATH", apps_path or "/")
     block = block.replace("APPNAME", safe_name or "app")
+    block = block.replace("APPLICATION_ID", str(int(app_id)))
     block = block.replace("TIMESTAMP", str(ts))
     # Replace ALIAS last so an APPNAME containing "ALIAS" is not affected first;
     # the comment header's ALIAS token is intentionally substituted too.
     block = block.replace("ALIAS", alias)
-    if not alias_auth_required:
-        block = re.sub(r"^\s*auth_request /api/auth/proxy-check;\n", "", block, flags=re.M)
-        block = re.sub(r"^\s*error_page 401 = @appmanager_login;\n", "", block, flags=re.M)
-    return block
+    auth_line = f"auth_request /api/auth/proxy-check?application_id={int(app_id)}&alias={alias};"
+    auth_pattern = r"auth_request\s+/api/auth/proxy-check[^;]*;"
+    # Remove every legacy/global occurrence first, then inject exactly once in
+    # the managed alias location. A comment or unrelated location can therefore
+    # never satisfy the protection check.
+    block = re.sub(auth_pattern, "", block, flags=re.M)
+    block = re.sub(
+        r"error_page\s+401\s*=\s*@appmanager_login;",
+        "",
+        block,
+        flags=re.M,
+    )
+    block, inserted = re.subn(
+        rf"(location\s+/{re.escape(alias)}/\s*\{{\s*\n)",
+        rf"\1\t\t{auth_line}\n\t\terror_page 401 = @appmanager_login;\n",
+        block,
+        count=1,
+    )
+    if inserted != 1:
+        raise ReverseProxyError("Alias template has no unique managed alias location")
+    if block.count(auth_line) != 1:
+        raise ReverseProxyError(
+            "Alias template must render exactly one app-aware proxy auth request"
+        )
+    return f"# appmanager-auth-required: {int(alias_auth_required)}\n{block}"
 
 
 def inject_before_last_brace(conf_text: str, block: str) -> str:
@@ -413,6 +436,7 @@ def push_alias(
             alias=alias,
             app_name=app_name,
             alias_auth_required=alias_auth_required,
+            app_id=app_id,
         )
     except ReverseProxyError as exc:
         result.status = "failed"
@@ -585,6 +609,13 @@ def read_alias_config(settings: dict, *, app_id: int) -> AliasConfigResult:
         return result
 
     parsed = parse_alias_config_block(block)
+    expected_auth = (
+        f"auth_request /api/auth/proxy-check?application_id={int(app_id)}"
+        f"&alias={parsed.alias};"
+    )
+    if parsed.status == "ok" and block.count(expected_auth) != 1:
+        parsed.status = "failed"
+        parsed.log("[FAIL] Deployed alias block is not app-aware.")
     parsed.steps = [*result.steps, *parsed.steps]
     return parsed
 

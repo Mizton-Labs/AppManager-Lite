@@ -499,6 +499,12 @@ class BundleOptionOut(BaseModel):
     description: str = ""
 
 
+class ApplicationShareUserOut(BaseModel):
+    id: int
+    username: str
+    user_id: str
+
+
 class ApplicationOut(BaseModel):
     id: int
     name: str
@@ -536,6 +542,8 @@ class ApplicationOut(BaseModel):
     is_favorite: bool = False
     visits_7d: int | None = None
     show_statistics: bool = False
+    is_private: bool = False
+    shared_users: list[ApplicationShareUserOut] = Field(default_factory=list)
 
 
 class ApplicationStatisticsSettingsOut(BaseModel):
@@ -630,6 +638,15 @@ class CreateApplicationRequest(BaseModel):
     apps_port: str = Field(default="", max_length=5)
     apps_path: str = Field(default="", max_length=256)
     alias_auth_required: bool = True
+    is_private: bool = False
+    shared_user_ids: list[int] = Field(default_factory=list, max_length=50)
+
+    @field_validator("shared_user_ids")
+    @classmethod
+    def _check_shared_user_ids(cls, value: list[int]) -> list[int]:
+        if any(user_id <= 0 for user_id in value):
+            raise ValueError("shared_user_ids must contain positive IDs")
+        return value
 
     @field_validator("name")
     @classmethod
@@ -679,6 +696,8 @@ class CreateApplicationRequest(BaseModel):
             self.url = _validate_alias(self.url)
         else:
             self.url = _validate_http_url(self.url)
+        if self.is_private and self.url_type != "alias":
+            raise ValueError("Private applications must use a managed alias.")
         return self
 
 
@@ -698,6 +717,15 @@ class UpdateApplicationRequest(BaseModel):
     apps_path: str | None = Field(default=None, max_length=256)
     alias_auth_required: bool | None = None
     created_by: int | None = None
+    is_private: bool | None = None
+    shared_user_ids: list[int] | None = Field(default=None, max_length=50)
+
+    @field_validator("shared_user_ids")
+    @classmethod
+    def _check_shared_user_ids(cls, value: list[int] | None) -> list[int] | None:
+        if value is not None and any(user_id <= 0 for user_id in value):
+            raise ValueError("shared_user_ids must contain positive IDs")
+        return value
 
     @field_validator("name")
     @classmethod
@@ -892,11 +920,11 @@ class UpdateReverseProxySettingsRequest(BaseModel):
         if value is None:
             return None
         if value and (
-            "auth_request /api/auth/proxy-check;" not in value
+            "auth_request /api/auth/proxy-check" not in value
             or "error_page 401 = @appmanager_login;" not in value
         ):
             raise ValueError(
-                "Alias template must include auth_request /api/auth/proxy-check; "
+                "Alias template must include auth_request /api/auth/proxy-check "
                 "and error_page 401 = @appmanager_login;"
             )
         return value

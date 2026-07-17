@@ -40,6 +40,18 @@ def _create_member(client, csrf, username, teams):
     return resp.json()["password"]
 
 
+def _create_share_user(client, csrf, username, teams, *, self_service=False):
+    username = username if "@" in username else f"{username}@example.com"
+    response = client.post(
+        "/api/users",
+        json={"username": username, "role": "user", "teams": teams,
+              "apps_server": "apps.example.com", "self_service": self_service},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
 def _seed_app(client, csrf, name, url, teams):
     """Admin-create an application (auto-approved and visible)."""
     resp = client.post(
@@ -86,6 +98,50 @@ def test_clean_install_has_no_applications(admin) -> None:
     resp = client.get("/api/applications")
     assert resp.status_code == 200, resp.text
     assert resp.json() == []
+
+
+def test_private_alias_is_owner_and_admin_only(admin) -> None:
+    client, csrf, _ = admin
+    owner = _create_share_user(client, csrf, "private.owner", ["Red Team"], self_service=True)
+    other = _create_share_user(client, csrf, "other.user", ["Red Team"])
+    with TestClient(client.app) as owner_client:
+        login = owner_client.post("/api/auth/login", json={"username": "private.owner@example.com", "password": owner["password"]}).json()
+        created = owner_client.post(
+            "/api/applications",
+            json={"name":"Private Lab","url":"private-lab","url_type":"alias","teams":[],"is_private":True,"apps_server":"apps.example.com","apps_port":"8000"},
+            headers={"X-CSRF-Token": login["csrf_token"]},
+        )
+        assert created.status_code == 201, created.text
+        app_id = created.json()["id"]
+        assert {app["id"] for app in owner_client.get("/api/applications").json()} == {app_id}
+    with TestClient(client.app) as other_client:
+        other_client.post("/api/auth/login", json={"username":"other.user@example.com","password":other["password"]})
+        assert other_client.get("/api/applications").json() == []
+        denied = other_client.get("/api/auth/proxy-check", params={"application_id":app_id,"alias":"private-lab"})
+        assert denied.status_code == 403
+    assert client.get("/api/auth/proxy-check", params={"application_id":app_id,"alias":"private-lab"}).status_code == 204
+
+
+def test_explicit_user_share_and_case_insensitive_resolution(admin) -> None:
+    client, csrf, _ = admin
+    owner = _create_share_user(client, csrf, "share.owner", ["Red Team"], self_service=True)
+    recipient = _create_share_user(client, csrf, "Shared.Person", [])
+    with TestClient(client.app) as recipient_client:
+        recipient_client.post("/api/auth/login", json={"username":"Shared.Person@example.com","password":recipient["password"]})
+        resolved = recipient_client.get("/api/users/resolve", params={"identity":"SHARED-PERSON"})
+        assert resolved.status_code == 200
+        recipient_id = resolved.json()["id"]
+    with TestClient(client.app) as owner_client:
+        login = owner_client.post("/api/auth/login", json={"username":"share.owner@example.com","password":owner["password"]}).json()
+        created = owner_client.post(
+            "/api/applications",
+            json={"name":"Direct Share","url":"direct-share","url_type":"alias","teams":[],"shared_user_ids":[recipient_id],"apps_server":"apps.example.com","apps_port":"8000"},
+            headers={"X-CSRF-Token":login["csrf_token"]},
+        )
+        assert created.status_code == 201, created.text
+    with TestClient(client.app) as recipient_client:
+        recipient_client.post("/api/auth/login", json={"username":"Shared.Person@example.com","password":recipient["password"]})
+        assert [app["name"] for app in recipient_client.get("/api/applications").json()] == ["Direct Share"]
 
 
 def test_member_sees_only_their_team_apps(admin) -> None:

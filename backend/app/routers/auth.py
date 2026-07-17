@@ -123,11 +123,32 @@ def _user_out(user: dict[str, Any]) -> UserOut:
 
 @router.get("/auth/proxy-check", status_code=status.HTTP_204_NO_CONTENT)
 def proxy_check(
-    request: Request, conn: sqlite3.Connection = Depends(get_db)
+    request: Request,
+    application_id: int = Query(..., ge=1),
+    alias: str = Query(..., min_length=1, max_length=128),
+    conn: sqlite3.Connection = Depends(get_db),
 ) -> StarletteResponse:
+    app = repository.get_application(conn, application_id)
+    if (
+        app is None
+        or app["url_type"] != "alias"
+        or app["url"].strip("/") != alias.strip("/")
+        or not app["is_active"]
+        or app["approval_status"] != "approved"
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    # Intentionally public aliases still pass through this state-aware endpoint,
+    # but do not require a portal session.
+    if not app["is_private"] and not app["alias_auth_required"]:
+        return StarletteResponse(status_code=status.HTTP_204_NO_CONTENT)
     settings = get_settings()
     if not settings.enable_auth:
-        return StarletteResponse(status_code=status.HTTP_204_NO_CONTENT)
+        # Global auth-disabled mode cannot identify owners/recipients. Preserve
+        # historical open behavior for non-private apps, but never fail private
+        # aliases open.
+        if not app["is_private"] and not app.get("shared_user_ids"):
+            return StarletteResponse(status_code=status.HTTP_204_NO_CONTENT)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
     session_id = request.cookies.get(sessions.SESSION_COOKIE_NAME)
     if not session_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
@@ -137,6 +158,8 @@ def proxy_check(
     user = repository.get_user_by_id(conn, session["user_id"])
     if user is None or not user["is_active"]:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+    if not repository.can_access_application(conn, app, user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     return StarletteResponse(status_code=status.HTTP_204_NO_CONTENT)
 
 

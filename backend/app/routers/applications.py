@@ -23,6 +23,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from .. import audit, repository, reverse_proxy
+from ..config import get_settings
 from ..db import get_connection
 from ..deps import get_current_user, get_db, require_admin, verify_csrf
 from ..schemas import (
@@ -87,17 +88,27 @@ def _app_out(
         is_favorite=is_favorite,
         visits_7d=visits_7d,
         show_statistics=show_statistics,
+        is_private=bool(app.get("is_private")),
+        shared_users=app.get("shared_users", []) if include_creator else [],
     )
 
 
 def _visible_app(conn: sqlite3.Connection, app_id: int, user: dict[str, Any]) -> dict[str, Any] | None:
     app = repository.get_application(conn, app_id)
-    if not app or not app["is_active"] or app["approval_status"] != "approved":
-        return None
-    if user["role"] == "admin":
-        return app
-    visible = repository.list_applications_for_teams(conn, user["teams"])
-    return next((candidate for candidate in visible if candidate["id"] == app_id), None)
+    return app if app and repository.can_access_application(conn, app, user) else None
+
+
+def _validate_shared_users(
+    conn: sqlite3.Connection, user_ids: list[int], owner_id: int | None
+) -> list[int]:
+    unique = list(dict.fromkeys(user_ids))
+    for user_id in unique:
+        target = repository.get_user_by_id(conn, user_id)
+        if target is None or not target["is_active"]:
+            raise HTTPException(status_code=400, detail=f"Shared user {user_id} is not active")
+        if owner_id and user_id == owner_id:
+            raise HTTPException(status_code=400, detail="The owner is already allowed")
+    return unique
 
 
 def _list_out(conn: sqlite3.Connection, apps: list[dict[str, Any],], user: dict[str, Any]) -> list[ApplicationOut]:
@@ -186,6 +197,11 @@ def _nginx_config_changed(
     )
     if any(value is not None and value != existing[key] for key, value in checks):
         return True
+    if payload.is_private is not None and payload.is_private != existing.get("is_private", False):
+        return True
+    if payload.shared_user_ids is not None:
+        if set(payload.shared_user_ids) != set(existing.get("shared_user_ids", [])):
+            return True
     return False
 
 
@@ -397,9 +413,11 @@ def list_applications(
         apps = repository.list_applications_for_publisher_team(
             conn,
             publisher_team,
-            visible_team_names=None if is_admin else user["teams"],
+            visible_team_names=None,
             active_only=active_only,
         )
+        if not is_admin:
+            apps = [app for app in apps if repository.can_access_application(conn, app, user)]
     elif team is not None:
         if team not in set(repository.list_team_names(conn)):
             raise HTTPException(
@@ -413,10 +431,12 @@ def list_applications(
         apps = repository.list_applications_for_team(
             conn, team, active_only=active_only
         )
+        if not is_admin:
+            apps = [app for app in apps if repository.can_access_application(conn, app, user)]
     elif is_admin:
         apps = repository.list_all_applications(conn, active_only=active_only)
     else:
-        apps = repository.list_applications_for_teams(conn, user["teams"])
+        apps = repository.list_visible_applications(conn, user)
 
     return _list_out(conn, apps, user)
 
@@ -657,7 +677,17 @@ def create_application(
 ) -> ApplicationOut:
     is_admin = actor["role"] == "admin"
     _validate_teams(conn, payload.teams)
-    if not is_admin:
+    shared_user_ids = _validate_shared_users(conn, payload.shared_user_ids, actor.get("id"))
+    if (payload.is_private or shared_user_ids) and not get_settings().enable_auth:
+        raise HTTPException(status_code=400, detail="Private or user-restricted applications require authentication to be enabled")
+    if shared_user_ids and payload.url_type != "alias":
+        raise HTTPException(status_code=400, detail="Specific-user sharing requires a managed alias")
+    if payload.is_private:
+        if payload.url_type != "alias":
+            raise HTTPException(status_code=400, detail="Private applications require a managed alias")
+        if payload.teams or shared_user_ids:
+            raise HTTPException(status_code=400, detail="Private applications cannot have team or user shares")
+    elif not is_admin and not (payload.teams or shared_user_ids):
         _require_nonempty_teams(payload.teams)
 
     # Administrators and self-service users bypass review; everyone else queues
@@ -691,7 +721,9 @@ def create_application(
         apps_protocol=apps_protocol,
         apps_port=apps_port,
         apps_path=apps_path,
-        alias_auth_required=payload.alias_auth_required,
+        alias_auth_required=True if payload.is_private or shared_user_ids else payload.alias_auth_required,
+        is_private=payload.is_private,
+        shared_user_ids=shared_user_ids,
     )
     logger.info(
         "Application created id=%s name=%r url_type=%s teams=%s approval=%s "
@@ -781,8 +813,25 @@ def update_application(
 
     if payload.teams is not None:
         _validate_teams(conn, payload.teams)
-        if not is_admin:
-            _require_nonempty_teams(payload.teams)
+    resulting_private = payload.is_private if payload.is_private is not None else existing["is_private"]
+    resulting_type = payload.url_type or existing["url_type"]
+    resulting_teams = payload.teams if payload.teams is not None else existing["teams"]
+    resulting_users = payload.shared_user_ids if payload.shared_user_ids is not None else existing.get("shared_user_ids", [])
+    resulting_owner = payload.created_by if payload.created_by is not None else existing.get("created_by")
+    resulting_users = _validate_shared_users(conn, resulting_users, resulting_owner)
+    if resulting_private:
+        if resulting_type != "alias":
+            raise HTTPException(status_code=400, detail="Private applications require a managed alias")
+        if resulting_teams or resulting_users:
+            raise HTTPException(status_code=400, detail="Private applications cannot have team or user shares")
+    elif not is_admin and not (resulting_teams or resulting_users):
+        raise HTTPException(status_code=400, detail="Select at least one team or shared user")
+    if (resulting_private or resulting_users) and not get_settings().enable_auth:
+        raise HTTPException(status_code=400, detail="Private or user-restricted applications require authentication to be enabled")
+    if resulting_users and resulting_type != "alias":
+        raise HTTPException(status_code=400, detail="Specific-user sharing requires a managed alias")
+    if (resulting_private or resulting_users) and payload.alias_auth_required is False:
+        raise HTTPException(status_code=400, detail="Private or user-restricted aliases must require authentication")
 
     # Resolve the resulting approval status.
     if is_admin:
@@ -805,6 +854,8 @@ def update_application(
                 payload.apps_port,
                 payload.apps_path,
                 payload.alias_auth_required,
+                payload.is_private,
+                payload.shared_user_ids,
             )
         )
         new_status = (
@@ -842,6 +893,18 @@ def update_application(
         and payload.alias_auth_required is not None
         and payload.alias_auth_required != existing["alias_auth_required"]
     )
+    changes_access_scope = (
+        payload.is_private is not None
+        and payload.is_private != existing.get("is_private", False)
+    ) or (
+        payload.shared_user_ids is not None
+        and set(payload.shared_user_ids) != set(existing.get("shared_user_ids", []))
+    )
+    if changes_access_scope and (stages_alias or stages_active or stages_alias_auth):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Submit alias/active/auth changes separately from privacy or user-sharing changes",
+        )
     if stages_alias:
         # Do not change the live URL; record the requested alias as pending and
         # leave the application active and approved on its current config until
@@ -893,7 +956,9 @@ def update_application(
         apps_protocol=payload.apps_protocol,
         apps_port=payload.apps_port,
         apps_path=payload.apps_path,
-        alias_auth_required=alias_auth_required_for_update,
+        alias_auth_required=(True if resulting_private or resulting_users else alias_auth_required_for_update),
+        is_private=payload.is_private,
+        shared_user_ids=payload.shared_user_ids,
         pending_alias=pending_alias_for_update,
         pending_is_active=pending_is_active_for_update,
         pending_alias_auth_required=pending_alias_auth_required_for_update,
@@ -1065,16 +1130,21 @@ def update_application(
             detail=f"is_active={bool(staged_is_active)}",
         )
     if staged_alias_auth_approval:
+        current_scope = repository.get_application(conn, application_id)
+        assert current_scope is not None
+        applied_alias_auth = bool(staged_alias_auth)
+        if current_scope["is_private"] or current_scope.get("shared_user_ids"):
+            applied_alias_auth = True
         repository.update_application(
             conn,
             application_id,
-            alias_auth_required=bool(staged_alias_auth),
+            alias_auth_required=applied_alias_auth,
             clear_pending_alias_auth_required=True,
         )
         logger.info(
             "Applied staged alias auth change id=%s required=%s by=%r",
             application_id,
-            bool(staged_alias_auth),
+            applied_alias_auth,
             actor.get("username"),
         )
         audit.record(

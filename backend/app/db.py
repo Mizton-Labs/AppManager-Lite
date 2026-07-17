@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS applications (
     apps_port        TEXT    NOT NULL DEFAULT '',
     apps_path        TEXT    NOT NULL DEFAULT '',
     alias_auth_required INTEGER NOT NULL DEFAULT 1,
+    is_private      INTEGER NOT NULL DEFAULT 0,
     pending_alias    TEXT    NOT NULL DEFAULT '',
     pending_is_active INTEGER,
     pending_alias_auth_required INTEGER,
@@ -99,6 +100,13 @@ CREATE TABLE IF NOT EXISTS application_teams (
     application_id INTEGER NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
     team_id        INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
     PRIMARY KEY (application_id, team_id)
+);
+
+CREATE TABLE IF NOT EXISTS application_user_shares (
+    application_id INTEGER NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+    user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (application_id, user_id)
 );
 
 CREATE TABLE IF NOT EXISTS application_favorites (
@@ -259,6 +267,8 @@ CREATE INDEX IF NOT EXISTS idx_sso_auth_flows_expires ON sso_auth_flows(expires_
 CREATE INDEX IF NOT EXISTS idx_user_teams_team ON user_teams(team_id);
 CREATE INDEX IF NOT EXISTS idx_application_teams_team
     ON application_teams(team_id);
+CREATE INDEX IF NOT EXISTS idx_application_user_shares_user
+    ON application_user_shares(user_id);
 CREATE INDEX IF NOT EXISTS idx_application_favorites_app
     ON application_favorites(application_id);
 CREATE INDEX IF NOT EXISTS idx_application_usage_daily_date
@@ -620,6 +630,7 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     _add_column(
         conn, "settings", "show_app_statistics", "INTEGER NOT NULL DEFAULT 0"
     )
+    _add_column(conn, "applications", "is_private", "INTEGER NOT NULL DEFAULT 0")
 
     # Reference servers imported without a template carry their own admin
     # key path for key rotation.
