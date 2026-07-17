@@ -92,7 +92,7 @@ describe("GeneralSettings", () => {
     expect(screen.getByRole("note")).toHaveTextContent(
       "Alias authentication requirement",
     );
-    expect(screen.getByText(/location = \/api\/auth\/proxy-check/)).toBeInTheDocument();
+    expect(screen.getByText(/location \^~ \/api\/auth\/proxy-check\//)).toBeInTheDocument();
   });
 
   it("lands on the Reverse Proxy sub-tab on first run", async () => {
