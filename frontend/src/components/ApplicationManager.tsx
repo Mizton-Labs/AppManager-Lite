@@ -3,6 +3,7 @@ import { api, ApiError } from "../api";
 import type {
   ApiUser,
   Application,
+  ApplicationShareUser,
   ApprovalStatus,
   UpdateApplicationInput,
   UrlType,
@@ -417,11 +418,12 @@ function TeamCheckboxes(props: {
   selected: string[];
   onToggle: (team: string) => void;
   onSetAll: (teams: string[]) => void;
+  disabled?: boolean;
 }) {
   const allSelected =
     props.options.length > 0 && props.selected.length === props.options.length;
   return (
-    <fieldset className="team-picker">
+    <fieldset className="team-picker" disabled={props.disabled}>
       <legend>Teams</legend>
       {props.options.length === 0 ? (
         <p className="muted">You are not a member of any team.</p>
@@ -454,6 +456,34 @@ function TeamCheckboxes(props: {
       )}
     </fieldset>
   );
+}
+
+function UserSharingFields(props: {
+  users: ApplicationShareUser[];
+  onChange: (users: ApplicationShareUser[]) => void;
+  disabled?: boolean;
+}) {
+  const [identity, setIdentity] = useState("");
+  const [status, setStatus] = useState<{ tone: "success" | "error"; text: string } | null>(null);
+  const [checking, setChecking] = useState(false);
+  async function verify() {
+    if (!identity.trim()) return;
+    setChecking(true); setStatus(null);
+    try {
+      const found = await api.resolveShareUser(identity.trim());
+      if (!props.users.some(user => user.id === found.id)) props.onChange([...props.users, found]);
+      setIdentity("");
+      setStatus({ tone: "success", text: `Verified ${found.user_id} (${found.username})` });
+    } catch (err) {
+      setStatus({ tone: "error", text: err instanceof ApiError ? err.message : "User does not exist." });
+    } finally { setChecking(false); }
+  }
+  return <fieldset className="user-share-card" disabled={props.disabled}>
+    <legend>Share with specific users</legend>
+    <div className="user-share-input"><input value={identity} onChange={event => setIdentity(event.target.value)} placeholder="Username or user ID"/><button type="button" className="btn ghost" onClick={() => void verify()} disabled={checking || !identity.trim()}>{checking ? "Checking…" : "Verify and add"}</button></div>
+    {status && <p className={`alert ${status.tone}`}>{status.text}</p>}
+    <div className="user-share-list">{props.users.map(user => <span className="user-share-chip" key={user.id}><strong>{user.user_id}</strong><small>{user.username}</small><button type="button" aria-label={`Remove ${user.user_id}`} onClick={() => props.onChange(props.users.filter(item => item.id !== user.id))}>×</button></span>)}</div>
+  </fieldset>;
 }
 
 /**
@@ -721,6 +751,7 @@ function UrlFields(props: {
 function AliasAuthField(props: {
   checked: boolean;
   onChange: (checked: boolean) => void;
+  disabled?: boolean;
 }) {
   return (
     <label className="field checkbox-field">
@@ -728,6 +759,7 @@ function AliasAuthField(props: {
         <input
           type="checkbox"
           checked={props.checked}
+          disabled={props.disabled}
           onChange={(e) => props.onChange(e.target.checked)}
         />{" "}
         Require AppManager authentication
@@ -844,6 +876,8 @@ function CreateApplicationCard(props: {
   const [appsServer, setAppsServer] = useState(props.defaultAppsServer);
   const [appsPath, setAppsPath] = useState("");
   const [aliasAuthRequired, setAliasAuthRequired] = useState(true);
+  const [isPrivate, setIsPrivate] = useState(false);
+  const [sharedUsers, setSharedUsers] = useState<ApplicationShareUser[]>([]);
   const [busy, setBusy] = useState(false);
   const [appsServerOptions, setAppsServerOptions] = useState<AppsServerOption[]>([]);
 
@@ -905,8 +939,10 @@ function CreateApplicationCard(props: {
         url_type: urlType,
         description: description.trim(),
         icon_url: icon,
-        teams,
-        alias_auth_required: urlType === "alias" ? aliasAuthRequired : true,
+        is_private: isPrivate,
+        shared_user_ids: isPrivate ? [] : sharedUsers.map(user => user.id),
+        teams: isPrivate ? [] : teams,
+        alias_auth_required: urlType === "alias" ? (isPrivate || sharedUsers.length > 0 ? true : aliasAuthRequired) : true,
         ...(showPort ? { apps_protocol: appsProtocol } : {}),
         ...(showPort ? { apps_port: appsPort.trim() } : {}),
         ...(showServer ? { apps_server: appsServer.trim() } : {}),
@@ -928,6 +964,7 @@ function CreateApplicationCard(props: {
     <section className="card">
       <h2>New application</h2>
       <form className="create-form" onSubmit={onSubmit}>
+        <label className="field checkbox-field private-app-field"><span><input type="checkbox" checked={isPrivate} onChange={event => { const checked=event.target.checked; setIsPrivate(checked); if (checked) { setUrlType("alias"); setAliasAuthRequired(true); } }} /> Private Application</span><small>Only you and administrators can access this managed alias.</small></label>
         <label className="field">
           <span>Name</span>
           <input
@@ -941,7 +978,7 @@ function CreateApplicationCard(props: {
         <UrlFields
           urlType={urlType}
           url={url}
-          onUrlTypeChange={setUrlType}
+          onUrlTypeChange={value => { if (!isPrivate && sharedUsers.length === 0) setUrlType(value); }}
           onUrlChange={setUrl}
         />
 
@@ -963,6 +1000,7 @@ function CreateApplicationCard(props: {
           <AliasAuthField
             checked={aliasAuthRequired}
             onChange={setAliasAuthRequired}
+            disabled={isPrivate || sharedUsers.length > 0}
           />
         )}
 
@@ -986,7 +1024,9 @@ function CreateApplicationCard(props: {
           selected={teams}
           onToggle={toggleTeam}
           onSetAll={setTeams}
+          disabled={isPrivate}
         />
+        <UserSharingFields users={sharedUsers} onChange={users => { setSharedUsers(users); if (users.length) { setUrlType("alias"); setAliasAuthRequired(true); } }} disabled={isPrivate}/>
 
         <div className="row-actions">
           <button
@@ -1053,6 +1093,8 @@ function ApplicationRow(props: {
   const [aliasAuthRequired, setAliasAuthRequired] = useState(
     app.alias_auth_required,
   );
+  const [isPrivate, setIsPrivate] = useState(!!app.is_private);
+  const [sharedUsers, setSharedUsers] = useState<ApplicationShareUser[]>(app.shared_users ?? []);
   const [ownerId, setOwnerId] = useState(String(app.created_by_id ?? ""));
   const [logoError, setLogoError] = useState<string | null>(null);
   const [appsServerOptions, setAppsServerOptions] = useState<AppsServerOption[]>([]);
@@ -1113,6 +1155,8 @@ function ApplicationRow(props: {
     );
     setAppsPath(app.apps_path ?? "");
     setAliasAuthRequired(app.alias_auth_required);
+    setIsPrivate(!!app.is_private);
+    setSharedUsers(app.shared_users ?? []);
     setOwnerId(String(app.created_by_id ?? ""));
   }, [
     app.name,
@@ -1126,6 +1170,8 @@ function ApplicationRow(props: {
     app.apps_server,
     app.apps_path,
     app.alias_auth_required,
+    app.is_private,
+    app.shared_users,
     app.created_by_id,
     props.defaultAppsServer,
   ]);
@@ -1144,6 +1190,9 @@ function ApplicationRow(props: {
           defaultAppsServerValue(props.defaultAppsServer, appsServerOptions)) ||
       appsPath !== (app.apps_path ?? "") ||
       aliasAuthRequired !== app.alias_auth_required ||
+      isPrivate !== !!app.is_private ||
+      sharedUsers.length !== (app.shared_users ?? []).length ||
+      sharedUsers.some(user => !(app.shared_users ?? []).some(existing => existing.id === user.id)) ||
       ownerId !== String(app.created_by_id ?? "") ||
       teams.length !== app.teams.length ||
       teams.some((t) => !app.teams.includes(t)),
@@ -1159,6 +1208,8 @@ function ApplicationRow(props: {
       appsServerOptions,
       appsPath,
       aliasAuthRequired,
+      isPrivate,
+      sharedUsers,
       ownerId,
       teams,
       app,
@@ -1456,10 +1507,11 @@ function ApplicationRow(props: {
             />
           </label>
 
+          <label className="field checkbox-field private-app-field"><span><input type="checkbox" checked={isPrivate} onChange={event => { const checked=event.target.checked; setIsPrivate(checked); if (checked) { setUrlType("alias"); setAliasAuthRequired(true); } }} /> Private Application</span><small>Only the owner and administrators can access this managed alias.</small></label>
           <UrlFields
             urlType={urlType}
             url={url}
-            onUrlTypeChange={setUrlType}
+            onUrlTypeChange={value => { if (!isPrivate && sharedUsers.length === 0) setUrlType(value); }}
             onUrlChange={setUrl}
           />
 
@@ -1487,6 +1539,7 @@ function ApplicationRow(props: {
             <AliasAuthField
               checked={aliasAuthRequired}
               onChange={setAliasAuthRequired}
+              disabled={isPrivate || sharedUsers.length > 0}
             />
           )}
 
@@ -1533,7 +1586,9 @@ function ApplicationRow(props: {
             selected={teams}
             onToggle={toggleTeam}
             onSetAll={setTeams}
+            disabled={isPrivate}
           />
+          <UserSharingFields users={sharedUsers} onChange={users => { setSharedUsers(users); if (users.length) { setUrlType("alias"); setAliasAuthRequired(true); } }} disabled={isPrivate}/>
 
           <div className="row-actions">
             <button
@@ -1547,8 +1602,10 @@ function ApplicationRow(props: {
                   url_type: urlType,
                   description,
                   icon_url: iconUrl,
-                  teams,
-                  alias_auth_required: urlType === "alias" ? aliasAuthRequired : true,
+                  teams: isPrivate ? [] : teams,
+                  is_private: isPrivate,
+                  shared_user_ids: isPrivate ? [] : sharedUsers.map(user => user.id),
+                  alias_auth_required: urlType === "alias" ? (isPrivate || sharedUsers.length > 0 ? true : aliasAuthRequired) : true,
                   ...(showPort ? { apps_protocol: appsProtocol } : {}),
                   ...(showPort ? { apps_port: appsPort.trim() } : {}),
                   ...(showServer ? { apps_server: appsServer.trim() } : {}),

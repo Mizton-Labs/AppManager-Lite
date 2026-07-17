@@ -384,7 +384,7 @@ function ReverseProxyConfiguration(props: {
         replacing <code>APPMANAGER_HOST</code> and <code>APPMANAGER_PORT</code> with
         the backend address:
         <pre className="settings-snippet"><code>{AUTH_PROXY_SNIPPET}</code></pre>
-        The alias template must also include <code>auth_request /api/auth/proxy-check;</code>{" "}
+        The alias template must also include <code>auth_request /api/auth/proxy-check</code>{" "}
         and <code>error_page 401 = @appmanager_login;</code>. AppManager and aliases
         should be served from the same domain so the session cookie is sent to
         alias requests.

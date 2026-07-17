@@ -187,6 +187,7 @@ export const api = {
     }),
 
   listTeams: () => request<Team[]>("teams"),
+  resolveShareUser: (identity: string) => request<import("./types").ApplicationShareUser>(`users/resolve?identity=${encodeURIComponent(identity)}`),
 
   listApplications: (team?: string) =>
     request<Application[]>(

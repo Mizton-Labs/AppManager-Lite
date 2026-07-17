@@ -102,6 +102,13 @@ function stubBackend(
         },
       ]);
     }
+    if (method === "GET" && url.includes("/api/users/resolve?identity=")) {
+      const identity = decodeURIComponent(url.split("identity=")[1] ?? "").toLowerCase();
+      if (identity === "owner" || identity === "owner@example.com") {
+        return jsonResponse({ id: 2, username: "owner@example.com", user_id: "owner" });
+      }
+      return jsonResponse({ detail: "User not found" }, false, 404);
+    }
     const aliasConfigMatch = url.match(/\/api\/applications\/(\d+)\/alias-config$/);
     if (method === "GET" && aliasConfigMatch) {
       const app = store.find((item) => item.id === Number(aliasConfigMatch[1]));
@@ -141,6 +148,10 @@ function stubBackend(
         apps_port: body.apps_port ?? "",
         apps_path: body.apps_path ?? "",
         alias_auth_required: body.alias_auth_required ?? true,
+        is_private: body.is_private ?? false,
+        shared_users: body.shared_user_ids?.includes(2)
+          ? [{ id: 2, username: "owner@example.com", user_id: "owner" }]
+          : [],
         approval_status: "pending",
         sort_order: store.length,
       });
@@ -267,6 +278,44 @@ describe("ApplicationManager", () => {
         teams: [],
       },
     );
+  });
+
+  it("creates a private alias with sharing controls disabled", async () => {
+    const fetchMock = stubBackend([]);
+    render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
+    await screen.findByText(/No applications yet/i);
+    await userEvent.click(screen.getByRole("button", { name: /new application/i }));
+    await userEvent.click(screen.getByLabelText(/Private Application/i));
+    expect(screen.getByRole("group", { name: "Teams" })).toBeDisabled();
+    expect(screen.getByRole("group", { name: /Share with specific users/i })).toBeDisabled();
+    await userEvent.type(screen.getByLabelText("Name"), "Private Tool");
+    await userEvent.type(screen.getByLabelText("Local alias relative path"), "private-tool");
+    await userEvent.type(screen.getByLabelText("Alias upstream server host or IP"), "apps.example.com");
+    await userEvent.type(screen.getByLabelText("Alias upstream port"), "8000");
+    await userEvent.click(screen.getByRole("button", { name: /create application/i }));
+    const call = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
+    expect(JSON.parse((call![1] as RequestInit).body as string)).toMatchObject({
+      is_private: true, teams: [], shared_user_ids: [], alias_auth_required: true,
+    });
+  });
+
+  it("verifies and adds a specific user case-insensitively", async () => {
+    const fetchMock = stubBackend([]);
+    render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
+    await screen.findByText(/No applications yet/i);
+    await userEvent.click(screen.getByRole("button", { name: /new application/i }));
+    await userEvent.type(screen.getByPlaceholderText(/Username or user ID/i), "OWNER");
+    await userEvent.click(screen.getByRole("button", { name: /verify and add/i }));
+    expect(await screen.findByText(/Verified owner/i)).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText("Name"), "Shared Tool");
+    await userEvent.type(screen.getByLabelText("Local alias relative path"), "shared-tool");
+    await userEvent.type(screen.getByLabelText("Alias upstream server host or IP"), "apps.example.com");
+    await userEvent.type(screen.getByLabelText("Alias upstream port"), "8000");
+    await userEvent.click(screen.getByRole("button", { name: /create application/i }));
+    const call = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
+    expect(JSON.parse((call![1] as RequestInit).body as string)).toMatchObject({
+      shared_user_ids: [2], alias_auth_required: true,
+    });
   });
 
   it("offers an owner's apps-server servers as a dropdown (by name) with a Custom fallback", async () => {

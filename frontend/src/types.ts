@@ -551,7 +551,11 @@ export interface Application {
   is_favorite?: boolean;
   visits_7d?: number | null;
   show_statistics?: boolean;
+  is_private?: boolean;
+  shared_users?: ApplicationShareUser[];
 }
+
+export interface ApplicationShareUser { id: number; username: string; user_id: string; }
 
 export interface ApplicationTrendPoint { date: string; launches: number; unique_users: number; }
 export interface ApplicationStatisticsRow { application_id: number; name: string; launches: number; unique_users: number; favorites: number; visits_7d: number; }
@@ -588,6 +592,8 @@ export interface CreateApplicationInput {
   apps_port?: string;
   apps_path?: string;
   alias_auth_required?: boolean;
+  is_private?: boolean;
+  shared_user_ids?: number[];
   created_by?: number;
 }
 
@@ -606,6 +612,8 @@ export interface UpdateApplicationInput {
   apps_port?: string;
   apps_path?: string;
   alias_auth_required?: boolean;
+  is_private?: boolean;
+  shared_user_ids?: number[];
 }
 
 /** Which subsystem an audit entry belongs to (one per audit-view tab). */

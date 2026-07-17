@@ -1556,6 +1556,15 @@ textarea:focus-visible,
   margin: 0;
 }
 
+.team-picker:disabled,
+.user-share-card:disabled { opacity: .48; }
+.private-app-field small { color: var(--muted); font-weight: 400; }
+.user-share-card { display: grid; gap: .65rem; padding: .8rem; border: 1px solid var(--border); border-radius: var(--radius); }
+.user-share-input { display: flex; gap: .5rem; }.user-share-input input { flex: 1; min-width: 0; }
+.user-share-list { display: flex; flex-wrap: wrap; gap: .45rem; }
+.user-share-chip { display: inline-grid; grid-template-columns: auto auto; gap: .05rem .45rem; position: relative; padding: .35rem 1.8rem .35rem .55rem; border: 1px solid var(--border-strong); border-radius: .45rem; background: var(--bg); }
+.user-share-chip small { grid-column: 1; color: var(--muted); }.user-share-chip button { position: absolute; right: .35rem; top: .35rem; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+
 .team-picker legend {
   font-size: 0.82rem;
   color: var(--muted);
