@@ -268,19 +268,23 @@ An application has one of three **target types**, chosen with radio buttons:
 - **Full URL** — an external link opened in a new tab.
 - **Embedded App (private)** — an internal host/URL rendered inside the portal
   in an iframe, reachable only from the **Embedded apps** sidebar section (below
-  Teams, above Config; scrollable) after login. Embedded apps do not require the
-  per-alias "Require AppManager authentication" toggle — they are always behind
-  login — and their access follows the same team/user/private configuration.
-  Selecting one shows a compact top bar with the app title above a full-height
-  frame that grows when the sidebar collapses. The source must permit being
-  framed (an app sending `X-Frame-Options: DENY`/a restrictive CSP cannot be
-  embedded). When AppManager is served over HTTPS the embedded source should be
-  `https://` too: the browser auto-upgrades `http://` sources
+  Teams, above Config; scrollable) after login. The source is composed from a
+  **server dropdown** listing the owner's own servers (protocol + server +
+  port + optional path); it cannot point at an arbitrary host, and the same
+  server-membership constraint is enforced server-side. Embedded apps do not
+  require the per-alias "Require AppManager authentication" toggle — they are
+  always behind login — and their access follows the same team/user/private
+  configuration. Selecting one shows a compact top bar with the app title above
+  a full-height frame that grows when the sidebar collapses. The source must
+  permit being framed (an app sending `X-Frame-Options: DENY`/a restrictive CSP
+  cannot be embedded). When AppManager is served over HTTPS the embedded source
+  should be `https://` too: the browser auto-upgrades `http://` sources
   (`upgrade-insecure-requests`), so a plain-HTTP internal host without TLS will
   not load. A source resolving to AppManager's own origin is rejected.
 
 The create/edit forms group access controls under a **Permissions** section:
-mark the app **Private** (owner + administrators only) or share it with whole
+mark the app **Private** (labeled "only you"; administrators retain oversight
+access) or share it with whole
 **Teams** and/or specific **Users** (resolved case-insensitively by username or
 derived user ID). Private disables and clears team/user sharing. Private and
 user-restricted apps must be a mediated type (managed alias or embedded app).
