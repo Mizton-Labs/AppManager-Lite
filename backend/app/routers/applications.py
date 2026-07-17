@@ -50,6 +50,10 @@ logger = logging.getLogger(__name__)
 _launch_lock = threading.Lock()
 _launch_last_seen: dict[tuple[int, int], float] = {}
 _LAUNCH_MIN_INTERVAL_SECONDS = 5.0
+# Application types AppManager mediates access to (behind login + owner/team/user
+# gating), and which may therefore be marked private or shared with users: a
+# managed alias, or an embedded app rendered only inside the authenticated portal.
+_MEDIATED_TYPES = ("alias", "embedded")
 
 
 def _app_out(
@@ -680,11 +684,11 @@ def create_application(
     shared_user_ids = _validate_shared_users(conn, payload.shared_user_ids, actor.get("id"))
     if (payload.is_private or shared_user_ids) and not get_settings().enable_auth:
         raise HTTPException(status_code=400, detail="Private or user-restricted applications require authentication to be enabled")
-    if shared_user_ids and payload.url_type != "alias":
-        raise HTTPException(status_code=400, detail="Specific-user sharing requires a managed alias")
+    if shared_user_ids and payload.url_type not in _MEDIATED_TYPES:
+        raise HTTPException(status_code=400, detail="Specific-user sharing requires a managed alias or embedded app")
     if payload.is_private:
-        if payload.url_type != "alias":
-            raise HTTPException(status_code=400, detail="Private applications require a managed alias")
+        if payload.url_type not in _MEDIATED_TYPES:
+            raise HTTPException(status_code=400, detail="Private applications require a managed alias or embedded app")
         if payload.teams or shared_user_ids:
             raise HTTPException(status_code=400, detail="Private applications cannot have team or user shares")
     elif not is_admin and not (payload.teams or shared_user_ids):
@@ -820,17 +824,19 @@ def update_application(
     resulting_owner = payload.created_by if payload.created_by is not None else existing.get("created_by")
     resulting_users = _validate_shared_users(conn, resulting_users, resulting_owner)
     if resulting_private:
-        if resulting_type != "alias":
-            raise HTTPException(status_code=400, detail="Private applications require a managed alias")
+        if resulting_type not in _MEDIATED_TYPES:
+            raise HTTPException(status_code=400, detail="Private applications require a managed alias or embedded app")
         if resulting_teams or resulting_users:
             raise HTTPException(status_code=400, detail="Private applications cannot have team or user shares")
     elif not is_admin and not (resulting_teams or resulting_users):
         raise HTTPException(status_code=400, detail="Select at least one team or shared user")
     if (resulting_private or resulting_users) and not get_settings().enable_auth:
         raise HTTPException(status_code=400, detail="Private or user-restricted applications require authentication to be enabled")
-    if resulting_users and resulting_type != "alias":
-        raise HTTPException(status_code=400, detail="Specific-user sharing requires a managed alias")
-    if (resulting_private or resulting_users) and payload.alias_auth_required is False:
+    if resulting_users and resulting_type not in _MEDIATED_TYPES:
+        raise HTTPException(status_code=400, detail="Specific-user sharing requires a managed alias or embedded app")
+    # Embedded apps are not served through nginx, so alias auth is not applicable
+    # to them; the alias-auth constraint only applies to alias apps.
+    if (resulting_private or resulting_users) and resulting_type == "alias" and payload.alias_auth_required is False:
         raise HTTPException(status_code=400, detail="Private or user-restricted aliases must require authentication")
 
     # Resolve the resulting approval status.

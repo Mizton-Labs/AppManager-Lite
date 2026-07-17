@@ -181,6 +181,79 @@ def test_legacy_team_preserved_and_not_reseeded(legacy_db: Path) -> None:
     assert rows[0]["icon"] == ""
 
 
+def test_url_type_check_dropped_and_embedded_accepted(legacy_db: Path) -> None:
+    """A database carrying the legacy url_type CHECK is rebuilt on migrate so
+    'embedded' is accepted; existing rows and child rows are preserved."""
+    from app import db
+
+    # Bring the legacy DB up to the current schema first.
+    db.init_db()
+
+    # Seed a row + child, then reintroduce the legacy url_type CHECK to
+    # reproduce a production database created from the older _SCHEMA.
+    with db.get_connection() as conn:
+        columns = [r["name"] for r in conn.execute("PRAGMA table_info(applications)")]
+        col_list = ", ".join(columns)
+        conn.execute("INSERT INTO teams (name) VALUES ('CheckTeam')")
+        team_id = conn.execute(
+            "SELECT id FROM teams WHERE name = 'CheckTeam'"
+        ).fetchone()["id"]
+        app_id = conn.execute(
+            "INSERT INTO applications (name, url, url_type) "
+            "VALUES ('checked', 'grafana', 'alias') RETURNING id"
+        ).fetchone()["id"]
+        conn.execute(
+            "INSERT INTO application_teams (application_id, team_id) VALUES (?, ?)",
+            (app_id, team_id),
+        )
+
+    # Rebuild applications WITH a url_type CHECK (legacy shape) on a dedicated
+    # autocommit connection with FKs off, mirroring the real migration mechanics.
+    create_checked = db._extract_create_table(db._SCHEMA, "applications").replace(
+        "url_type        TEXT    NOT NULL DEFAULT 'url',",
+        "url_type TEXT NOT NULL DEFAULT 'url' CHECK (url_type IN ('url', 'alias')),",
+    )
+    setup = db.connect()
+    setup.isolation_level = None
+    setup.execute("PRAGMA foreign_keys=OFF")
+    setup.execute("BEGIN")
+    setup.execute("ALTER TABLE applications RENAME TO applications_legacy")
+    setup.execute(create_checked)
+    setup.execute(
+        f"INSERT INTO applications ({col_list}) "
+        f"SELECT {col_list} FROM applications_legacy"
+    )
+    setup.execute("DROP TABLE applications_legacy")
+    setup.execute("COMMIT")
+    assert "CHECK (url_type" in setup.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='applications'"
+    ).fetchone()["sql"]
+    setup.close()
+
+    # Re-migrate: the CHECK must be dropped, twice-run to prove idempotence.
+    with db.get_connection() as conn:
+        db._migrate_schema(conn)
+    with db.get_connection() as conn:
+        db._migrate_schema(conn)
+        table_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='applications'"
+        ).fetchone()["sql"]
+        assert "CHECK (url_type" not in table_sql
+        # Row + child preserved with a stable id.
+        assert conn.execute(
+            "SELECT name FROM applications WHERE id = ?", (app_id,)
+        ).fetchone()["name"] == "checked"
+        assert conn.execute(
+            "SELECT COUNT(*) c FROM application_teams WHERE application_id = ?",
+            (app_id,),
+        ).fetchone()["c"] == 1
+        # 'embedded' is now accepted at the DB layer.
+        conn.execute(
+            "INSERT INTO applications (name, url, url_type) "
+            "VALUES ('emb', 'http://e', 'embedded')"
+        )
+
+
 def test_jump_management_split_columns_and_migration(legacy_db: Path) -> None:
     """The jump management/mode columns are added and jump_user is preserved."""
     from app import db

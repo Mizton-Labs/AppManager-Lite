@@ -1354,3 +1354,100 @@ def test_resolve_user_apps_server_host_none_owner_returns_empty() -> None:
     from app.routers.applications import resolve_user_apps_server_host
 
     assert resolve_user_apps_server_host(None, None) == ""
+
+
+# --- Embedded applications (issue_local_029) ------------------------------
+
+
+def test_embedded_app_create_and_visibility(admin) -> None:
+    """An embedded app is created with url_type 'embedded', echoes its source
+    URL, follows normal team visibility, and never touches nginx."""
+    client, csrf, _ = admin
+    created = client.post(
+        "/api/applications",
+        json={
+            "name": "Grafana Embed",
+            "url": "http://10.0.0.5:3000/",
+            "url_type": "embedded",
+            "teams": ["Red Team"],
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["url_type"] == "embedded"
+    assert body["url"] == "http://10.0.0.5:3000/"
+    app_id = body["id"]
+
+    # A member of the shared team sees it; a member of another team does not.
+    member_pw = _create_member(client, csrf, "embuser", ["Red Team"])
+    with TestClient(client.app) as member:
+        member.post(
+            "/api/auth/login", json={"username": "embuser", "password": member_pw}
+        )
+        names = {a["name"] for a in member.get("/api/applications").json()}
+    assert "Grafana Embed" in names
+
+    outsider_pw = _create_member(client, csrf, "embout", ["Threat Hunting"])
+    with TestClient(client.app) as outsider:
+        outsider.post(
+            "/api/auth/login", json={"username": "embout", "password": outsider_pw}
+        )
+        names = {a["name"] for a in outsider.get("/api/applications").json()}
+    assert "Grafana Embed" not in names
+
+    # Embedded apps are excluded from all nginx alias handling.
+    cfg = client.get(f"/api/applications/{app_id}/alias-config")
+    assert cfg.status_code == 200, cfg.text
+    assert cfg.json()["status"] == "skipped"
+
+
+def test_embedded_app_can_be_private(admin) -> None:
+    """An 'Embedded App (private)' is allowed (mediated behind login) and is
+    owner/admin-only."""
+    client, csrf, _ = admin
+    owner = _create_share_user(client, csrf, "emb.owner", ["Red Team"], self_service=True)
+    other = _create_share_user(client, csrf, "emb.other", ["Red Team"])
+    with TestClient(client.app) as owner_client:
+        login = owner_client.post(
+            "/api/auth/login",
+            json={"username": "emb.owner@example.com", "password": owner["password"]},
+        ).json()
+        created = owner_client.post(
+            "/api/applications",
+            json={
+                "name": "Private Embed",
+                "url": "http://10.0.0.9:8080/",
+                "url_type": "embedded",
+                "teams": [],
+                "is_private": True,
+            },
+            headers={"X-CSRF-Token": login["csrf_token"]},
+        )
+        assert created.status_code == 201, created.text
+        app_id = created.json()["id"]
+        assert {a["id"] for a in owner_client.get("/api/applications").json()} >= {app_id}
+    with TestClient(client.app) as other_client:
+        other_client.post(
+            "/api/auth/login",
+            json={"username": "emb.other@example.com", "password": other["password"]},
+        )
+        assert all(
+            a["id"] != app_id for a in other_client.get("/api/applications").json()
+        )
+
+
+def test_embedded_app_rejects_relative_url(admin) -> None:
+    """Embedded source must be an absolute http(s) URL."""
+    client, csrf, _ = admin
+    resp = client.post(
+        "/api/applications",
+        json={
+            "name": "Bad Embed",
+            "url": "not-a-url",
+            "url_type": "embedded",
+            "teams": ["Red Team"],
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 422, resp.text

@@ -71,8 +71,9 @@ CREATE TABLE IF NOT EXISTS applications (
     name            TEXT    NOT NULL,
     description     TEXT    NOT NULL DEFAULT '',
     url             TEXT    NOT NULL,
-    url_type        TEXT    NOT NULL DEFAULT 'url'
-                        CHECK (url_type IN ('url', 'alias')),
+    -- url_type is validated at the application layer (schemas.URL_TYPES:
+    -- url | alias | embedded); no DB CHECK so new types never require a rebuild.
+    url_type        TEXT    NOT NULL DEFAULT 'url',
     icon_url        TEXT    NOT NULL DEFAULT '',
     is_active       INTEGER NOT NULL DEFAULT 1,
     approval_status TEXT    NOT NULL DEFAULT 'approved'
@@ -359,6 +360,80 @@ def _add_column(
         return False
     conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
     return True
+
+
+def _drop_applications_url_type_check(conn: sqlite3.Connection) -> None:
+    """Remove any CHECK constraint on ``applications.url_type`` via a table
+    rebuild. url_type values are validated at the application layer, so new
+    types never require a schema change.
+
+    No-op when the live table has no such CHECK (fresh installs from the current
+    _SCHEMA, or a database already migrated). The rebuild preserves every column
+    and row and keeps ``id`` values stable, so the ON DELETE CASCADE children
+    (application_teams / application_user_shares / application_favorites /
+    application_usage_daily) remain valid. Foreign keys are disabled for the
+    rebuild so renaming/dropping the parent does not cascade-delete children.
+    """
+    table_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='applications'"
+    ).fetchone()
+    if table_sql is None or "CHECK (url_type" not in (table_sql["sql"] or ""):
+        return  # No url_type CHECK to remove.
+
+    # Preserve the exact live column set/order (migration history varies).
+    columns = [r["name"] for r in conn.execute("PRAGMA table_info(applications)")]
+    col_list = ", ".join(columns)
+
+    # Extract the canonical CREATE TABLE applications (...) statement from
+    # _SCHEMA so the rebuilt table matches the current schema exactly.
+    create_stmt = _extract_create_table(_SCHEMA, "applications")
+
+    # The rebuild must disable foreign keys while dropping the parent table, or
+    # ON DELETE CASCADE would wipe the child rows (application_teams / _user_
+    # shares / _favorites / _usage_daily). PRAGMA foreign_keys can only be
+    # toggled OUTSIDE a transaction, but the caller's connection is mid-
+    # transaction. Commit any in-progress migration work, then perform the
+    # rebuild on a dedicated autocommit connection with FKs off. Ids are
+    # preserved so every child FK remains valid afterwards.
+    conn.commit()
+    rebuild = connect()
+    try:
+        rebuild.isolation_level = None  # autocommit: explicit BEGIN/COMMIT below
+        rebuild.execute("PRAGMA foreign_keys=OFF")
+        rebuild.execute("BEGIN")
+        rebuild.execute("ALTER TABLE applications RENAME TO applications_old")
+        rebuild.execute(create_stmt)
+        rebuild.execute(
+            f"INSERT INTO applications ({col_list}) "
+            f"SELECT {col_list} FROM applications_old"
+        )
+        rebuild.execute("DROP TABLE applications_old")
+        rebuild.execute("COMMIT")
+    except Exception:
+        rebuild.execute("ROLLBACK")
+        raise
+    finally:
+        rebuild.close()
+
+
+def _extract_create_table(schema_sql: str, table: str) -> str:
+    """Return the single ``CREATE TABLE ... <table> ( ... );`` statement from
+    a schema script. ``table`` is a code-defined constant."""
+    marker = f"CREATE TABLE IF NOT EXISTS {table} ("
+    start = schema_sql.index(marker)
+    depth = 0
+    i = schema_sql.index("(", start)
+    while i < len(schema_sql):
+        char = schema_sql[i]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                end = schema_sql.index(";", i) + 1
+                return schema_sql[start:end]
+        i += 1
+    raise ValueError(f"Could not extract CREATE TABLE for {table}")
 
 
 def _backfill_user_ssh_keys(conn: sqlite3.Connection) -> None:
@@ -778,6 +853,11 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     _add_column(
         conn, "user_servers", "deletion_error", "TEXT NOT NULL DEFAULT ''"
     )
+
+    # issue_local_029: drop the legacy url_type CHECK on applications so new
+    # application types (e.g. 'embedded') are accepted. url_type is validated at
+    # the application layer (schemas.URL_TYPES). Idempotent + FK-safe.
+    _drop_applications_url_type_check(conn)
 
     # Enforce globally-unique server names case-insensitively (issue_015-r5 F1)
     # as a backstop to the application-level pre-check. Best-effort: if legacy

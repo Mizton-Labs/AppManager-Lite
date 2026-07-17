@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from .teams import slugify as _slugify_name
 
 ROLES = ("admin", "user")
-URL_TYPES = ("url", "alias")
+URL_TYPES = ("url", "alias", "embedded")
 APPROVAL_STATES = ("pending", "approved", "rejected")
 # Static (always-available) bundle mapping sources. Server-template-scoped
 # sources are dynamic (``server_<slug>_{name,ip,user}``) and are validated
@@ -690,14 +690,20 @@ class CreateApplicationRequest(BaseModel):
 
     @model_validator(mode="after")
     def _check_url(self) -> "CreateApplicationRequest":
-        # Validation of ``url`` depends on ``url_type``: a full http(s) URL for
-        # 'url', or a bare relative alias for 'alias'.
+        # Validation of ``url`` depends on ``url_type``: a bare relative alias for
+        # 'alias', or a full http(s) URL for 'url' and 'embedded' (the embedded
+        # source rendered in an in-portal iframe).
         if self.url_type == "alias":
             self.url = _validate_alias(self.url)
         else:
             self.url = _validate_http_url(self.url)
-        if self.is_private and self.url_type != "alias":
-            raise ValueError("Private applications must use a managed alias.")
+        # Private/user-restricted apps must be AppManager-mediated: a managed
+        # alias, or an embedded app (which is only reachable from the in-portal
+        # sidebar behind the login).
+        if self.is_private and self.url_type not in ("alias", "embedded"):
+            raise ValueError(
+                "Private applications must use a managed alias or embedded app."
+            )
         return self
 
 

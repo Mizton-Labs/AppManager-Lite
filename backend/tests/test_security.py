@@ -54,6 +54,9 @@ def test_content_security_policy_locks_down_origin(
     assert "default-src 'self'" in csp
     assert "object-src 'none'" in csp
     assert "frame-ancestors 'none'" in csp
+    # Embedded apps render in an in-portal iframe; frame-src allows their sources
+    # while frame-ancestors stays locked down (nobody may embed AppManager).
+    assert "frame-src 'self' https: http:" in csp
     assert "base-uri 'self'" in csp
     assert "script-src 'self'" in csp
     # Transparently upgrade http:// sub-resources to https:// on TLS pages so

@@ -49,6 +49,10 @@ _CONTENT_SECURITY_POLICY = (
     "object-src 'none'; "
     "base-uri 'self'; "
     "frame-ancestors 'none'; "
+    # Embedded applications (url_type='embedded') render their configured source
+    # in an in-portal iframe; allow http/https frame sources for them. This does
+    # not affect frame-ancestors (who may embed AppManager), which stays 'none'.
+    "frame-src 'self' https: http:; "
     "form-action 'self'; "
     # Transparently upgrade any http:// sub-resource to https:// when the page
     # is served over TLS, eliminating passive mixed-content warnings. Inert on
