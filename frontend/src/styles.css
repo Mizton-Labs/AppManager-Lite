@@ -1342,11 +1342,27 @@ textarea:focus-visible,
   flex-wrap: wrap;
 }
 
+/* App cards stack the identity (title + badges) on its own full-width row and
+   the action buttons on a second row, so a long application title never pushes
+   the buttons out of alignment across cards. Scoped to app cards so other
+   card types (users, servers, templates, SSH keys) keep their inline head. */
+.user-card-head.app-card-head {
+  flex-direction: column;
+  align-items: stretch;
+  flex-wrap: nowrap;
+  justify-content: flex-start;
+}
+
 .user-identity {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   flex-wrap: wrap;
+}
+
+.app-card-head .user-identity {
+  /* Allow a long title to take the full row and contain itself. */
+  min-width: 0;
 }
 
 .user-name {
@@ -1550,10 +1566,6 @@ textarea:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
-}
-
-.created-by {
-  font-size: 0.8rem;
 }
 
 /* Team picker */

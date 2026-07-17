@@ -1546,7 +1546,7 @@ function ApplicationRow(props: {
     <article
       className={`user-card${app.is_active ? "" : " inactive"}${editing ? " editing" : ""}`}
     >
-      <div className="user-card-head">
+      <div className="user-card-head app-card-head">
         <div className="user-identity">
           <span className="user-name">{app.name}</span>
           <ApprovalBadge status={app.approval_status} />
@@ -1613,9 +1613,6 @@ function ApplicationRow(props: {
             >
               proxy: {props.pushNotice}
             </span>
-          )}
-          {isAdmin && app.created_by && (
-            <span className="muted created-by">by {app.created_by}</span>
           )}
         </div>
         <div className="row-actions">
