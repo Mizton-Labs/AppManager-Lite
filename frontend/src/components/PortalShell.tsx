@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link, Navigate, Route, Routes, useNavigate } from "react-router-dom";
+import {
+  Link,
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+} from "react-router-dom";
 import type { Application, SessionState, Team } from "../types";
 import { api } from "../api";
 import { getAppName, getLogoSrc } from "../branding";
@@ -115,6 +122,13 @@ export function PortalShell(props: {
     });
   }
 
+  // The embedded app view fills the entire content section edge-to-edge (no
+  // max-width/padding cap), so the framed app uses all available space and
+  // grows automatically when the sidebar collapses. Other routes keep the
+  // default centered, padded layout.
+  const location = useLocation();
+  const fullBleed = location.pathname.startsWith("/embedded/");
+
   return (
     <div className={collapsed ? "app-shell collapsed" : "app-shell"}>
       <header className="shell-header">
@@ -167,7 +181,7 @@ export function PortalShell(props: {
           collapsed={collapsed}
           isAdmin={isAdmin}
         />
-        <main className="shell-main">
+        <main className={fullBleed ? "shell-main full-bleed" : "shell-main"}>
           <Routes>
             <Route path="/" element={<HomeView teams={visibleTeamNames} />} />
             <Route
@@ -200,7 +214,7 @@ export function PortalShell(props: {
             />
             <Route
               path="/embedded/:id"
-              element={<EmbeddedAppView collapsed={collapsed} />}
+              element={<EmbeddedAppView />}
             />
             <Route
               path="/settings"

@@ -180,6 +180,43 @@ describe("PortalShell", () => {
     expect(localStorage.getItem("appmanager-lite.sidebar.collapsed")).toBe("1");
   });
 
+  it("runs the content section full-bleed only on the embedded route", async () => {
+    // A normal route uses the default centered/padded content section.
+    const { container, unmount } = renderShell(makeSession({ role: "admin" }));
+    const main = container.querySelector("main.shell-main");
+    expect(main).not.toBeNull();
+    expect(main?.classList.contains("full-bleed")).toBe(false);
+    unmount();
+
+    // The embedded route drops the width cap/padding so the frame fills the
+    // whole content section (and grows when the sidebar collapses).
+    const { container: embContainer } = renderShell(
+      makeSession({ role: "admin" }),
+      "/embedded/1",
+    );
+    const embMain = embContainer.querySelector("main.shell-main");
+    expect(embMain?.classList.contains("full-bleed")).toBe(true);
+  });
+
+  it("detects the embedded route under a deployment base prefix", async () => {
+    // Under a mounted base path, React Router strips the basename from
+    // useLocation().pathname, so the "/embedded/" match must still fire.
+    const { container } = render(
+      <ThemeProvider>
+        <MemoryRouter basename="/home" initialEntries={["/home/embedded/1"]}>
+          <PortalShell
+            session={makeSession({ role: "admin" })}
+            onLogout={() => undefined}
+            onPasswordChanged={() => undefined}
+            onSessionRefresh={() => undefined}
+          />
+        </MemoryRouter>
+      </ThemeProvider>,
+    );
+    const main = container.querySelector("main.shell-main");
+    expect(main?.classList.contains("full-bleed")).toBe(true);
+  });
+
   it("redirects an admin to Settings on first run (not yet configured)", async () => {
     renderShell(makeSession({ role: "admin" }, { configured: false }));
 

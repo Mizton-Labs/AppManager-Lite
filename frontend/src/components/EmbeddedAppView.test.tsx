@@ -23,7 +23,7 @@ function renderAt(id: number) {
       <Routes>
         <Route
           path="/embedded/:id"
-          element={<EmbeddedAppView collapsed={false} />}
+          element={<EmbeddedAppView />}
         />
       </Routes>
     </MemoryRouter>,

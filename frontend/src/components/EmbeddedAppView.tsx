@@ -17,7 +17,7 @@ import { resolveAppHref, resolveIconSrc } from "../lib/links";
  * Access is enforced by the backend: the app only appears in the caller's
  * visible list if their team/user/private grants allow it.
  */
-export function EmbeddedAppView({ collapsed }: { collapsed: boolean }) {
+export function EmbeddedAppView() {
   const { id } = useParams();
   const appId = Number(id);
   const [app, setApp] = useState<Application | null>(null);
@@ -77,7 +77,7 @@ export function EmbeddedAppView({ collapsed }: { collapsed: boolean }) {
 
   const icon = resolveIconSrc(app.icon_url);
   return (
-    <div className={collapsed ? "embedded-view wide" : "embedded-view"}>
+    <div className="embedded-view">
       <div className="embedded-topbar">
         {icon ? (
           <img src={icon} alt="" width={20} height={20} />
