@@ -247,10 +247,109 @@ def test_url_type_check_dropped_and_embedded_accepted(legacy_db: Path) -> None:
             "SELECT COUNT(*) c FROM application_teams WHERE application_id = ?",
             (app_id,),
         ).fetchone()["c"] == 1
+        # Child FKs must still reference the live applications table, never the
+        # transient applications_old rewritten by a legacy_alter_table rename.
+        for child in db._APPLICATION_CHILD_TABLES:
+            child_sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                (child,),
+            ).fetchone()["sql"]
+            assert "applications_old" not in child_sql
+            assert "REFERENCES applications" in child_sql.replace('"', "")
         # 'embedded' is now accepted at the DB layer.
         conn.execute(
             "INSERT INTO applications (name, url, url_type) "
             "VALUES ('emb', 'http://e', 'embedded')"
+        )
+
+
+def test_orphaned_child_fk_referencing_applications_old_is_repaired(
+    legacy_db: Path,
+) -> None:
+    """A database damaged by the earlier buggy rebuild (child FKs pointing at a
+    now-dropped applications_old) is self-healed on migrate: child DDL is
+    rewritten back to reference applications, rows are preserved, and inserts
+    into the child tables succeed again."""
+    from app import db
+
+    db.init_db()
+
+    # Seed an application + one child row per affected table.
+    with db.get_connection() as conn:
+        conn.execute("INSERT INTO teams (name) VALUES ('OrphanTeam')")
+        team_id = conn.execute(
+            "SELECT id FROM teams WHERE name = 'OrphanTeam'"
+        ).fetchone()["id"]
+        conn.execute("INSERT INTO users (username, password_hash, role) "
+                     "VALUES ('orphuser', 'x', 'user')")
+        user_id = conn.execute(
+            "SELECT id FROM users WHERE username = 'orphuser'"
+        ).fetchone()["id"]
+        app_id = conn.execute(
+            "INSERT INTO applications (name, url, url_type) "
+            "VALUES ('orphaned', 'grafana', 'alias') RETURNING id"
+        ).fetchone()["id"]
+        conn.execute(
+            "INSERT INTO application_teams (application_id, team_id) VALUES (?, ?)",
+            (app_id, team_id),
+        )
+
+    # Reproduce the damage: rewrite each child table's DDL so its FK targets the
+    # nonexistent applications_old (exactly what the modern-SQLite rename did),
+    # preserving rows/ids. Done with legacy_alter_table OFF + FKs off.
+    setup = db.connect()
+    setup.isolation_level = None
+    setup.execute("PRAGMA foreign_keys=OFF")
+    setup.execute("PRAGMA legacy_alter_table=OFF")
+    setup.execute("BEGIN")
+    for child in db._APPLICATION_CHILD_TABLES:
+        columns = [r["name"] for r in setup.execute(f"PRAGMA table_info({child})")]
+        col_list = ", ".join(columns)
+        broken = db._extract_create_table(db._SCHEMA, child).replace(
+            "REFERENCES applications(id)", 'REFERENCES "applications_old"(id)'
+        )
+        setup.execute(f"ALTER TABLE {child} RENAME TO {child}_broken")
+        setup.execute(broken)
+        setup.execute(
+            f"INSERT INTO {child} ({col_list}) SELECT {col_list} FROM {child}_broken"
+        )
+        setup.execute(f"DROP TABLE {child}_broken")
+    setup.execute("COMMIT")
+    for child in db._APPLICATION_CHILD_TABLES:
+        assert "applications_old" in setup.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+            (child,),
+        ).fetchone()["sql"]
+    setup.close()
+
+    # Re-migrate (twice, to prove idempotence): the self-heal repairs every
+    # child FK back to applications.
+    with db.get_connection() as conn:
+        db._migrate_schema(conn)
+    with db.get_connection() as conn:
+        db._migrate_schema(conn)
+        for child in db._APPLICATION_CHILD_TABLES:
+            child_sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                (child,),
+            ).fetchone()["sql"]
+            assert "applications_old" not in child_sql
+        # Preserved child row survived the rebuild.
+        assert conn.execute(
+            "SELECT COUNT(*) c FROM application_teams WHERE application_id = ?",
+            (app_id,),
+        ).fetchone()["c"] == 1
+        # Inserts into the previously-orphaned child tables now succeed
+        # (the create-app 500 regression).
+        conn.execute(
+            "INSERT INTO application_user_shares (application_id, user_id) "
+            "VALUES (?, ?)",
+            (app_id, user_id),
+        )
+        conn.execute(
+            "INSERT INTO application_favorites (user_id, application_id) "
+            "VALUES (?, ?)",
+            (user_id, app_id),
         )
 
 

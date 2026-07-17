@@ -362,6 +362,20 @@ def _add_column(
     return True
 
 
+# Tables whose foreign keys reference applications(id) ON DELETE CASCADE. A
+# broken earlier rebuild (which renamed applications -> applications_old under
+# modern SQLite defaults) rewrote these child FKs to reference the transient
+# "applications_old" table; after that table was dropped the references dangle
+# and any insert into a child table fails with "no such table:
+# main.applications_old". _repair_orphaned_application_child_fks() heals them.
+_APPLICATION_CHILD_TABLES = (
+    "application_teams",
+    "application_user_shares",
+    "application_favorites",
+    "application_usage_daily",
+)
+
+
 def _drop_applications_url_type_check(conn: sqlite3.Connection) -> None:
     """Remove any CHECK constraint on ``applications.url_type`` via a table
     rebuild. url_type values are validated at the application layer, so new
@@ -373,7 +387,20 @@ def _drop_applications_url_type_check(conn: sqlite3.Connection) -> None:
     (application_teams / application_user_shares / application_favorites /
     application_usage_daily) remain valid. Foreign keys are disabled for the
     rebuild so renaming/dropping the parent does not cascade-delete children.
+
+    Modern SQLite (``legacy_alter_table=OFF``, the default) rewrites foreign-key
+    references in OTHER tables to follow an ``ALTER TABLE ... RENAME``. Renaming
+    ``applications`` to ``applications_old`` therefore silently rewrote every
+    child FK to ``REFERENCES "applications_old"(id)`` and dropping the temp
+    table left them dangling. The rebuild here sets ``legacy_alter_table=ON`` so
+    the rename never touches child DDL; it also always runs the self-heal below
+    to repair any database already damaged by the previous implementation.
     """
+    # Self-heal first: repair any child tables left pointing at a now-dropped
+    # "applications_old" by an earlier, buggy rebuild. Runs unconditionally
+    # (it is a cheap no-op once healthy) so already-migrated databases recover.
+    _repair_orphaned_application_child_fks(conn)
+
     table_sql = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='applications'"
     ).fetchone()
@@ -394,12 +421,15 @@ def _drop_applications_url_type_check(conn: sqlite3.Connection) -> None:
     # toggled OUTSIDE a transaction, but the caller's connection is mid-
     # transaction. Commit any in-progress migration work, then perform the
     # rebuild on a dedicated autocommit connection with FKs off. Ids are
-    # preserved so every child FK remains valid afterwards.
+    # preserved so every child FK remains valid afterwards. legacy_alter_table
+    # is turned ON for the duration so the RENAME does not rewrite child FKs to
+    # point at the transient "applications_old" table.
     conn.commit()
     rebuild = connect()
     try:
         rebuild.isolation_level = None  # autocommit: explicit BEGIN/COMMIT below
         rebuild.execute("PRAGMA foreign_keys=OFF")
+        rebuild.execute("PRAGMA legacy_alter_table=ON")
         rebuild.execute("BEGIN")
         rebuild.execute("ALTER TABLE applications RENAME TO applications_old")
         rebuild.execute(create_stmt)
@@ -413,6 +443,63 @@ def _drop_applications_url_type_check(conn: sqlite3.Connection) -> None:
         rebuild.execute("ROLLBACK")
         raise
     finally:
+        rebuild.execute("PRAGMA legacy_alter_table=OFF")
+        rebuild.close()
+
+
+def _repair_orphaned_application_child_fks(conn: sqlite3.Connection) -> None:
+    """Rebuild any application child table whose stored DDL references the
+    transient ``applications_old`` table instead of ``applications``.
+
+    An earlier version of :func:`_drop_applications_url_type_check` renamed
+    ``applications`` -> ``applications_old`` under modern SQLite defaults, which
+    rewrites foreign keys in other tables to follow the rename. Dropping the
+    temp table then left the child FKs dangling, so inserts fail with
+    ``no such table: main.applications_old``. This detects that state and
+    rebuilds each affected child table from the canonical ``_SCHEMA`` DDL,
+    preserving all rows (and therefore ``id`` linkage). Idempotent: tables that
+    already reference ``applications`` are skipped.
+    """
+    damaged = []
+    for table in _APPLICATION_CHILD_TABLES:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
+        if row is None or not row["sql"]:
+            continue
+        if "applications_old" in row["sql"]:
+            damaged.append(table)
+    if not damaged:
+        return  # Healthy: nothing references the dropped temp table.
+
+    # Rebuild on a dedicated autocommit connection with FKs off (the caller's
+    # connection is mid-transaction, and PRAGMA foreign_keys is a no-op inside a
+    # transaction). Ids/rows are preserved so linkage to applications stays
+    # valid once the FK target is corrected back to "applications".
+    conn.commit()
+    rebuild = connect()
+    try:
+        rebuild.isolation_level = None
+        rebuild.execute("PRAGMA foreign_keys=OFF")
+        rebuild.execute("PRAGMA legacy_alter_table=ON")
+        rebuild.execute("BEGIN")
+        for table in damaged:
+            columns = [r["name"] for r in rebuild.execute(f"PRAGMA table_info({table})")]
+            col_list = ", ".join(columns)
+            create_stmt = _extract_create_table(_SCHEMA, table)
+            rebuild.execute(f"ALTER TABLE {table} RENAME TO {table}_old")
+            rebuild.execute(create_stmt)
+            rebuild.execute(
+                f"INSERT INTO {table} ({col_list}) SELECT {col_list} FROM {table}_old"
+            )
+            rebuild.execute(f"DROP TABLE {table}_old")
+        rebuild.execute("COMMIT")
+    except Exception:
+        rebuild.execute("ROLLBACK")
+        raise
+    finally:
+        rebuild.execute("PRAGMA legacy_alter_table=OFF")
         rebuild.close()
 
 
