@@ -266,21 +266,23 @@ An application has one of three **target types**, chosen with radio buttons:
 
 - **Local alias** — an nginx-proxied managed alias.
 - **Full URL** — an external link opened in a new tab.
-- **Embedded App (private)** — an internal host/URL rendered inside the portal
-  in an iframe, reachable only from the **Embedded apps** sidebar section (below
-  Teams, above Config; scrollable) after login. The source is composed from a
-  **server dropdown** listing the owner's own servers (protocol + server +
-  port + optional path); it cannot point at an arbitrary host, and the same
-  server-membership constraint is enforced server-side. Embedded apps do not
-  require the per-alias "Require AppManager authentication" toggle — they are
-  always behind login — and their access follows the same team/user/private
-  configuration. Selecting one shows a compact top bar with the app title above
-  a full-height frame that grows when the sidebar collapses. The source must
-  permit being framed (an app sending `X-Frame-Options: DENY`/a restrictive CSP
-  cannot be embedded). When AppManager is served over HTTPS the embedded source
-  should be `https://` too: the browser auto-upgrades `http://` sources
-  (`upgrade-insecure-requests`), so a plain-HTTP internal host without TLS will
-  not load. A source resolving to AppManager's own origin is rejected.
+- **Embedded App (private)** — frames one of **your existing aliases** inside
+  the portal, reachable only from the **Embedded apps** sidebar section (below
+  Teams, above Config; scrollable) after login. The target is chosen from a
+  **dropdown of your own alias applications** (there is no free-text/host entry,
+  and the same owner-alias constraint is enforced server-side). The iframe loads
+  the **same-origin alias path** (`/<alias>/`) served by the alias's reverse
+  proxy — so the content is reachable by external users and never triggers a
+  mixed-content block, since the browser only ever talks to the portal's own
+  HTTPS origin while the alias's nginx relays the internal service server-side.
+  If the target you want has no alias yet, **create the alias application
+  first**, then add the embedded app. Embedded apps do not require the per-alias
+  "Require AppManager authentication" toggle — they are always behind login —
+  and their access follows the same team/user/private configuration. Selecting
+  one shows a compact top bar with the app title above a full-height frame that
+  grows when the sidebar collapses. If the referenced alias is later removed or
+  renamed, the embedded app's card shows a **"missing alias — needs attention"**
+  warning so you can re-point, recreate the alias, or remove the embedded app.
 
 The create/edit forms group access controls under a **Permissions** section:
 mark the app **Private** (labeled "only you"; administrators retain oversight
