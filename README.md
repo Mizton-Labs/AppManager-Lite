@@ -258,6 +258,15 @@ A clean install starts with **no applications** — the Home and team sections a
 empty until an administrator or user adds applications from the Application
 Manager.
 
+Applications can be shared through teams and/or exact user grants. The create
+and edit forms resolve a recipient case-insensitively by username or derived
+user ID before adding it. **Private Application** is available only for managed
+aliases: it disables team/user sharing and limits runtime access to the owner
+and administrators. Every managed alias, including intentionally public aliases,
+uses an app-aware proxy authorization check bound to its immutable application
+ID and current alias. This makes stale, disabled, rejected, renamed, private, or
+unauthorized alias blocks fail closed even when somebody knows the URL.
+
 Every signed-in user reaches **Settings** from the sidebar and can
 submit and edit applications for the teams they belong to. Administrators see the
 same area with every application (and its creator), a tab for user management, a
@@ -429,7 +438,8 @@ itself.
   Account page and toggled from User Management.
 - **Team scope.** Applications are team-scoped, and any signed-in user may share
   an application with **any** team (the team picker lists all teams). A
-  non-administrator must scope a submission to at least one team. Sharing broadly
+  non-administrator must scope a non-private submission to at least one team or
+  verified user. Sharing broadly
   is still gated by approval: a non-administrator's submission stays `pending`
   until an administrator approves it, so it only appears on another team's page
   once approved (changing the teams of an approved application re-queues it).
@@ -442,12 +452,11 @@ itself.
   most **30 characters** (the requirement is shown next to the field, and a
   leading slash is stripped). A **full URL** is validated as `http`/`https`. Alias links are
   not subject to `http`/`https` validation.
-- **Alias authentication.** Local aliases require an AppManager session by
-  default. The create/edit form includes a per-app toggle to exclude an alias
-  from AppManager authentication when the upstream app has its own auth or is
-  safe to expose. Disabling auth removes the alias block's
-  `auth_request /api/auth/proxy-check;` and
-  `error_page 401 = @appmanager_login;` directives and shows a warning. Admins
+- **Alias authentication.** Every local alias executes an app-aware AppManager
+  authorization check containing its immutable application ID and literal alias.
+  The create/edit toggle controls whether the policy may allow anonymous access;
+  it never removes the check, so disabled/deleted/renamed/stale aliases still fail
+  closed. Private and specific-user aliases always require authentication. Admins
   and self-service owners apply this immediately; non-self-service owners stage
   the change for admin approval.
 - **Alias upstream.** Each alias application has its own upstream target, shown
@@ -535,15 +544,26 @@ Configure in General Settings:
 ### Protecting direct alias links
 
 Aliases are served by nginx, not by the FastAPI process. To require AppManager
-authentication even when a user opens `/some-alias/` directly, nginx must use
-`auth_request` to ask AppManager whether the browser has a valid `app_session`
-cookie. The default alias template includes the required per-alias directives for
-new installs:
+authorization even when a user opens `/some-alias/` directly, nginx uses an
+app-aware `auth_request`. The default template binds immutable identity into the
+generated block:
 
 ```nginx
-auth_request /api/auth/proxy-check;
+auth_request /api/auth/proxy-check?application_id=APPLICATION_ID&alias=ALIAS;
 error_page 401 = @appmanager_login;
 ```
+
+After upgrading an existing deployment, back up the database/nginx configuration,
+pull the new code **without restarting**, then run:
+
+```bash
+uv run --project backend python scripts/oneoff_repush_app_aware_aliases.py
+uv run --project backend python scripts/oneoff_repush_app_aware_aliases.py --apply
+```
+
+The migration initializes the additive schema, upgrades every approved alias,
+removes pending/rejected/orphan marker-managed blocks, and reads each block back
+to prove the app-aware directive is deployed before AppManager restarts.
 
 When Reverse Proxy Configuration is saved with nginx SSH settings and the
 AppManager backend host/port, AppManager checks the nginx config for a marked

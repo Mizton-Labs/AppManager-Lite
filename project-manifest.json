@@ -217,7 +217,7 @@
       { "method": "GET", "path": "/api/health", "auth": "anonymous", "csrf": false, "summary": "Liveness check." },
       { "method": "GET", "path": "/api/session", "auth": "anonymous", "csrf": false, "summary": "Current session and branding (works before authentication)." },
       { "method": "GET", "path": "/api/auth/sso/config", "auth": "anonymous", "csrf": false, "summary": "Read enabled SSO login providers for the login page." },
-      { "method": "GET", "path": "/api/auth/proxy-check", "auth": "anonymous", "csrf": false, "summary": "Nginx auth_request endpoint for protecting reverse-proxied aliases." },
+      { "method": "GET", "path": "/api/auth/proxy-check", "auth": "anonymous", "csrf": false, "summary": "App-aware nginx authorization bound to immutable application ID and literal alias; enforces state, privacy, teams, users, and public access policy." },
       { "method": "POST", "path": "/api/auth/login", "auth": "anonymous", "csrf": false, "summary": "Authenticate and start a session." },
       { "method": "GET", "path": "/api/auth/oidc/login", "auth": "anonymous", "csrf": false, "summary": "Start OIDC authorization-code login." },
       { "method": "GET", "path": "/api/auth/oidc/callback", "auth": "anonymous", "csrf": false, "summary": "Handle OIDC provider callback and start a local session." },
@@ -233,6 +233,7 @@
       { "method": "GET", "path": "/api/application-statistics", "auth": "admin", "csrf": false, "summary": "Aggregate authenticated portal-launch and favorite statistics over a bounded date range." },
       { "method": "GET", "path": "/api/application-statistics/{id}/users", "auth": "admin", "csrf": false, "summary": "Derived account-ID activity and favorite detail for one application statistics row." },
       { "method": "POST", "path": "/api/applications/{id}/launch", "auth": "user", "csrf": true, "summary": "Record an authenticated portal launch for a visible approved application." },
+      { "method": "GET", "path": "/api/users/resolve", "auth": "user", "csrf": false, "summary": "Resolve one active share recipient by exact case-insensitive username or derived user ID." },
       { "method": "GET", "path": "/api/teams", "auth": "user", "csrf": false, "summary": "List teams (name, order, icon) for any signed-in user." },
       { "method": "GET", "path": "/api/users", "auth": "admin", "csrf": false, "summary": "List users." },
       { "method": "POST", "path": "/api/users", "auth": "admin", "csrf": true, "summary": "Create a user (returns a generated password and per-template auto-provisioning results)." },
@@ -326,8 +327,8 @@
       },
       {
         "name": "applications",
-        "description": "Application entries with URL/alias, approval state, owner, alias upstream settings, per-alias auth, staged changes, and last reverse-proxy push result.",
-        "columns": ["id", "name", "description", "url", "url_type", "icon_url", "is_active", "approval_status", "created_by", "sort_order", "apps_server", "apps_protocol", "apps_port", "apps_path", "alias_auth_required", "pending_alias", "pending_is_active", "pending_alias_auth_required", "needs_push", "last_push_status", "last_push_log", "last_push_at", "created_at", "updated_at"],
+        "description": "Application entries with URL/alias, approval state, owner, private scope, alias upstream settings, anonymous-access policy, staged changes, and last reverse-proxy push result.",
+        "columns": ["id", "name", "description", "url", "url_type", "icon_url", "is_active", "approval_status", "created_by", "sort_order", "apps_server", "apps_protocol", "apps_port", "apps_path", "alias_auth_required", "is_private", "pending_alias", "pending_is_active", "pending_alias_auth_required", "needs_push", "last_push_status", "last_push_log", "last_push_at", "created_at", "updated_at"],
         "primaryKey": ["id"],
         "foreignKeys": ["created_by -> users.id (set null)"]
       },
@@ -337,6 +338,13 @@
         "columns": ["application_id", "team_id"],
         "primaryKey": ["application_id", "team_id"],
         "foreignKeys": ["application_id -> applications.id (cascade)", "team_id -> teams.id (cascade)"]
+      },
+      {
+        "name": "application_user_shares",
+        "description": "Explicit application-to-user runtime visibility grants; combined with team grants unless the application is private.",
+        "columns": ["application_id", "user_id", "created_at"],
+        "primaryKey": ["application_id", "user_id"],
+        "foreignKeys": ["application_id -> applications.id (cascade)", "user_id -> users.id (cascade)"]
       },
       {
         "name": "audit_log",
