@@ -1359,10 +1359,30 @@ def test_resolve_user_apps_server_host_none_owner_returns_empty() -> None:
 # --- Embedded applications (issue_local_029) ------------------------------
 
 
+def _seed_owner_server(user_id: int, hostname: str) -> None:
+    """Give a user a non-failed server with the given host so embedded apps
+    sourced from that host pass the owner-server membership check."""
+    from app.db import get_connection
+    from app import repository
+
+    with get_connection() as conn:
+        template = repository.create_server_template(
+            conn, vmid=8000 + (user_id * 10) + (hash(hostname) % 10),
+            name=f"EmbTpl-{user_id}-{hostname}", kind="lxc", is_apps_server=True,
+        )
+        repository.create_user_server(
+            conn, user_id=user_id, name=f"emb-src-{hostname}",
+            hostname=hostname, template_id=template["id"],
+            template_name=template["name"], kind="lxc", status="created",
+        )
+
+
 def test_embedded_app_create_and_visibility(admin) -> None:
     """An embedded app is created with url_type 'embedded', echoes its source
     URL, follows normal team visibility, and never touches nginx."""
     client, csrf, _ = admin
+    admin_id = client.get("/api/session").json()["user"]["id"]
+    _seed_owner_server(admin_id, "10.0.0.5")
     created = client.post(
         "/api/applications",
         json={
@@ -1408,6 +1428,7 @@ def test_embedded_app_can_be_private(admin) -> None:
     client, csrf, _ = admin
     owner = _create_share_user(client, csrf, "emb.owner", ["Red Team"], self_service=True)
     other = _create_share_user(client, csrf, "emb.other", ["Red Team"])
+    _seed_owner_server(owner["user"]["id"], "10.0.0.9")
     with TestClient(client.app) as owner_client:
         login = owner_client.post(
             "/api/auth/login",
@@ -1451,3 +1472,132 @@ def test_embedded_app_rejects_relative_url(admin) -> None:
         headers={"X-CSRF-Token": csrf},
     )
     assert resp.status_code == 422, resp.text
+
+
+def test_embedded_app_rejects_host_not_owned(admin) -> None:
+    """An embedded source whose host is not one of the owner's own servers is
+    rejected server-side, even when the URL is a valid absolute http(s) URL."""
+    client, csrf, _ = admin
+    admin_id = client.get("/api/session").json()["user"]["id"]
+    _seed_owner_server(admin_id, "10.0.0.5")
+    resp = client.post(
+        "/api/applications",
+        json={
+            "name": "Foreign Embed",
+            "url": "http://10.9.9.9:3000/",  # not one of the owner's servers
+            "url_type": "embedded",
+            "teams": ["Red Team"],
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "your own servers" in resp.json()["detail"]
+
+
+def test_embedded_app_rejects_url_with_credentials(admin) -> None:
+    """An embedded URL carrying userinfo (user@host) is rejected even when the
+    host itself is owned, so credentials are never stored/rendered."""
+    client, csrf, _ = admin
+    admin_id = client.get("/api/session").json()["user"]["id"]
+    _seed_owner_server(admin_id, "10.0.0.5")
+    resp = client.post(
+        "/api/applications",
+        json={
+            "name": "Cred Embed",
+            "url": "http://evil@10.0.0.5:3000/",
+            "url_type": "embedded",
+            "teams": ["Red Team"],
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "credentials" in resp.json()["detail"]
+
+
+def test_embedded_app_accepts_trailing_dot_host(admin) -> None:
+    """A trailing-dot FQDN matches the same owned host without the dot."""
+    client, csrf, _ = admin
+    admin_id = client.get("/api/session").json()["user"]["id"]
+    _seed_owner_server(admin_id, "apps.internal")
+    resp = client.post(
+        "/api/applications",
+        json={
+            "name": "Dot Embed",
+            "url": "http://apps.internal.:3000/",
+            "url_type": "embedded",
+            "teams": ["Red Team"],
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 201, resp.text
+
+
+def test_embedded_metadata_edit_allowed_when_server_removed(admin) -> None:
+    """A metadata-only edit (e.g. disabling) an embedded app succeeds even after
+    the backing server is gone: enforcement only runs when the source changes."""
+    from app.db import get_connection
+
+    client, csrf, _ = admin
+    admin_id = client.get("/api/session").json()["user"]["id"]
+    _seed_owner_server(admin_id, "10.0.0.5")
+    created = client.post(
+        "/api/applications",
+        json={
+            "name": "Soon Orphaned",
+            "url": "http://10.0.0.5:3000/",
+            "url_type": "embedded",
+            "teams": ["Red Team"],
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert created.status_code == 201, created.text
+    app_id = created.json()["id"]
+
+    # Remove every server the owner has, orphaning the embedded source host.
+    with get_connection() as conn:
+        conn.execute("DELETE FROM user_servers WHERE user_id = ?", (admin_id,))
+
+    # A metadata-only edit that does not touch url/url_type must still succeed.
+    ok = client.patch(
+        f"/api/applications/{app_id}",
+        json={"is_active": False},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["is_active"] is False
+
+
+def test_embedded_app_edit_enforces_owner_host(admin) -> None:
+    """Editing an embedded app's URL to a host the owner does not control is
+    rejected; switching to a valid owned host succeeds."""
+    client, csrf, _ = admin
+    admin_id = client.get("/api/session").json()["user"]["id"]
+    _seed_owner_server(admin_id, "10.0.0.5")
+    _seed_owner_server(admin_id, "10.0.0.6")
+    created = client.post(
+        "/api/applications",
+        json={
+            "name": "Editable Embed",
+            "url": "http://10.0.0.5:3000/",
+            "url_type": "embedded",
+            "teams": ["Red Team"],
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert created.status_code == 201, created.text
+    app_id = created.json()["id"]
+
+    rejected = client.patch(
+        f"/api/applications/{app_id}",
+        json={"url": "http://10.9.9.9:3000/"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert rejected.status_code == 400, rejected.text
+
+    ok = client.patch(
+        f"/api/applications/{app_id}",
+        json={"url": "http://10.0.0.6:9000/"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["url"] == "http://10.0.0.6:9000/"

@@ -519,7 +519,7 @@ function PermissionsFields(props: {
       <Toggle
         checked={props.isPrivate}
         onChange={props.onPrivateChange}
-        label="Private application (only you and administrators)"
+        label="Private application (only you)"
       />
       <TeamCheckboxes
         options={props.teamOptions}
@@ -615,6 +615,161 @@ async function fetchOwnerAppsServers(ownerId: number): Promise<AppsServerOption[
         s.is_apps_server && s.status !== "failed" && (s.hostname || s.ip_address),
     )
     .map((s) => ({ label: s.name, value: s.hostname || s.ip_address }));
+}
+
+/** All of the given owner's non-failed servers with a usable host, offered as
+ * dropdown options for an embedded application's source.
+ *
+ * Unlike {@link fetchOwnerAppsServers}, this is NOT restricted to apps-server
+ * templates: an embedded app may be sourced from any server the user controls.
+ * The value is the resolvable host (hostname, else IP); failed servers and
+ * servers without a host are excluded. The backend enforces the same
+ * membership, so this dropdown is a convenience, not the only guard.
+ */
+async function fetchOwnerServers(ownerId: number): Promise<AppsServerOption[]> {
+  const servers = await api.listUserServers(ownerId);
+  return servers
+    .filter((s) => s.status !== "failed" && (s.hostname || s.ip_address))
+    .map((s) => ({ label: s.name, value: s.hostname || s.ip_address }));
+}
+
+/** Compose an embedded source URL from its parts. Returns "" when the host or
+ * port is missing (an incomplete selection cannot form a valid URL). */
+function composeEmbeddedUrl(
+  protocol: "http" | "https",
+  host: string,
+  port: string,
+  path: string,
+): string {
+  const cleanHost = host.trim();
+  const cleanPort = port.trim();
+  if (!cleanHost || !cleanPort) return "";
+  return `${protocol}://${cleanHost}:${cleanPort}${normalizeAppsPath(path)}`;
+}
+
+/** Best-effort decomposition of a stored embedded URL into its parts, used to
+ * prefill the edit form's dropdown/inputs. Falls back to sensible defaults when
+ * the stored value cannot be parsed.
+ *
+ * The port is left EMPTY when the URL carries none (rather than synthesising a
+ * protocol default), and the path is preserved verbatim, so that a subsequent
+ * composeEmbeddedUrl over the returned parts is a stable round-trip for URLs
+ * this form produced (protocol://host:port[/path], no trailing slash). */
+function parseEmbeddedUrl(url: string): {
+  protocol: "http" | "https";
+  host: string;
+  port: string;
+  path: string;
+} {
+  try {
+    const parsed = new URL(url);
+    const protocol = parsed.protocol === "https:" ? "https" : "http";
+    // A lone "/" path is treated as "no path" so it composes back identically;
+    // any other path (including one with a trailing slash) is kept verbatim.
+    const path = parsed.pathname === "/" ? "" : parsed.pathname;
+    return { protocol, host: parsed.hostname, port: parsed.port, path };
+  } catch {
+    return { protocol: "http", host: "", port: "", path: "" };
+  }
+}
+
+/** Server dropdown + protocol/port/path for an embedded application's source.
+ * The source host must be one of the owner's own servers (also enforced
+ * server-side), so there is no free-text/Custom fallback. */
+function EmbeddedSourceFields(props: {
+  protocol: "http" | "https";
+  host: string;
+  port: string;
+  path: string;
+  servers: readonly AppsServerOption[];
+  onProtocolChange: (value: "http" | "https") => void;
+  onHostChange: (value: string) => void;
+  onPortChange: (value: string) => void;
+  onPathChange: (value: string) => void;
+}) {
+  if (props.servers.length === 0) {
+    return (
+      <div className="field">
+        <span>Embedded source server</span>
+        <span className="muted logo-hint">
+          You have no servers yet. Provision a server first; an embedded
+          application can only be sourced from one of your own servers.
+        </span>
+      </div>
+    );
+  }
+  return (
+    <div className="field">
+      <span>Embedded source</span>
+      <div className="alias-upstream-grid">
+        <label className="field compact-field">
+          <span>Protocol</span>
+          <select
+            value={props.protocol}
+            onChange={(e) =>
+              props.onProtocolChange(e.target.value === "https" ? "https" : "http")
+            }
+            aria-label="Embedded source protocol"
+          >
+            <option value="http">http</option>
+            <option value="https">https</option>
+          </select>
+        </label>
+        <label className="field compact-field alias-upstream-host">
+          <span>Server</span>
+          <select
+            value={props.host}
+            onChange={(e) => props.onHostChange(e.target.value)}
+            aria-label="Embedded source server"
+            required
+          >
+            <option value="" disabled>
+              Select a server…
+            </option>
+            {props.servers.map((s) => (
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field compact-field alias-upstream-port">
+          <span>Port</span>
+          <input
+            type="text"
+            value={props.port}
+            onChange={(e) => props.onPortChange(e.target.value.replace(/[^0-9]/g, ""))}
+            placeholder="3000"
+            inputMode="numeric"
+            aria-label="Embedded source port"
+            required
+          />
+        </label>
+        <label className="field compact-field alias-upstream-path">
+          <span>Suffix/path (optional)</span>
+          <input
+            type="text"
+            value={props.path}
+            onChange={(e) => props.onPathChange(e.target.value)}
+            placeholder="/app"
+            aria-label="Embedded source suffix path"
+          />
+        </label>
+      </div>
+      <span className="muted logo-hint">
+        Preview:{" "}
+        <code>
+          {composeEmbeddedUrl(props.protocol, props.host, props.port, props.path) ||
+            "Select a server and port to preview the source URL."}
+        </code>
+        . Rendered inside the portal (iframe); reachable only from the Embedded
+        apps sidebar after login. The source must allow being embedded in a
+        frame. When AppManager is served over HTTPS, use an <code>https</code>{" "}
+        source: an <code>http</code> source is auto-upgraded by the browser and
+        will not load if the server has no TLS.
+      </span>
+    </div>
+  );
 }
 
 function AliasUpstreamFields(props: {
@@ -794,25 +949,9 @@ function UrlFields(props: {
           </span>
         </label>
       ) : isEmbedded ? (
-        <label className="field">
-          <span>Embedded source URL</span>
-          <input
-            type="url"
-            value={props.url}
-            onChange={(e) => props.onUrlChange(e.target.value)}
-            placeholder="http://10.0.0.5:3000/"
-            aria-label="Embedded source URL"
-            required
-          />
-          <span className="muted logo-hint">
-            Internal host/IP or URL rendered inside the portal (iframe). Only
-            reachable from the Embedded apps sidebar after login. The source must
-            allow being embedded in a frame. When AppManager is served over
-            HTTPS, use an <code>https://</code> source: an <code>http://</code>
-            source is auto-upgraded by the browser and will not load if the
-            internal host has no TLS.
-          </span>
-        </label>
+        // Embedded source is composed from a server dropdown rendered by the
+        // form (EmbeddedSourceFields); nothing to show inline here.
+        null
       ) : (
         <label className="field">
           <span>URL</span>
@@ -987,11 +1126,19 @@ function CreateApplicationCard(props: {
   const [sharedUsers, setSharedUsers] = useState<ApplicationShareUser[]>([]);
   const [busy, setBusy] = useState(false);
   const [appsServerOptions, setAppsServerOptions] = useState<AppsServerOption[]>([]);
+  // Embedded-app source parts. The URL is composed from these on submit; the
+  // server is picked from the owner's own servers (enforced server-side).
+  const [embeddedProtocol, setEmbeddedProtocol] = useState<"http" | "https">("http");
+  const [embeddedServer, setEmbeddedServer] = useState("");
+  const [embeddedPort, setEmbeddedPort] = useState("");
+  const [embeddedPath, setEmbeddedPath] = useState("");
+  const [embeddedServerOptions, setEmbeddedServerOptions] = useState<AppsServerOption[]>([]);
 
   useEffect(() => {
     let active = true;
     if (!props.currentUserId) {
       setAppsServerOptions([]);
+      setEmbeddedServerOptions([]);
       return () => {
         active = false;
       };
@@ -1013,6 +1160,13 @@ function CreateApplicationCard(props: {
       .catch(() => {
         if (active) setAppsServerOptions([]);
       });
+    fetchOwnerServers(props.currentUserId)
+      .then((options) => {
+        if (active) setEmbeddedServerOptions(options);
+      })
+      .catch(() => {
+        if (active) setEmbeddedServerOptions([]);
+      });
     return () => {
       active = false;
     };
@@ -1022,6 +1176,7 @@ function CreateApplicationCard(props: {
   // from the signed-in user's configured apps server when available.
   const showPort = urlType === "alias";
   const showServer = urlType === "alias";
+  const isEmbedded = urlType === "embedded";
 
   function toggleTeam(team: string) {
     setTeams((current) =>
@@ -1040,9 +1195,20 @@ function CreateApplicationCard(props: {
       // Precedence: an uploaded/typed logo wins; otherwise assign a default
       // from the bundled catalogue so every card shows a logo.
       const icon = iconUrl.trim() || defaultLogoFor(appName, teams);
+      // Embedded apps compose their source URL from the server dropdown parts
+      // and carry everything in `url` (no apps_* fields). Other types send the
+      // url field as typed.
+      const resolvedUrl = isEmbedded
+        ? composeEmbeddedUrl(embeddedProtocol, embeddedServer, embeddedPort, embeddedPath)
+        : url.trim();
+      if (isEmbedded && !resolvedUrl) {
+        props.onError("Select a server and port for the embedded source.");
+        setBusy(false);
+        return;
+      }
       const created = await api.createApplication({
         name: appName,
-        url: url.trim(),
+        url: resolvedUrl,
         url_type: urlType,
         description: description.trim(),
         icon_url: icon,
@@ -1092,6 +1258,20 @@ function CreateApplicationCard(props: {
           }}
           onUrlChange={setUrl}
         />
+
+        {isEmbedded && (
+          <EmbeddedSourceFields
+            protocol={embeddedProtocol}
+            host={embeddedServer}
+            port={embeddedPort}
+            path={embeddedPath}
+            servers={embeddedServerOptions}
+            onProtocolChange={setEmbeddedProtocol}
+            onHostChange={setEmbeddedServer}
+            onPortChange={setEmbeddedPort}
+            onPathChange={setEmbeddedPath}
+          />
+        )}
 
         {showPort && (
           <AliasUpstreamFields
@@ -1159,7 +1339,18 @@ function CreateApplicationCard(props: {
             type="submit"
             className="btn primary"
             disabled={
-              busy || name.trim().length === 0 || url.trim().length === 0
+              busy ||
+              name.trim().length === 0 ||
+              // Embedded apps derive their URL from the server dropdown parts,
+              // so require a composable source there instead of the url field.
+              (isEmbedded
+                ? composeEmbeddedUrl(
+                    embeddedProtocol,
+                    embeddedServer,
+                    embeddedPort,
+                    embeddedPath,
+                  ).length === 0
+                : url.trim().length === 0)
             }
           >
             {busy ? "Creating…" : "Create application"}
@@ -1224,6 +1415,15 @@ function ApplicationRow(props: {
   const [ownerId, setOwnerId] = useState(String(app.created_by_id ?? ""));
   const [logoError, setLogoError] = useState<string | null>(null);
   const [appsServerOptions, setAppsServerOptions] = useState<AppsServerOption[]>([]);
+  // Embedded-app source parts, prefilled from the stored composed URL.
+  const initialEmbedded = parseEmbeddedUrl(app.url_type === "embedded" ? app.url : "");
+  const [embeddedProtocol, setEmbeddedProtocol] = useState<"http" | "https">(
+    initialEmbedded.protocol,
+  );
+  const [embeddedServer, setEmbeddedServer] = useState(initialEmbedded.host);
+  const [embeddedPort, setEmbeddedPort] = useState(initialEmbedded.port);
+  const [embeddedPath, setEmbeddedPath] = useState(initialEmbedded.path);
+  const [embeddedServerOptions, setEmbeddedServerOptions] = useState<AppsServerOption[]>([]);
 
   // issue_021: the apps-server dropdown reflects the *current* owner's
   // servers -- for a non-admin this is always self (ownerId never changes,
@@ -1234,6 +1434,7 @@ function ApplicationRow(props: {
     const idNum = Number(ownerId);
     if (!ownerId || !Number.isFinite(idNum) || idNum <= 0) {
       setAppsServerOptions([]);
+      setEmbeddedServerOptions([]);
       return () => {
         active = false;
       };
@@ -1254,6 +1455,13 @@ function ApplicationRow(props: {
       })
       .catch(() => {
         if (active) setAppsServerOptions([]);
+      });
+    fetchOwnerServers(idNum)
+      .then((options) => {
+        if (active) setEmbeddedServerOptions(options);
+      })
+      .catch(() => {
+        if (active) setEmbeddedServerOptions([]);
       });
     return () => {
       active = false;
@@ -1280,6 +1488,11 @@ function ApplicationRow(props: {
         defaultAppsServerValue(props.defaultAppsServer, appsServerOptions),
     );
     setAppsPath(app.apps_path ?? "");
+    const emb = parseEmbeddedUrl(app.url_type === "embedded" ? app.url : "");
+    setEmbeddedProtocol(emb.protocol);
+    setEmbeddedServer(emb.host);
+    setEmbeddedPort(emb.port);
+    setEmbeddedPath(emb.path);
     setAliasAuthRequired(app.alias_auth_required);
     setIsPrivate(!!app.is_private);
     setSharedUsers(app.shared_users ?? []);
@@ -1302,11 +1515,28 @@ function ApplicationRow(props: {
     props.defaultAppsServer,
   ]);
 
+  const composedEmbeddedUrl = composeEmbeddedUrl(
+    embeddedProtocol,
+    embeddedServer,
+    embeddedPort,
+    embeddedPath,
+  );
+  // Canonicalise the stored URL through the same parse->compose transform so an
+  // equivalent-but-differently-formatted stored value (e.g. a lone trailing
+  // slash, or an implicit default port) does not spuriously mark the embedded
+  // form dirty on open (reviewer M1).
+  const canonicalStoredEmbeddedUrl = useMemo(() => {
+    if (app.url_type !== "embedded") return app.url;
+    const p = parseEmbeddedUrl(app.url);
+    return composeEmbeddedUrl(p.protocol, p.host, p.port, p.path);
+  }, [app.url, app.url_type]);
   const dirty = useMemo(
     () =>
       name !== app.name ||
       urlType !== app.url_type ||
-      url !== app.url ||
+      (urlType === "embedded"
+        ? composedEmbeddedUrl !== canonicalStoredEmbeddedUrl
+        : url !== app.url) ||
       description !== app.description ||
       iconUrl !== app.icon_url ||
       appsProtocol !== (app.apps_protocol ?? "http") ||
@@ -1326,6 +1556,8 @@ function ApplicationRow(props: {
       name,
       urlType,
       url,
+      composedEmbeddedUrl,
+      canonicalStoredEmbeddedUrl,
       description,
       iconUrl,
       appsProtocol,
@@ -1346,6 +1578,7 @@ function ApplicationRow(props: {
   // or an admin.
   const showPort = urlType === "alias";
   const showServer = urlType === "alias";
+  const isEmbedded = urlType === "embedded";
 
   useEffect(() => {
     let active = true;
@@ -1643,6 +1876,20 @@ function ApplicationRow(props: {
             onUrlChange={setUrl}
           />
 
+          {isEmbedded && (
+            <EmbeddedSourceFields
+              protocol={embeddedProtocol}
+              host={embeddedServer}
+              port={embeddedPort}
+              path={embeddedPath}
+              servers={embeddedServerOptions}
+              onProtocolChange={setEmbeddedProtocol}
+              onHostChange={setEmbeddedServer}
+              onPortChange={setEmbeddedPort}
+              onPathChange={setEmbeddedPath}
+            />
+          )}
+
           {showPort && aliasConfigMessage && (
             <p className="muted logo-hint" role="status">
               {aliasConfigMessage}
@@ -1738,9 +1985,25 @@ function ApplicationRow(props: {
               className="btn primary"
               disabled={!dirty}
               onClick={() => {
+                // Embedded apps compose their source URL from the server
+                // dropdown parts; other types send url as typed.
+                const resolvedUrl = isEmbedded
+                  ? composeEmbeddedUrl(
+                      embeddedProtocol,
+                      embeddedServer,
+                      embeddedPort,
+                      embeddedPath,
+                    )
+                  : url;
+                if (isEmbedded && !resolvedUrl) {
+                  setLogoError(
+                    "Select a server and port for the embedded source.",
+                  );
+                  return;
+                }
                 props.onSave({
                   name,
-                  url,
+                  url: resolvedUrl,
                   url_type: urlType,
                   description,
                   icon_url: iconUrl,

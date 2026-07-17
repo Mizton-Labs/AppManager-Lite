@@ -19,6 +19,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
@@ -380,6 +381,49 @@ def _require_nonempty_teams(teams: list[str]) -> None:
         )
 
 
+def _enforce_embedded_owner_host(
+    conn: sqlite3.Connection, url: str, owner_id: int | None
+) -> None:
+    """Reject an embedded application whose source URL host is not one of the
+    owner's own servers.
+
+    Embedded apps are rendered inside the authenticated portal in a sandboxed
+    iframe, so their source must be a machine the owner actually controls: the
+    UI composes the URL from a dropdown of the owner's servers, and this is the
+    matching server-side guard (an API client cannot bypass it). ``owner_id`` is
+    the application's creator/owner -- for admins acting on behalf of an owner
+    the membership is checked against that owner's servers.
+    """
+    parts = urlsplit(url)
+    host = (parts.hostname or "").strip().lower()
+    # Strip a single trailing dot from an FQDN so "host." matches "host".
+    if host.endswith("."):
+        host = host[:-1]
+    if not host:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Embedded application URL must include a host.",
+        )
+    # Reject embedded URLs carrying userinfo (user[:pass]@host): the host check
+    # ignores userinfo, so allowing it would let a misleading credential-bearing
+    # URL be stored and rendered as the iframe src (reviewer LOW-2).
+    if parts.username or parts.password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Embedded application URL must not contain credentials.",
+        )
+    # The synthetic auth-disabled identity (id 0 / None) owns no servers; there
+    # is nothing to enforce membership against.
+    if not owner_id:
+        return
+    allowed = repository.list_owner_server_hosts(conn, owner_id)
+    if host not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Embedded application source must be one of your own servers.",
+        )
+
+
 @router.get("/applications", response_model=list[ApplicationOut])
 def list_applications(
     team: str | None = Query(
@@ -694,6 +738,9 @@ def create_application(
     elif not is_admin and not (payload.teams or shared_user_ids):
         _require_nonempty_teams(payload.teams)
 
+    if payload.url_type == "embedded":
+        _enforce_embedded_owner_host(conn, payload.url, actor.get("id"))
+
     # Administrators and self-service users bypass review; everyone else queues
     # the application for approval.
     auto_approved = is_admin or bool(actor.get("self_service"))
@@ -838,6 +885,24 @@ def update_application(
     # to them; the alias-auth constraint only applies to alias apps.
     if (resulting_private or resulting_users) and resulting_type == "alias" and payload.alias_auth_required is False:
         raise HTTPException(status_code=400, detail="Private or user-restricted aliases must require authentication")
+    # Embedded apps must point at one of the owner's own servers. Only enforce
+    # when the source or type is actually being changed (or ownership is being
+    # reassigned): re-validating an unchanged URL on every edit would freeze
+    # metadata edits (rename, enable/disable, re-team) once the backing server
+    # is removed/renamed, and would block legacy embedded apps entirely.
+    changing_embedded_source = (
+        resulting_type == "embedded"
+        and (
+            payload.url is not None
+            or (payload.url_type is not None and payload.url_type != existing["url_type"])
+            or (payload.created_by is not None and payload.created_by != existing.get("created_by"))
+        )
+    )
+    if changing_embedded_source:
+        _enforce_embedded_owner_host(
+            conn, payload.url if payload.url is not None else existing["url"],
+            resulting_owner,
+        )
 
     # Resolve the resulting approval status.
     if is_admin:

@@ -2123,6 +2123,26 @@ def list_user_servers(
     return [_row_to_user_server(r) for r in rows]
 
 
+def list_owner_server_hosts(conn: sqlite3.Connection, user_id: int) -> set[str]:
+    """Return the set of connectable hosts (hostname and ip_address) of a
+    user's non-failed servers.
+
+    Used to enforce that an embedded application's source URL points at one of
+    the owner's own servers. Both hostname and ip_address are included because
+    an embedded URL may name a server by either. Failed servers and blank hosts
+    are excluded.
+    """
+    hosts: set[str] = set()
+    for server in list_user_servers(conn, user_id):
+        if server.get("status") == "failed":
+            continue
+        for key in ("hostname", "ip_address"):
+            value = (server.get(key) or "").strip().lower()
+            if value:
+                hosts.add(value)
+    return hosts
+
+
 def server_name_exists(conn: sqlite3.Connection, name: str) -> bool:
     """True when any server (any owner) already has this name, case-insensitive.
 
