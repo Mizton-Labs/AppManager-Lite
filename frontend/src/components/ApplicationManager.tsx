@@ -1543,7 +1543,9 @@ function ApplicationRow(props: {
   }
 
   return (
-    <article className={app.is_active ? "user-card" : "user-card inactive"}>
+    <article
+      className={`user-card${app.is_active ? "" : " inactive"}${editing ? " editing" : ""}`}
+    >
       <div className="user-card-head">
         <div className="user-identity">
           <span className="user-name">{app.name}</span>

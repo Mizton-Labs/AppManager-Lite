@@ -1316,6 +1316,14 @@ textarea:focus-visible,
   opacity: 0.7;
 }
 
+/* The card currently expanded for editing gets a subtle accent tint + ring so
+   the user clearly sees which app they are editing. */
+.user-card.editing {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-elevated));
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
 /* Wrap long unbreakable tokens (SSH key fingerprints, file paths) instead of
  * letting them overflow the card. */
 .user-card > .muted {

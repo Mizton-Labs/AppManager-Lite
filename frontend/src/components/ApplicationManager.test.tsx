@@ -1048,6 +1048,22 @@ describe("ApplicationManager", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("highlights the card while it is being edited", async () => {
+    stubBackend([makeApp({ name: "Hunt Workbench" })]);
+    render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
+
+    const name = await screen.findByText("Hunt Workbench");
+    const card = name.closest("article.user-card") as HTMLElement;
+    expect(card).not.toBeNull();
+    expect(card.classList.contains("editing")).toBe(false);
+
+    await userEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    expect(card.classList.contains("editing")).toBe(true);
+
+    await userEvent.click(screen.getByRole("button", { name: /^close$/i }));
+    expect(card.classList.contains("editing")).toBe(false);
+  });
+
   it("opens and preloads an alias app from the editApp query", async () => {
     window.history.pushState({}, "", "/app-manager?editApp=42");
     stubBackend([
