@@ -50,6 +50,13 @@ def server_var_source_slug(source: str) -> str | None:
 # bare relative path (no scheme, host, traversal, or separators possible).
 ALIAS_MAX_LEN = 30
 _ALIAS_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+# Reserved alias slugs that would collide with AppManager's own served paths.
+# An alias is proxied by nginx at /<slug>/, and embedded apps frame that path
+# same-origin; forbidding these names guarantees an alias can never resolve to
+# AppManager's SPA/API instead of the intended upstream service.
+_RESERVED_ALIASES = frozenset(
+    {"api", "assets", "docs", "redoc", "openapi", "logos", "team-icons", "embedded"}
+)
 
 # A bare hostname or IPv4 address used as the user's apps server. Restricted to
 # DNS/IP characters so it can be safely substituted into an nginx proxy_pass and
@@ -239,6 +246,10 @@ def _validate_alias(value: str) -> str:
         raise ValueError(
             "Alias may contain only letters, digits, underscores, and dashes "
             "(e.g. my_app)."
+        )
+    if value.lower() in _RESERVED_ALIASES:
+        raise ValueError(
+            f"Alias {value!r} is reserved; choose a different name."
         )
     return value
 
@@ -690,10 +701,14 @@ class CreateApplicationRequest(BaseModel):
 
     @model_validator(mode="after")
     def _check_url(self) -> "CreateApplicationRequest":
-        # Validation of ``url`` depends on ``url_type``: a bare relative alias for
-        # 'alias', or a full http(s) URL for 'url' and 'embedded' (the embedded
-        # source rendered in an in-portal iframe).
-        if self.url_type == "alias":
+        # Validation of ``url`` depends on ``url_type``:
+        #  - 'alias'    : a bare relative alias slug.
+        #  - 'embedded' : the SAME kind of alias slug -- an embedded app frames
+        #                 an existing managed alias (the only source reachable by
+        #                 external users and free of mixed-content), so its url is
+        #                 an alias reference, not a raw http(s) URL.
+        #  - 'url'      : a full external http(s) URL.
+        if self.url_type in ("alias", "embedded"):
             self.url = _validate_alias(self.url)
         else:
             self.url = _validate_http_url(self.url)
@@ -787,11 +802,25 @@ class UpdateApplicationRequest(BaseModel):
     @model_validator(mode="after")
     def _check_url(self) -> "UpdateApplicationRequest":
         if self.url is not None:
-            kind = self.url_type or "url"
-            if kind == "alias":
+            # 'alias'/'embedded' both carry an alias slug; 'url' carries a full
+            # http(s) URL. When url_type is OMITTED on update we cannot know the
+            # stored type at the schema layer, so we accept either shape here and
+            # defer strict, type-aware validation to the router (which knows the
+            # existing url_type and re-validates: alias/embedded via the alias
+            # rules, url via the http rules). This avoids a spurious 422 when an
+            # API client repoints an embedded app's slug without resending
+            # url_type.
+            if self.url_type in ("alias", "embedded"):
                 self.url = _validate_alias(self.url)
-            else:
+            elif self.url_type == "url":
                 self.url = _validate_http_url(self.url)
+            else:
+                # url_type omitted: accept either an alias slug or an http URL;
+                # the router enforces the correct one for the stored type.
+                try:
+                    self.url = _validate_alias(self.url)
+                except ValueError:
+                    self.url = _validate_http_url(self.url)
         return self
 
 

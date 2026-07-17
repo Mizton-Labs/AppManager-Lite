@@ -1359,35 +1359,38 @@ def test_resolve_user_apps_server_host_none_owner_returns_empty() -> None:
 # --- Embedded applications (issue_local_029) ------------------------------
 
 
-def _seed_owner_server(user_id: int, hostname: str) -> None:
-    """Give a user a non-failed server with the given host so embedded apps
-    sourced from that host pass the owner-server membership check."""
-    from app.db import get_connection
-    from app import repository
+def _create_admin_alias(client, csrf, name: str, alias: str, teams=None) -> int:
+    """Create an approved alias application (owned by the admin) and return its
+    id. Embedded apps must reference an existing owner alias by its slug."""
+    resp = client.post(
+        "/api/applications",
+        json={
+            "name": name,
+            "url": alias,
+            "url_type": "alias",
+            "teams": teams if teams is not None else ["Red Team"],
+            "apps_server": "apps.internal",
+            "apps_protocol": "http",
+            "apps_port": "9000",
+            "apps_path": "/",
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()["id"]
 
-    with get_connection() as conn:
-        template = repository.create_server_template(
-            conn, vmid=8000 + (user_id * 10) + (hash(hostname) % 10),
-            name=f"EmbTpl-{user_id}-{hostname}", kind="lxc", is_apps_server=True,
-        )
-        repository.create_user_server(
-            conn, user_id=user_id, name=f"emb-src-{hostname}",
-            hostname=hostname, template_id=template["id"],
-            template_name=template["name"], kind="lxc", status="created",
-        )
 
-
-def test_embedded_app_create_and_visibility(admin) -> None:
-    """An embedded app is created with url_type 'embedded', echoes its source
-    URL, follows normal team visibility, and never touches nginx."""
+def test_embedded_app_frames_existing_alias(admin) -> None:
+    """An embedded app is created referencing an existing owner alias slug,
+    stores that slug as its url, follows team visibility, and never itself
+    touches nginx (it frames the alias, which owns the proxy config)."""
     client, csrf, _ = admin
-    admin_id = client.get("/api/session").json()["user"]["id"]
-    _seed_owner_server(admin_id, "10.0.0.5")
+    _create_admin_alias(client, csrf, "Coder Alias", "coder-app")
     created = client.post(
         "/api/applications",
         json={
-            "name": "Grafana Embed",
-            "url": "http://10.0.0.5:3000/",
+            "name": "Coder Embed",
+            "url": "coder-app",
             "url_type": "embedded",
             "teams": ["Red Team"],
         },
@@ -1396,7 +1399,7 @@ def test_embedded_app_create_and_visibility(admin) -> None:
     assert created.status_code == 201, created.text
     body = created.json()
     assert body["url_type"] == "embedded"
-    assert body["url"] == "http://10.0.0.5:3000/"
+    assert body["url"] == "coder-app"
     app_id = body["id"]
 
     # A member of the shared team sees it; a member of another team does not.
@@ -1406,7 +1409,7 @@ def test_embedded_app_create_and_visibility(admin) -> None:
             "/api/auth/login", json={"username": "embuser", "password": member_pw}
         )
         names = {a["name"] for a in member.get("/api/applications").json()}
-    assert "Grafana Embed" in names
+    assert "Coder Embed" in names
 
     outsider_pw = _create_member(client, csrf, "embout", ["Threat Hunting"])
     with TestClient(client.app) as outsider:
@@ -1414,36 +1417,52 @@ def test_embedded_app_create_and_visibility(admin) -> None:
             "/api/auth/login", json={"username": "embout", "password": outsider_pw}
         )
         names = {a["name"] for a in outsider.get("/api/applications").json()}
-    assert "Grafana Embed" not in names
+    assert "Coder Embed" not in names
 
-    # Embedded apps are excluded from all nginx alias handling.
+    # The embedded app itself is excluded from nginx alias handling.
     cfg = client.get(f"/api/applications/{app_id}/alias-config")
     assert cfg.status_code == 200, cfg.text
     assert cfg.json()["status"] == "skipped"
 
 
 def test_embedded_app_can_be_private(admin) -> None:
-    """An 'Embedded App (private)' is allowed (mediated behind login) and is
-    owner/admin-only."""
+    """An 'Embedded App (private)' referencing the owner's alias is allowed
+    (mediated behind login) and is owner/admin-only."""
     client, csrf, _ = admin
     owner = _create_share_user(client, csrf, "emb.owner", ["Red Team"], self_service=True)
     other = _create_share_user(client, csrf, "emb.other", ["Red Team"])
-    _seed_owner_server(owner["user"]["id"], "10.0.0.9")
     with TestClient(client.app) as owner_client:
         login = owner_client.post(
             "/api/auth/login",
             json={"username": "emb.owner@example.com", "password": owner["password"]},
         ).json()
+        owner_csrf = login["csrf_token"]
+        # The owner first creates the alias the embedded app will frame.
+        alias_resp = owner_client.post(
+            "/api/applications",
+            json={
+                "name": "Owner Alias",
+                "url": "owner-alias",
+                "url_type": "alias",
+                "teams": ["Red Team"],
+                "apps_server": "apps.internal",
+                "apps_protocol": "http",
+                "apps_port": "8080",
+                "apps_path": "/",
+            },
+            headers={"X-CSRF-Token": owner_csrf},
+        )
+        assert alias_resp.status_code == 201, alias_resp.text
         created = owner_client.post(
             "/api/applications",
             json={
                 "name": "Private Embed",
-                "url": "http://10.0.0.9:8080/",
+                "url": "owner-alias",
                 "url_type": "embedded",
                 "teams": [],
                 "is_private": True,
             },
-            headers={"X-CSRF-Token": login["csrf_token"]},
+            headers={"X-CSRF-Token": owner_csrf},
         )
         assert created.status_code == 201, created.text
         app_id = created.json()["id"]
@@ -1458,93 +1477,64 @@ def test_embedded_app_can_be_private(admin) -> None:
         )
 
 
-def test_embedded_app_rejects_relative_url(admin) -> None:
-    """Embedded source must be an absolute http(s) URL."""
+def test_embedded_app_rejects_nonexistent_alias(admin) -> None:
+    """An embedded app referencing an alias that does not exist is rejected."""
     client, csrf, _ = admin
     resp = client.post(
         "/api/applications",
         json={
-            "name": "Bad Embed",
-            "url": "not-a-url",
-            "url_type": "embedded",
-            "teams": ["Red Team"],
-        },
-        headers={"X-CSRF-Token": csrf},
-    )
-    assert resp.status_code == 422, resp.text
-
-
-def test_embedded_app_rejects_host_not_owned(admin) -> None:
-    """An embedded source whose host is not one of the owner's own servers is
-    rejected server-side, even when the URL is a valid absolute http(s) URL."""
-    client, csrf, _ = admin
-    admin_id = client.get("/api/session").json()["user"]["id"]
-    _seed_owner_server(admin_id, "10.0.0.5")
-    resp = client.post(
-        "/api/applications",
-        json={
-            "name": "Foreign Embed",
-            "url": "http://10.9.9.9:3000/",  # not one of the owner's servers
+            "name": "Ghost Embed",
+            "url": "no-such-alias",
             "url_type": "embedded",
             "teams": ["Red Team"],
         },
         headers={"X-CSRF-Token": csrf},
     )
     assert resp.status_code == 400, resp.text
-    assert "your own servers" in resp.json()["detail"]
+    assert "existing" in resp.json()["detail"].lower()
 
 
-def test_embedded_app_rejects_url_with_credentials(admin) -> None:
-    """An embedded URL carrying userinfo (user@host) is rejected even when the
-    host itself is owned, so credentials are never stored/rendered."""
+def test_embedded_app_rejects_alias_owned_by_someone_else(admin) -> None:
+    """An embedded app can only frame the OWNER's own alias: referencing an
+    alias owned by a different user is rejected."""
     client, csrf, _ = admin
-    admin_id = client.get("/api/session").json()["user"]["id"]
-    _seed_owner_server(admin_id, "10.0.0.5")
-    resp = client.post(
-        "/api/applications",
-        json={
-            "name": "Cred Embed",
-            "url": "http://evil@10.0.0.5:3000/",
-            "url_type": "embedded",
-            "teams": ["Red Team"],
-        },
-        headers={"X-CSRF-Token": csrf},
-    )
+    # Admin owns this alias.
+    _create_admin_alias(client, csrf, "Admin Alias", "admin-only-alias")
+    # A self-service user cannot reference the admin's alias from their own
+    # embedded app.
+    owner = _create_share_user(client, csrf, "emb.thief", ["Red Team"], self_service=True)
+    with TestClient(client.app) as owner_client:
+        login = owner_client.post(
+            "/api/auth/login",
+            json={"username": "emb.thief@example.com", "password": owner["password"]},
+        ).json()
+        resp = owner_client.post(
+            "/api/applications",
+            json={
+                "name": "Stolen Embed",
+                "url": "admin-only-alias",
+                "url_type": "embedded",
+                "teams": ["Red Team"],
+            },
+            headers={"X-CSRF-Token": login["csrf_token"]},
+        )
     assert resp.status_code == 400, resp.text
-    assert "credentials" in resp.json()["detail"]
+    assert "existing" in resp.json()["detail"].lower()
 
 
-def test_embedded_app_accepts_trailing_dot_host(admin) -> None:
-    """A trailing-dot FQDN matches the same owned host without the dot."""
-    client, csrf, _ = admin
-    admin_id = client.get("/api/session").json()["user"]["id"]
-    _seed_owner_server(admin_id, "apps.internal")
-    resp = client.post(
-        "/api/applications",
-        json={
-            "name": "Dot Embed",
-            "url": "http://apps.internal.:3000/",
-            "url_type": "embedded",
-            "teams": ["Red Team"],
-        },
-        headers={"X-CSRF-Token": csrf},
-    )
-    assert resp.status_code == 201, resp.text
-
-
-def test_embedded_metadata_edit_allowed_when_server_removed(admin) -> None:
+def test_embedded_metadata_edit_allowed_when_alias_removed(admin) -> None:
     """A metadata-only edit (e.g. disabling) an embedded app succeeds even after
-    the backing server is gone: enforcement only runs when the source changes."""
+    the referenced alias is gone: enforcement only runs when the source (url /
+    url_type / owner) changes. The stale reference is surfaced in the UI card."""
     from app.db import get_connection
 
     client, csrf, _ = admin
-    admin_id = client.get("/api/session").json()["user"]["id"]
-    _seed_owner_server(admin_id, "10.0.0.5")
+    alias_id = _create_admin_alias(client, csrf, "Temp Alias", "temp-alias")
     created = client.post(
         "/api/applications",
         json={
-            "name": "Soon Orphaned",
-            "url": "http://10.0.0.5:3000/",
+            "name": "Framing Temp",
+            "url": "temp-alias",
             "url_type": "embedded",
             "teams": ["Red Team"],
         },
@@ -1553,9 +1543,9 @@ def test_embedded_metadata_edit_allowed_when_server_removed(admin) -> None:
     assert created.status_code == 201, created.text
     app_id = created.json()["id"]
 
-    # Remove every server the owner has, orphaning the embedded source host.
+    # Remove the referenced alias entirely, orphaning the embedded reference.
     with get_connection() as conn:
-        conn.execute("DELETE FROM user_servers WHERE user_id = ?", (admin_id,))
+        conn.execute("DELETE FROM applications WHERE id = ?", (alias_id,))
 
     # A metadata-only edit that does not touch url/url_type must still succeed.
     ok = client.patch(
@@ -1567,18 +1557,17 @@ def test_embedded_metadata_edit_allowed_when_server_removed(admin) -> None:
     assert ok.json()["is_active"] is False
 
 
-def test_embedded_app_edit_enforces_owner_host(admin) -> None:
-    """Editing an embedded app's URL to a host the owner does not control is
-    rejected; switching to a valid owned host succeeds."""
+def test_embedded_app_edit_enforces_alias_exists(admin) -> None:
+    """Editing an embedded app to reference a non-existent alias is rejected;
+    switching to another existing owner alias succeeds."""
     client, csrf, _ = admin
-    admin_id = client.get("/api/session").json()["user"]["id"]
-    _seed_owner_server(admin_id, "10.0.0.5")
-    _seed_owner_server(admin_id, "10.0.0.6")
+    _create_admin_alias(client, csrf, "Alias One", "alias-one")
+    _create_admin_alias(client, csrf, "Alias Two", "alias-two")
     created = client.post(
         "/api/applications",
         json={
             "name": "Editable Embed",
-            "url": "http://10.0.0.5:3000/",
+            "url": "alias-one",
             "url_type": "embedded",
             "teams": ["Red Team"],
         },
@@ -1589,15 +1578,100 @@ def test_embedded_app_edit_enforces_owner_host(admin) -> None:
 
     rejected = client.patch(
         f"/api/applications/{app_id}",
-        json={"url": "http://10.9.9.9:3000/"},
+        json={"url": "does-not-exist", "url_type": "embedded"},
         headers={"X-CSRF-Token": csrf},
     )
     assert rejected.status_code == 400, rejected.text
 
     ok = client.patch(
         f"/api/applications/{app_id}",
-        json={"url": "http://10.0.0.6:9000/"},
+        json={"url": "alias-two", "url_type": "embedded"},
         headers={"X-CSRF-Token": csrf},
     )
     assert ok.status_code == 200, ok.text
-    assert ok.json()["url"] == "http://10.0.0.6:9000/"
+    assert ok.json()["url"] == "alias-two"
+
+
+def test_embedded_app_rejects_inactive_or_unapproved_alias(admin) -> None:
+    """An embedded app cannot frame an alias that is disabled or not yet
+    approved, matching the active+approved backend contract."""
+    from app.db import get_connection
+
+    client, csrf, _ = admin
+    alias_id = _create_admin_alias(client, csrf, "Pending Alias", "pending-alias")
+    # Disable the alias, then try to frame it.
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE applications SET is_active = 0 WHERE id = ?", (alias_id,)
+        )
+    resp = client.post(
+        "/api/applications",
+        json={
+            "name": "Frames Disabled",
+            "url": "pending-alias",
+            "url_type": "embedded",
+            "teams": ["Red Team"],
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 400, resp.text
+
+
+def test_embedded_owner_reassignment_requires_new_owner_alias(admin) -> None:
+    """When an admin reassigns an embedded app's owner, the referenced alias
+    must belong to the NEW owner: reassigning to a user who does not own the
+    alias is rejected."""
+    client, csrf, _ = admin
+    # Admin owns the alias and an embedded app framing it.
+    _create_admin_alias(client, csrf, "Admin Alias RA", "admin-alias-ra")
+    created = client.post(
+        "/api/applications",
+        json={
+            "name": "Reassign Embed",
+            "url": "admin-alias-ra",
+            "url_type": "embedded",
+            "teams": ["Red Team"],
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert created.status_code == 201, created.text
+    app_id = created.json()["id"]
+
+    # A different user who does NOT own that alias.
+    other = _create_share_user(client, csrf, "ra.other", ["Red Team"])
+    other_id = other["user"]["id"]
+
+    rejected = client.patch(
+        f"/api/applications/{app_id}",
+        json={"created_by": other_id},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert rejected.status_code == 400, rejected.text
+
+
+def test_embedded_update_slug_without_url_type_is_validated(admin) -> None:
+    """Repointing an embedded app's slug WITHOUT resending url_type is accepted
+    (the router validates against the stored type) rather than 422'd."""
+    client, csrf, _ = admin
+    _create_admin_alias(client, csrf, "Slug A", "slug-a")
+    _create_admin_alias(client, csrf, "Slug B", "slug-b")
+    created = client.post(
+        "/api/applications",
+        json={
+            "name": "Slug Embed",
+            "url": "slug-a",
+            "url_type": "embedded",
+            "teams": ["Red Team"],
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert created.status_code == 201, created.text
+    app_id = created.json()["id"]
+
+    ok = client.patch(
+        f"/api/applications/{app_id}",
+        json={"url": "slug-b"},  # url_type omitted
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["url"] == "slug-b"

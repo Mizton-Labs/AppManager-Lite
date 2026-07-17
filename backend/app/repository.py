@@ -1311,6 +1311,32 @@ def list_applications_for_owner(
     return [_row_to_application(conn, r, include_creator=True) for r in rows]
 
 
+def find_owner_alias_by_slug(
+    conn: sqlite3.Connection, slug: str, owner_id: int
+) -> dict[str, Any] | None:
+    """Return the alias application owned by ``owner_id`` whose alias slug
+    (stored in ``url``) matches ``slug``, or None.
+
+    Used to enforce that an embedded application frames one of the owner's own
+    existing aliases: an embedded app's iframe renders the same-origin alias
+    path served by the reverse proxy, so its source must be a real alias the
+    owner controls. The alias must be active and approved to be a usable target.
+    """
+    row = conn.execute(
+        """
+        SELECT * FROM applications
+        WHERE url_type = 'alias'
+          AND created_by = ?
+          AND url = ?
+          AND is_active = 1
+          AND approval_status = 'approved'
+        LIMIT 1
+        """,
+        (owner_id, slug),
+    ).fetchone()
+    return _row_to_application(conn, row) if row is not None else None
+
+
 def list_all_applications_admin(
     conn: sqlite3.Connection,
 ) -> list[dict[str, Any]]:
@@ -2121,26 +2147,6 @@ def list_user_servers(
         (user_id,),
     ).fetchall()
     return [_row_to_user_server(r) for r in rows]
-
-
-def list_owner_server_hosts(conn: sqlite3.Connection, user_id: int) -> set[str]:
-    """Return the set of connectable hosts (hostname and ip_address) of a
-    user's non-failed servers.
-
-    Used to enforce that an embedded application's source URL points at one of
-    the owner's own servers. Both hostname and ip_address are included because
-    an embedded URL may name a server by either. Failed servers and blank hosts
-    are excluded.
-    """
-    hosts: set[str] = set()
-    for server in list_user_servers(conn, user_id):
-        if server.get("status") == "failed":
-            continue
-        for key in ("hostname", "ip_address"):
-            value = (server.get(key) or "").strip().lower()
-            if value:
-                hosts.add(value)
-    return hosts
 
 
 def server_name_exists(conn: sqlite3.Connection, name: str) -> bool:

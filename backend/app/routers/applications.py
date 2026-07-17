@@ -19,11 +19,10 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from .. import audit, repository, reverse_proxy
+from .. import audit, repository, reverse_proxy, schemas
 from ..config import get_settings
 from ..db import get_connection
 from ..deps import get_current_user, get_db, require_admin, verify_csrf
@@ -381,46 +380,43 @@ def _require_nonempty_teams(teams: list[str]) -> None:
         )
 
 
-def _enforce_embedded_owner_host(
+def _enforce_embedded_alias_exists(
     conn: sqlite3.Connection, url: str, owner_id: int | None
 ) -> None:
-    """Reject an embedded application whose source URL host is not one of the
-    owner's own servers.
+    """Reject an embedded application that does not frame one of the owner's own
+    existing aliases.
 
-    Embedded apps are rendered inside the authenticated portal in a sandboxed
-    iframe, so their source must be a machine the owner actually controls: the
-    UI composes the URL from a dropdown of the owner's servers, and this is the
-    matching server-side guard (an API client cannot bypass it). ``owner_id`` is
-    the application's creator/owner -- for admins acting on behalf of an owner
-    the membership is checked against that owner's servers.
+    An embedded app renders the same-origin alias path (served by the reverse
+    proxy under the portal's own domain) in an in-portal iframe -- that is the
+    only source reachable by external users and free of mixed-content. So an
+    embedded app's ``url`` must be the slug of a real, active, approved alias
+    application owned by the resulting owner. ``owner_id`` is the application's
+    creator/owner -- for admins acting on behalf of an owner the alias must
+    belong to that owner. If the alias does not exist yet it must be created
+    first (as an alias application), then referenced here.
     """
-    parts = urlsplit(url)
-    host = (parts.hostname or "").strip().lower()
-    # Strip a single trailing dot from an FQDN so "host." matches "host".
-    if host.endswith("."):
-        host = host[:-1]
-    if not host:
+    slug = (url or "").strip().lstrip("/")
+    if not slug:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Embedded application URL must include a host.",
+            detail="Embedded application must reference an existing alias.",
         )
-    # Reject embedded URLs carrying userinfo (user[:pass]@host): the host check
-    # ignores userinfo, so allowing it would let a misleading credential-bearing
-    # URL be stored and rendered as the iframe src (reviewer LOW-2).
-    if parts.username or parts.password:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Embedded application URL must not contain credentials.",
-        )
-    # The synthetic auth-disabled identity (id 0 / None) owns no servers; there
-    # is nothing to enforce membership against.
+    # The synthetic auth-disabled identity (id 0 / None) owns no applications;
+    # there is no owner to scope the alias lookup to.
     if not owner_id:
-        return
-    allowed = repository.list_owner_server_hosts(conn, owner_id)
-    if host not in allowed:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Embedded application source must be one of your own servers.",
+            detail="Embedded application must reference an existing alias.",
+        )
+    alias = repository.find_owner_alias_by_slug(conn, slug, owner_id)
+    if alias is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Embedded application must reference one of your existing "
+                "aliases. Create the alias application first, then add the "
+                "embedded app."
+            ),
         )
 
 
@@ -739,7 +735,7 @@ def create_application(
         _require_nonempty_teams(payload.teams)
 
     if payload.url_type == "embedded":
-        _enforce_embedded_owner_host(conn, payload.url, actor.get("id"))
+        _enforce_embedded_alias_exists(conn, payload.url, actor.get("id"))
 
     # Administrators and self-service users bypass review; everyone else queues
     # the application for approval.
@@ -885,11 +881,26 @@ def update_application(
     # to them; the alias-auth constraint only applies to alias apps.
     if (resulting_private or resulting_users) and resulting_type == "alias" and payload.alias_auth_required is False:
         raise HTTPException(status_code=400, detail="Private or user-restricted aliases must require authentication")
-    # Embedded apps must point at one of the owner's own servers. Only enforce
-    # when the source or type is actually being changed (or ownership is being
-    # reassigned): re-validating an unchanged URL on every edit would freeze
-    # metadata edits (rename, enable/disable, re-team) once the backing server
-    # is removed/renamed, and would block legacy embedded apps entirely.
+    # Re-validate a changed url against the RESULTING type. The Update schema
+    # accepts either an alias slug or an http URL when url_type is omitted (it
+    # cannot know the stored type); enforce the correct shape here now that the
+    # resulting type is known. (Embedded is additionally checked below against
+    # an existing owner alias.)
+    if payload.url is not None:
+        try:
+            if resulting_type in ("alias", "embedded"):
+                payload.url = schemas._validate_alias(payload.url)
+            else:
+                payload.url = schemas._validate_http_url(payload.url)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Embedded apps must frame one of the owner's own existing aliases. Only
+    # enforce when the source (url), the type, or the owner is actually being
+    # changed: re-validating an unchanged reference on every edit would freeze
+    # metadata edits (rename, enable/disable, re-team) if the referenced alias
+    # were later removed. A broken reference is surfaced to the user via a card
+    # warning instead of blocking unrelated edits.
     changing_embedded_source = (
         resulting_type == "embedded"
         and (
@@ -899,7 +910,7 @@ def update_application(
         )
     )
     if changing_embedded_source:
-        _enforce_embedded_owner_host(
+        _enforce_embedded_alias_exists(
             conn, payload.url if payload.url is not None else existing["url"],
             resulting_owner,
         )

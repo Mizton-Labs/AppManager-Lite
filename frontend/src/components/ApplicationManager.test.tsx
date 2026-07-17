@@ -299,15 +299,13 @@ describe("ApplicationManager", () => {
     });
   });
 
-  it("creates an embedded app whose URL is composed from a chosen server", async () => {
-    const fetchMock = stubBackend([], {
-      1: [
-        makeUserServer({
-          id: 201, user_id: 1, name: "grafana-box",
-          hostname: "10.0.0.5", is_apps_server: false,
-        }),
-      ],
-    });
+  it("creates an embedded app that frames a chosen existing alias", async () => {
+    const fetchMock = stubBackend([
+      makeApp({
+        id: 10, name: "Coder Alias", url: "coder-app",
+        url_type: "alias", created_by_id: 1,
+      }),
+    ]);
     render(
       <ApplicationManager
         isAdmin
@@ -320,18 +318,16 @@ describe("ApplicationManager", () => {
     await userEvent.click(
       screen.getByRole("radio", { name: /embedded app \(private\)/i }),
     );
-    await userEvent.type(screen.getByLabelText("Name"), "Grafana Embed");
-    // The embedded source is picked from the owner's own servers (any server,
-    // not just apps servers). A free-text URL field is no longer offered.
+    await userEvent.type(screen.getByLabelText("Name"), "Coder Embed");
+    // No raw URL / server / port fields: the source is an existing alias.
     expect(screen.queryByLabelText(/embedded source url/i)).toBeNull();
-    // Alias upstream fields must not appear for embedded apps.
+    expect(screen.queryByLabelText(/embedded source server/i)).toBeNull();
     expect(screen.queryByLabelText(/alias upstream port/i)).toBeNull();
-    const serverSelect = await screen.findByLabelText(/embedded source server/i);
+    const aliasSelect = await screen.findByLabelText(/embedded target alias/i);
     expect(
-      screen.getByRole("option", { name: "grafana-box" }),
+      screen.getByRole("option", { name: "Coder Alias" }),
     ).toBeInTheDocument();
-    await userEvent.selectOptions(serverSelect, "10.0.0.5");
-    await userEvent.type(screen.getByLabelText(/embedded source port/i), "3000");
+    await userEvent.selectOptions(aliasSelect, "coder-app");
     await userEvent.click(
       screen.getByRole("button", { name: /create application/i }),
     );
@@ -340,34 +336,16 @@ describe("ApplicationManager", () => {
         String(u).endsWith("/api/applications") &&
         (init?.method ?? "GET") === "POST",
     );
-    // The url is composed from protocol + server host + port (+ optional path).
+    // The url is the selected alias slug.
     expect(JSON.parse((call![1] as RequestInit).body as string)).toMatchObject({
-      name: "Grafana Embed",
-      url: "http://10.0.0.5:3000",
+      name: "Coder Embed",
+      url: "coder-app",
       url_type: "embedded",
     });
   });
 
-  it("prefills the embedded server dropdown from a stored source URL when editing", async () => {
-    const fetchMock = stubBackend(
-      [
-        makeApp({
-          id: 5,
-          name: "Grafana Embed",
-          url: "http://10.0.0.5:3000/app",
-          url_type: "embedded",
-          created_by_id: 1,
-        }),
-      ],
-      {
-        1: [
-          makeUserServer({
-            id: 201, user_id: 1, name: "grafana-box",
-            hostname: "10.0.0.5", is_apps_server: false,
-          }),
-        ],
-      },
-    );
+  it("shows a notice when the owner has no aliases to frame", async () => {
+    stubBackend([]);
     render(
       <ApplicationManager
         isAdmin
@@ -375,51 +353,69 @@ describe("ApplicationManager", () => {
         currentUser={makeUser({ id: 1, role: "admin", username: "admin@example.com" })}
       />,
     );
-    await screen.findByText("Grafana Embed");
-    await userEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    await screen.findByRole("button", { name: /new application/i });
+    await userEvent.click(screen.getByRole("button", { name: /new application/i }));
+    await userEvent.click(
+      screen.getByRole("radio", { name: /embedded app \(private\)/i }),
+    );
+    // No alias dropdown; a notice tells the user to create the alias first.
+    expect(screen.queryByLabelText(/embedded target alias/i)).toBeNull();
+    expect(
+      screen.getByText(/create the alias application first/i),
+    ).toBeInTheDocument();
+  });
 
-    // The server, port, and path are decomposed from the stored URL.
-    const serverSelect = (await screen.findByLabelText(
-      /embedded source server/i,
+  it("prefills the embedded alias dropdown from the stored slug when editing", async () => {
+    const fetchMock = stubBackend([
+      makeApp({
+        id: 10, name: "Alias One", url: "alias-one",
+        url_type: "alias", created_by_id: 1,
+      }),
+      makeApp({
+        id: 11, name: "Alias Two", url: "alias-two",
+        url_type: "alias", created_by_id: 1,
+      }),
+      makeApp({
+        id: 5, name: "Coder Embed", url: "alias-one",
+        url_type: "embedded", created_by_id: 1,
+      }),
+    ]);
+    render(
+      <ApplicationManager
+        isAdmin
+        teamOptions={ALL_TEAMS}
+        currentUser={makeUser({ id: 1, role: "admin", username: "admin@example.com" })}
+      />,
+    );
+    await screen.findByText("Coder Embed");
+    // Expand the embedded app's editor (it is the third card / row).
+    const editButtons = await screen.findAllByRole("button", { name: /^edit$/i });
+    await userEvent.click(editButtons[editButtons.length - 1]);
+
+    const aliasSelect = (await screen.findByLabelText(
+      /embedded target alias/i,
     )) as HTMLSelectElement;
-    expect(serverSelect.value).toBe("10.0.0.5");
-    expect((screen.getByLabelText(/embedded source port/i) as HTMLInputElement).value).toBe("3000");
-    expect((screen.getByLabelText(/embedded source suffix path/i) as HTMLInputElement).value).toBe("/app");
+    expect(aliasSelect.value).toBe("alias-one");
 
-    // Changing the port recomposes the URL on save.
-    const portInput = screen.getByLabelText(/embedded source port/i);
-    await userEvent.clear(portInput);
-    await userEvent.type(portInput, "4000");
+    // Switching to another existing alias saves the new slug.
+    await userEvent.selectOptions(aliasSelect, "alias-two");
     await userEvent.click(screen.getByRole("button", { name: /save changes/i }));
     const patchCall = fetchMock.mock.calls.find(
       ([, init]) => (init?.method ?? "GET") === "PATCH",
     );
     expect(JSON.parse((patchCall![1] as RequestInit).body as string)).toMatchObject({
-      url: "http://10.0.0.5:4000/app",
+      url: "alias-two",
       url_type: "embedded",
     });
   });
 
-  it("does not mark an embedded app dirty on open when its stored URL has a trailing slash", async () => {
-    stubBackend(
-      [
-        makeApp({
-          id: 6,
-          name: "Slash Embed",
-          url: "http://10.0.0.5:3000/",
-          url_type: "embedded",
-          created_by_id: 1,
-        }),
-      ],
-      {
-        1: [
-          makeUserServer({
-            id: 202, user_id: 1, name: "box",
-            hostname: "10.0.0.5", is_apps_server: false,
-          }),
-        ],
-      },
-    );
+  it("warns on the card when an embedded app references a missing alias", async () => {
+    stubBackend([
+      makeApp({
+        id: 5, name: "Orphan Embed", url: "gone-alias",
+        url_type: "embedded", created_by_id: 1,
+      }),
+    ]);
     render(
       <ApplicationManager
         isAdmin
@@ -427,12 +423,9 @@ describe("ApplicationManager", () => {
         currentUser={makeUser({ id: 1, role: "admin", username: "admin@example.com" })}
       />,
     );
-    await screen.findByText("Slash Embed");
-    await userEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-    // The stored "http://10.0.0.5:3000/" canonicalises to the composed
-    // "http://10.0.0.5:3000", so Save changes stays disabled until a real edit.
-    await screen.findByLabelText(/embedded source server/i);
-    expect(screen.getByRole("button", { name: /save changes/i })).toBeDisabled();
+    await screen.findByText("Orphan Embed");
+    // No matching alias exists, so the card surfaces a warning badge.
+    expect(screen.getByText(/missing alias/i)).toBeInTheDocument();
   });
 
   it("verifies and adds a specific user case-insensitively", async () => {

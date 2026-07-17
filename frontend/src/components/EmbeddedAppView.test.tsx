@@ -33,22 +33,27 @@ function renderAt(id: number) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("EmbeddedAppView", () => {
-  it("renders a title bar and an iframe pointing at the app source", async () => {
+  it("renders a title bar and an iframe pointing at the same-origin alias path", async () => {
     stubApps([
       makeApp({
         id: 7,
-        name: "Grafana Embed",
-        url: "http://10.0.0.5:3000/",
+        name: "Coder Embed",
+        // Embedded apps store the alias slug; the iframe resolves it to the
+        // same-origin alias path served by the reverse proxy.
+        url: "coder-app",
         url_type: "embedded",
       }),
     ]);
     const { container } = renderAt(7);
 
-    expect(await screen.findByText("Grafana Embed")).toBeInTheDocument();
+    expect(await screen.findByText("Coder Embed")).toBeInTheDocument();
     const frame = container.querySelector("iframe.embedded-frame");
     expect(frame).not.toBeNull();
-    expect(frame?.getAttribute("src")).toBe("http://10.0.0.5:3000/");
-    expect(frame?.getAttribute("title")).toBe("Grafana Embed");
+    // Resolved against the document base (same origin as the portal).
+    const src = frame?.getAttribute("src") ?? "";
+    expect(src).toBe(new URL("coder-app", document.baseURI).toString());
+    expect(new URL(src).origin).toBe(window.location.origin);
+    expect(frame?.getAttribute("title")).toBe("Coder Embed");
     expect(frame?.getAttribute("sandbox")).toContain("allow-scripts");
   });
 

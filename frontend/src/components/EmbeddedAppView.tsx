@@ -2,23 +2,17 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { api, ApiError } from "../api";
 import type { Application } from "../types";
-import { resolveIconSrc } from "../lib/links";
-
-/** True when the URL resolves to the portal's own origin (rejected as an
- *  embedded source so a same-origin frame cannot reach the AppManager DOM). */
-function isSameOrigin(rawUrl: string): boolean {
-  try {
-    return new URL(rawUrl, window.location.href).origin === window.location.origin;
-  } catch {
-    return false;
-  }
-}
+import { resolveAppHref, resolveIconSrc } from "../lib/links";
 
 /**
  * Renders an embedded application (url_type === "embedded") inside the portal.
- * The app's configured source URL is loaded in a sandboxed iframe that fills the
- * available content area and grows when the sidebar collapses. A compact top bar
- * shows the app title without taking much space from the content.
+ *
+ * An embedded app frames one of the owner's existing aliases: its stored `url`
+ * is the alias slug, and the iframe loads the SAME-ORIGIN alias path served by
+ * the reverse proxy under the portal's own domain (resolved against the
+ * deployment base). This is the only source reachable by external users and
+ * free of mixed content -- the browser only ever talks to the portal origin,
+ * and the alias's nginx proxy relays the internal service server-side.
  *
  * Access is enforced by the backend: the app only appears in the caller's
  * visible list if their team/user/private grants allow it.
@@ -43,13 +37,6 @@ export function EmbeddedAppView({ collapsed }: { collapsed: boolean }) {
         );
         if (!match) {
           setError("This embedded application is not available.");
-          setApp(null);
-        } else if (isSameOrigin(match.url)) {
-          // Defense-in-depth: never frame our own origin. A same-origin embed
-          // combined with the iframe sandbox's allow-same-origin could reach the
-          // AppManager DOM. Embedded apps are meant to be separate internal
-          // services, so refuse a self-referential source.
-          setError("This embedded application has an invalid (same-origin) source.");
           setApp(null);
         } else {
           setApp(match);
@@ -99,8 +86,19 @@ export function EmbeddedAppView({ collapsed }: { collapsed: boolean }) {
       </div>
       <iframe
         className="embedded-frame"
-        src={app.url}
+        // The stored url is an alias slug; render the same-origin alias path
+        // (resolved against the deployment base) served by the reverse proxy.
+        src={resolveAppHref({ url: app.url, url_type: "alias" })}
         title={app.name}
+        // allow-same-origin is retained deliberately: the framed path /<slug>/
+        // is nginx-proxied to the owner's own internal service (an approved
+        // alias), NOT AppManager's SPA -- alias slugs are a strict [A-Za-z0-9_-]
+        // set and cannot collide with reserved app routes (denylisted in
+        // schemas._validate_alias), so the frame can only ever resolve to the
+        // upstream service. Many upstreams (e.g. coder) need same-origin
+        // cookies/storage to function, so an opaque-origin sandbox would break
+        // them. AppManager itself remains unframable (frame-ancestors 'none' +
+        // X-Frame-Options: DENY), and the session cookie is HttpOnly.
         sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-downloads"
       />
     </div>
