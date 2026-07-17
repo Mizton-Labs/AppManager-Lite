@@ -544,11 +544,14 @@ class ApplicationOut(BaseModel):
     apps_path: str = ""
     # Whether the alias block requires an AppManager session before proxying.
     alias_auth_required: bool = True
+    # Opt-in "rewrite root paths" mode for apps that assume they run at '/'.
+    apps_rewrite_root: bool = False
     # A staged alias change awaiting approval (management/own-app responses
     # only). Empty unless the owner edited the alias and it is pending review.
     pending_alias: str = ""
     pending_is_active: bool | None = None
     pending_alias_auth_required: bool | None = None
+    pending_apps_rewrite_root: bool | None = None
     needs_push: bool = False
     is_favorite: bool = False
     visits_7d: int | None = None
@@ -631,6 +634,7 @@ class AliasConfigOut(BaseModel):
     apps_port: str = ""
     apps_path: str = ""
     alias_auth_required: bool = True
+    apps_rewrite_root: bool = False
 
 
 class CreateApplicationRequest(BaseModel):
@@ -649,6 +653,7 @@ class CreateApplicationRequest(BaseModel):
     apps_port: str = Field(default="", max_length=5)
     apps_path: str = Field(default="", max_length=256)
     alias_auth_required: bool = True
+    apps_rewrite_root: bool = False
     is_private: bool = False
     shared_user_ids: list[int] = Field(default_factory=list, max_length=50)
 
@@ -737,6 +742,7 @@ class UpdateApplicationRequest(BaseModel):
     apps_port: str | None = Field(default=None, max_length=5)
     apps_path: str | None = Field(default=None, max_length=256)
     alias_auth_required: bool | None = None
+    apps_rewrite_root: bool | None = None
     created_by: int | None = None
     is_private: bool | None = None
     shared_user_ids: list[int] | None = Field(default=None, max_length=50)

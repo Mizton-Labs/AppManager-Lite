@@ -945,6 +945,32 @@ function AliasAuthField(props: {
   );
 }
 
+/** Opt-in "rewrite root paths" toggle for aliases whose upstream assumes it
+ * runs at '/' (emits root-absolute links). When on, nginx strips the /alias
+ * prefix and rewrites the upstream's root-absolute responses back under
+ * /alias/. Does not fix links an app builds at runtime in JavaScript. */
+function RewriteRootField(props: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <div className="field">
+      <Toggle
+        checked={props.checked}
+        onChange={props.onChange}
+        label="Rewrite root paths (for apps that assume they run at /)"
+      />
+      <span className="muted logo-hint">
+        Enable for apps that generate root-absolute links (e.g. <code>/assets/…</code>)
+        and would otherwise show a blank page under an alias sub-path. The proxy
+        rewrites server-emitted links and redirects back under the alias. Note:
+        it cannot fix paths an app builds at runtime in JavaScript, so
+        single-page apps may still not work fully.
+      </span>
+    </div>
+  );
+}
+
 /**
  * Logo chooser. A user may upload an image (downscaled in the browser to a small
  * square data URI) or paste an absolute image URL. When neither is provided, a
@@ -1049,6 +1075,7 @@ function CreateApplicationCard(props: {
   const [appsServer, setAppsServer] = useState(props.defaultAppsServer);
   const [appsPath, setAppsPath] = useState("");
   const [aliasAuthRequired, setAliasAuthRequired] = useState(true);
+  const [appsRewriteRoot, setAppsRewriteRoot] = useState(false);
   const [isPrivate, setIsPrivate] = useState(false);
   const [sharedUsers, setSharedUsers] = useState<ApplicationShareUser[]>([]);
   const [busy, setBusy] = useState(false);
@@ -1131,6 +1158,7 @@ function CreateApplicationCard(props: {
         ...(showPort ? { apps_port: appsPort.trim() } : {}),
         ...(showServer ? { apps_server: appsServer.trim() } : {}),
         ...(showPort ? { apps_path: normalizeAppsPath(appsPath) } : {}),
+        ...(urlType === "alias" ? { apps_rewrite_root: appsRewriteRoot } : {}),
       });
       props.onCreated(created);
     } catch (err) {
@@ -1197,6 +1225,13 @@ function CreateApplicationCard(props: {
             checked={aliasAuthRequired}
             onChange={setAliasAuthRequired}
             disabled={isPrivate || sharedUsers.length > 0}
+          />
+        )}
+
+        {showPort && (
+          <RewriteRootField
+            checked={appsRewriteRoot}
+            onChange={setAppsRewriteRoot}
           />
         )}
 
@@ -1313,6 +1348,9 @@ function ApplicationRow(props: {
   const [aliasAuthRequired, setAliasAuthRequired] = useState(
     app.alias_auth_required,
   );
+  const [appsRewriteRoot, setAppsRewriteRoot] = useState(
+    !!app.apps_rewrite_root,
+  );
   const [isPrivate, setIsPrivate] = useState(!!app.is_private);
   const [sharedUsers, setSharedUsers] = useState<ApplicationShareUser[]>(app.shared_users ?? []);
   const [ownerId, setOwnerId] = useState(String(app.created_by_id ?? ""));
@@ -1380,6 +1418,7 @@ function ApplicationRow(props: {
     setAppsPath(app.apps_path ?? "");
     setEmbeddedAlias(app.url_type === "embedded" ? app.url : "");
     setAliasAuthRequired(app.alias_auth_required);
+    setAppsRewriteRoot(!!app.apps_rewrite_root);
     setIsPrivate(!!app.is_private);
     setSharedUsers(app.shared_users ?? []);
     setOwnerId(String(app.created_by_id ?? ""));
@@ -1395,6 +1434,7 @@ function ApplicationRow(props: {
     app.apps_server,
     app.apps_path,
     app.alias_auth_required,
+    app.apps_rewrite_root,
     app.is_private,
     app.shared_users,
     app.created_by_id,
@@ -1418,6 +1458,7 @@ function ApplicationRow(props: {
           defaultAppsServerValue(props.defaultAppsServer, appsServerOptions)) ||
       appsPath !== (app.apps_path ?? "") ||
       aliasAuthRequired !== app.alias_auth_required ||
+      appsRewriteRoot !== !!app.apps_rewrite_root ||
       isPrivate !== !!app.is_private ||
       sharedUsers.length !== (app.shared_users ?? []).length ||
       sharedUsers.some(user => !(app.shared_users ?? []).some(existing => existing.id === user.id)) ||
@@ -1437,6 +1478,7 @@ function ApplicationRow(props: {
       appsServerOptions,
       appsPath,
       aliasAuthRequired,
+      appsRewriteRoot,
       isPrivate,
       sharedUsers,
       ownerId,
@@ -1796,6 +1838,13 @@ function ApplicationRow(props: {
             />
           )}
 
+          {showPort && (
+            <RewriteRootField
+              checked={appsRewriteRoot}
+              onChange={setAppsRewriteRoot}
+            />
+          )}
+
           {isAdmin && props.ownerOptions.length > 0 && (
             <label className="field">
               <span>Owner</span>
@@ -1886,6 +1935,7 @@ function ApplicationRow(props: {
                   ...(showPort ? { apps_port: appsPort.trim() } : {}),
                   ...(showServer ? { apps_server: appsServer.trim() } : {}),
                   ...(showPort ? { apps_path: normalizeAppsPath(appsPath) } : {}),
+                  ...(urlType === "alias" ? { apps_rewrite_root: appsRewriteRoot } : {}),
                   ...(isAdmin && ownerId ? { created_by: Number(ownerId) } : {}),
                 });
                 setEditing(false);

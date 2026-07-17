@@ -901,6 +901,91 @@ def test_alias_auth_can_be_disabled_on_create(admin) -> None:
     assert body["pending_alias_auth_required"] is None
 
 
+def test_alias_rewrite_root_persists_on_create_and_edit(admin) -> None:
+    """The per-alias rewrite-root flag round-trips through create + edit and
+    marks the app for a proxy re-push when toggled by an admin (immediate)."""
+    client, csrf, _ = admin
+    resp = _create_app(
+        client,
+        csrf,
+        url="rooter",
+        url_type="alias",
+        apps_server="apps.example.com",
+        apps_port="8080",
+        apps_rewrite_root=True,
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["apps_rewrite_root"] is True
+    app_id = body["id"]
+
+    # Toggle it off via edit.
+    edited = client.patch(
+        f"/api/applications/{app_id}",
+        json={"apps_rewrite_root": False},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["apps_rewrite_root"] is False
+
+
+def test_non_self_service_rewrite_root_change_is_staged(admin) -> None:
+    """A non-self-service owner toggling rewrite-root on an approved alias
+    stages the change (pending_apps_rewrite_root) instead of applying it live,
+    and an admin approval applies it."""
+    client, csrf, _ = admin
+    password = _create_member(client, csrf, "rootstager", ["Red Team"])
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login", json={"username": "rootstager", "password": password}
+        )
+        mcsrf = login.json()["csrf_token"]
+        created = member.post(
+            "/api/applications",
+            json={
+                "name": "Root Alias",
+                "url": "rootalias",
+                "url_type": "alias",
+                "teams": ["Red Team"],
+                "apps_port": "8080",
+            },
+            headers={"X-CSRF-Token": mcsrf},
+        )
+        assert created.status_code == 201, created.text
+        app_id = created.json()["id"]
+
+    approved = client.patch(
+        f"/api/applications/{app_id}",
+        json={"approval_status": "approved"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert approved.status_code == 200, approved.text
+
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login", json={"username": "rootstager", "password": password}
+        )
+        mcsrf = login.json()["csrf_token"]
+        staged = member.patch(
+            f"/api/applications/{app_id}",
+            json={"apps_rewrite_root": True},
+            headers={"X-CSRF-Token": mcsrf},
+        )
+        assert staged.status_code == 200, staged.text
+        # Live value unchanged; the change is staged pending review.
+        assert staged.json()["apps_rewrite_root"] is False
+        assert staged.json()["pending_apps_rewrite_root"] is True
+
+    approved2 = client.patch(
+        f"/api/applications/{app_id}",
+        json={"approval_status": "approved"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert approved2.status_code == 200, approved2.text
+    assert approved2.json()["apps_rewrite_root"] is True
+    assert approved2.json()["pending_apps_rewrite_root"] is None
+
+
 def test_non_self_service_alias_auth_change_is_staged(admin) -> None:
     client, csrf, _ = admin
     password = _create_member(client, csrf, "authstager", ["Red Team"])

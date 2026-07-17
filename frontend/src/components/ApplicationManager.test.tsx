@@ -793,6 +793,84 @@ describe("ApplicationManager", () => {
     );
   });
 
+  it("submits an alias with the rewrite-root toggle enabled", async () => {
+    const fetchMock = stubBackend([]);
+    render(<ApplicationManager isAdmin={false} teamOptions={["Threat Hunting"]} />);
+
+    await screen.findByText(/have not submitted any applications/i);
+    await userEvent.click(
+      screen.getByRole("button", { name: /new application/i }),
+    );
+
+    await userEvent.type(screen.getByLabelText("Name"), "Coder");
+    await userEvent.type(
+      screen.getByLabelText(/local alias relative path/i),
+      "coder",
+    );
+    await userEvent.type(
+      screen.getByLabelText(/alias upstream server host or ip/i),
+      "apps.example.com",
+    );
+    await userEvent.type(screen.getByLabelText(/alias upstream port/i), "8080");
+    // The rewrite-root switch defaults off; enable it.
+    const rewriteSwitch = screen.getByRole("switch", {
+      name: /rewrite root paths/i,
+    });
+    expect(rewriteSwitch).not.toBeChecked();
+    await userEvent.click(rewriteSwitch);
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /create application/i }),
+    );
+    const postCall = fetchMock.mock.calls.find(
+      ([, init]) => (init?.method ?? "GET") === "POST",
+    );
+    expect(JSON.parse((postCall![1] as RequestInit).body as string)).toMatchObject(
+      {
+        url: "coder",
+        url_type: "alias",
+        apps_rewrite_root: true,
+      },
+    );
+  });
+
+  it("prefills the rewrite-root toggle when editing an alias app", async () => {
+    const fetchMock = stubBackend([
+      makeApp({
+        id: 9,
+        name: "Coder",
+        url: "coder",
+        url_type: "alias",
+        apps_server: "apps.example.com",
+        apps_port: "8080",
+        apps_rewrite_root: true,
+        created_by_id: 1,
+      }),
+    ]);
+    render(
+      <ApplicationManager
+        isAdmin
+        teamOptions={ALL_TEAMS}
+        currentUser={makeUser({ id: 1, role: "admin", username: "admin@example.com" })}
+      />,
+    );
+    await screen.findByText("Coder");
+    await userEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    const rewriteSwitch = await screen.findByRole("switch", {
+      name: /rewrite root paths/i,
+    });
+    expect(rewriteSwitch).toBeChecked();
+    // Toggling off makes the form dirty and sends the new value.
+    await userEvent.click(rewriteSwitch);
+    await userEvent.click(screen.getByRole("button", { name: /save changes/i }));
+    const patchCall = fetchMock.mock.calls.find(
+      ([, init]) => (init?.method ?? "GET") === "PATCH",
+    );
+    expect(JSON.parse((patchCall![1] as RequestInit).body as string)).toMatchObject(
+      { apps_rewrite_root: false },
+    );
+  });
+
   it("strips disallowed characters typed into the alias input", async () => {
     const fetchMock = stubBackend([]);
     render(<ApplicationManager isAdmin={false} teamOptions={["Threat Hunting"]} />);

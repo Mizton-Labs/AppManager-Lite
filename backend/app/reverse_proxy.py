@@ -144,6 +144,7 @@ class AliasConfigResult(PushResult):
     apps_port: str = ""
     apps_path: str = ""
     alias_auth_required: bool = True
+    apps_rewrite_root: bool = False
 
 
 _ALIAS_LOCATION_RE = re.compile(r"location\s+/([^\s/{]+)/\s*\{")
@@ -182,6 +183,8 @@ def parse_alias_config_block(block: str) -> AliasConfigResult:
     result.apps_path = proxy_match.group("path") or ""
     auth_mode = re.search(r"# appmanager-auth-required:\s*([01])", block)
     result.alias_auth_required = bool(int(auth_mode.group(1))) if auth_mode else True
+    rewrite_mode = re.search(r"# appmanager-rewrite-root:\s*([01])", block)
+    result.apps_rewrite_root = bool(int(rewrite_mode.group(1))) if rewrite_mode else False
     result.log("[OK] Parsed deployed alias config from nginx.")
     return result
 
@@ -196,6 +199,7 @@ def render_alias_block(
     apps_protocol: str = "http",
     apps_path: str = "",
     alias_auth_required: bool = True,
+    apps_rewrite_root: bool = False,
     app_id: int = 0,
     timestamp: int | None = None,
 ) -> str:
@@ -204,6 +208,14 @@ def render_alias_block(
     Validates alias upstream values against strict whitelists so the result can
     never inject nginx directives or shell content. Returns the rendered block.
     Raises :class:`ReverseProxyError` on invalid input.
+
+    When ``apps_rewrite_root`` is set, the managed ``location /ALIAS/`` block is
+    switched into "rewrite root paths" mode for upstreams that assume they run
+    at ``/``: the ``/ALIAS`` prefix is stripped inbound (root ``proxy_pass``) and
+    the upstream's root-absolute responses are rewritten back under ``/ALIAS/``
+    (``proxy_redirect`` for Location headers; ``sub_filter`` for HTML
+    href/src/action). This helps server-emitted root-absolute links; it does not
+    fix paths a client app builds at runtime in JavaScript.
     """
     alias = (alias or "").strip().strip("/")
     apps_server = (apps_server or "").strip()
@@ -228,7 +240,9 @@ def render_alias_block(
     ts = int(time.time()) if timestamp is None else int(timestamp)
     # APPNAME/TIMESTAMP only appear in the comment header; keep them tidy.
     safe_name = re.sub(r"[^A-Za-z0-9 ._-]", "", app_name or "")[:80]
-    block = template
+    # Normalize line endings so the injection regexes (auth + rewrite-root),
+    # which anchor on "\n", behave the same for CRLF admin-edited templates.
+    block = template.replace("\r\n", "\n")
     block = block.replace("APPS_PROTOCOL", apps_protocol)
     block = block.replace("APPS_SERVER", apps_server)
     block = block.replace("APPS_PORT", apps_port)
@@ -263,7 +277,90 @@ def render_alias_block(
         raise ReverseProxyError(
             "Alias template must render exactly one app-aware proxy auth request"
         )
-    return f"# appmanager-auth-required: {int(alias_auth_required)}\n{block}"
+
+    if apps_rewrite_root:
+        block = _apply_rewrite_root(block, alias)
+
+    return (
+        f"# appmanager-auth-required: {int(alias_auth_required)}\n"
+        f"# appmanager-rewrite-root: {int(apps_rewrite_root)}\n"
+        f"{block}"
+    )
+
+
+def _apply_rewrite_root(block: str, alias: str) -> str:
+    """Switch the managed ``location /alias/`` block into root-rewrite mode.
+
+    ``alias`` is already validated (``_ALIAS_RE``) before this runs, so it is a
+    safe token to embed in the injected ``proxy_redirect``/``sub_filter``
+    directives (no whitespace, quotes, or nginx metacharacters).
+
+    - Forces a trailing-slash ``proxy_pass`` so nginx strips the ``/alias``
+      prefix and the upstream is served as root.
+    - Adds ``proxy_redirect / /alias/;`` so upstream 30x Location headers stay
+      under the alias.
+    - Adds ``sub_filter`` rules (href/src/action) + ``Accept-Encoding ""`` so
+      root-absolute links in the HTML body are rewritten under ``/alias/``.
+    """
+    # Force root upstream: rewrite "proxy_pass proto://host:port<path>;" so the
+    # path component is exactly "/". Whitespace before ";" is legal nginx, so
+    # tolerate it. Only the managed proxy_pass is present in the block.
+    block, n_pass = re.subn(
+        r"(proxy_pass\s+https?://[A-Za-z0-9.-]+:[0-9]{1,5})(/[^;\s]*)?\s*;",
+        r"\1/;",
+        block,
+        count=1,
+    )
+    if n_pass != 1:
+        raise ReverseProxyError(
+            "Rewrite-root: could not locate the alias proxy_pass to strip the "
+            "path prefix (unexpected template)."
+        )
+    # Rewrite Location headers from the upstream root back under the alias.
+    # Replace EVERY "proxy_redirect off;" (a trailing 'off' would otherwise
+    # disable redirect processing) with our alias redirect for the first, and
+    # remove any others; if the template has none, inject after proxy_pass.
+    redirect_line = f"proxy_redirect / /{alias}/;"
+    block, n_redir = re.subn(
+        r"proxy_redirect\s+off\s*;", redirect_line, block, count=1
+    )
+    # Drop any remaining "proxy_redirect off;" so it cannot re-disable rewriting.
+    block = re.sub(r"proxy_redirect\s+off\s*;", "", block)
+    if n_redir == 0:
+        block, n_inject = re.subn(
+            r"(proxy_pass\s+https?://[^;]+;[ \t]*\n)",
+            rf"\1\t\t{redirect_line}\n",
+            block,
+            count=1,
+        )
+        if n_inject != 1:
+            raise ReverseProxyError(
+                "Rewrite-root: could not inject proxy_redirect (unexpected "
+                "template)."
+            )
+    # Body rewriting for server-emitted root-absolute links. sub_filter needs an
+    # uncompressed upstream response, so clear Accept-Encoding. Scope to HTML and
+    # the common link attributes to limit false rewrites of non-HTML bodies.
+    sub_block = (
+        f'\t\tproxy_set_header Accept-Encoding "";\n'
+        f"\t\tsub_filter_once off;\n"
+        f"\t\tsub_filter_types text/html;\n"
+        f"\t\tsub_filter 'href=\"/' 'href=\"/{alias}/';\n"
+        f"\t\tsub_filter 'src=\"/' 'src=\"/{alias}/';\n"
+        f"\t\tsub_filter 'action=\"/' 'action=\"/{alias}/';\n"
+    )
+    block, n_sub = re.subn(
+        rf"({re.escape(redirect_line)}\n)",
+        lambda m: m.group(1) + sub_block,
+        block,
+        count=1,
+    )
+    if n_sub != 1:
+        raise ReverseProxyError(
+            "Rewrite-root: could not inject sub_filter rules (unexpected "
+            "template)."
+        )
+    return block
 
 
 def inject_before_last_brace(conf_text: str, block: str) -> str:
@@ -389,6 +486,7 @@ def push_alias(
     apps_path: str = "",
     is_active: bool = True,
     alias_auth_required: bool = True,
+    apps_rewrite_root: bool = False,
 ) -> PushResult:
     """Push one application alias to the remote nginx server.
 
@@ -437,6 +535,7 @@ def push_alias(
             alias=alias,
             app_name=app_name,
             alias_auth_required=alias_auth_required,
+            apps_rewrite_root=apps_rewrite_root,
             app_id=app_id,
         )
     except ReverseProxyError as exc:

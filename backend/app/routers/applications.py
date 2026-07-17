@@ -83,10 +83,14 @@ def _app_out(
         apps_port=app.get("apps_port", "") if include_creator else "",
         apps_path=app.get("apps_path", "") if include_creator else "",
         alias_auth_required=bool(app.get("alias_auth_required", True)),
+        apps_rewrite_root=bool(app.get("apps_rewrite_root", False)),
         pending_alias=app.get("pending_alias", "") if include_creator else "",
         pending_is_active=app.get("pending_is_active") if include_creator else None,
         pending_alias_auth_required=(
             app.get("pending_alias_auth_required") if include_creator else None
+        ),
+        pending_apps_rewrite_root=(
+            app.get("pending_apps_rewrite_root") if include_creator else None
         ),
         needs_push=bool(app.get("needs_push")) if include_creator else False,
         is_favorite=is_favorite,
@@ -197,6 +201,7 @@ def _nginx_config_changed(
         ("apps_path", payload.apps_path),
         ("is_active", payload.is_active),
         ("alias_auth_required", payload.alias_auth_required),
+        ("apps_rewrite_root", payload.apps_rewrite_root),
         ("apps_server", payload.apps_server),
     )
     if any(value is not None and value != existing[key] for key, value in checks):
@@ -271,6 +276,7 @@ def _push_alias_on_approval(
                         app_id=application_id,
                         is_active=app["is_active"],
                         alias_auth_required=app["alias_auth_required"],
+                        apps_rewrite_root=bool(app.get("apps_rewrite_root")),
                     )
 
             transcript = result.transcript[:_MAX_PUSH_LOG]
@@ -709,6 +715,7 @@ def get_application_alias_config(
         apps_port=result.apps_port,
         apps_path=result.apps_path,
         alias_auth_required=result.alias_auth_required,
+        apps_rewrite_root=result.apps_rewrite_root,
     )
 
 
@@ -769,6 +776,7 @@ def create_application(
         apps_port=apps_port,
         apps_path=apps_path,
         alias_auth_required=True if payload.is_private or shared_user_ids else payload.alias_auth_required,
+        apps_rewrite_root=payload.apps_rewrite_root,
         is_private=payload.is_private,
         shared_user_ids=shared_user_ids,
     )
@@ -975,6 +983,14 @@ def update_application(
         and payload.alias_auth_required is not None
         and payload.alias_auth_required != existing["alias_auth_required"]
     )
+    stages_rewrite_root = (
+        not is_admin
+        and not actor.get("self_service")
+        and existing["approval_status"] == "approved"
+        and resolved_url_type == "alias"
+        and payload.apps_rewrite_root is not None
+        and payload.apps_rewrite_root != existing.get("apps_rewrite_root", False)
+    )
     changes_access_scope = (
         payload.is_private is not None
         and payload.is_private != existing.get("is_private", False)
@@ -982,10 +998,12 @@ def update_application(
         payload.shared_user_ids is not None
         and set(payload.shared_user_ids) != set(existing.get("shared_user_ids", []))
     )
-    if changes_access_scope and (stages_alias or stages_active or stages_alias_auth):
+    if changes_access_scope and (
+        stages_alias or stages_active or stages_alias_auth or stages_rewrite_root
+    ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Submit alias/active/auth changes separately from privacy or user-sharing changes",
+            detail="Submit alias/active/auth/rewrite changes separately from privacy or user-sharing changes",
         )
     if stages_alias:
         # Do not change the live URL; record the requested alias as pending and
@@ -1011,6 +1029,13 @@ def update_application(
     else:
         alias_auth_required_for_update = payload.alias_auth_required
         pending_alias_auth_required_for_update = None
+    if stages_rewrite_root:
+        apps_rewrite_root_for_update: bool | None = None
+        pending_apps_rewrite_root_for_update: bool | None = payload.apps_rewrite_root
+        new_status = "approved"
+    else:
+        apps_rewrite_root_for_update = payload.apps_rewrite_root
+        pending_apps_rewrite_root_for_update = None
 
     config_changed = _nginx_config_changed(existing, payload, is_admin=is_admin)
     mark_needs_push = (
@@ -1039,11 +1064,13 @@ def update_application(
         apps_port=payload.apps_port,
         apps_path=payload.apps_path,
         alias_auth_required=(True if resulting_private or resulting_users else alias_auth_required_for_update),
+        apps_rewrite_root=apps_rewrite_root_for_update,
         is_private=payload.is_private,
         shared_user_ids=payload.shared_user_ids,
         pending_alias=pending_alias_for_update,
         pending_is_active=pending_is_active_for_update,
         pending_alias_auth_required=pending_alias_auth_required_for_update,
+        pending_apps_rewrite_root=pending_apps_rewrite_root_for_update,
         needs_push=True if mark_needs_push else None,
     )
     assert updated is not None
@@ -1147,6 +1174,7 @@ def update_application(
     staged = existing.get("pending_alias") or ""
     staged_is_active = existing.get("pending_is_active")
     staged_alias_auth = existing.get("pending_alias_auth_required")
+    staged_rewrite_root = existing.get("pending_apps_rewrite_root")
     normal_approval = (
         is_admin
         and payload.approval_status == "approved"
@@ -1164,6 +1192,11 @@ def update_application(
         is_admin
         and payload.approval_status == "approved"
         and staged_alias_auth is not None
+    )
+    staged_rewrite_root_approval = (
+        is_admin
+        and payload.approval_status == "approved"
+        and staged_rewrite_root is not None
     )
     if staged_approval:
         repository.update_application(
@@ -1239,6 +1272,29 @@ def update_application(
             target_name=updated["name"],
             detail=f"alias_auth_required={bool(staged_alias_auth)}",
         )
+    if staged_rewrite_root_approval:
+        repository.update_application(
+            conn,
+            application_id,
+            apps_rewrite_root=bool(staged_rewrite_root),
+            clear_pending_apps_rewrite_root=True,
+        )
+        logger.info(
+            "Applied staged rewrite-root change id=%s enabled=%s by=%r",
+            application_id,
+            bool(staged_rewrite_root),
+            actor.get("username"),
+        )
+        audit.record(
+            conn,
+            category=audit.CATEGORY_APPLICATION,
+            action="rewrite_root_change_approved",
+            actor=actor,
+            target_type="application",
+            target_id=application_id,
+            target_name=updated["name"],
+            detail=f"apps_rewrite_root={bool(staged_rewrite_root)}",
+        )
     auto_config_push = (
         (is_admin or actor.get("self_service"))
         and config_changed
@@ -1250,6 +1306,7 @@ def update_application(
             or staged_approval
             or staged_active_approval
             or staged_alias_auth_approval
+            or staged_rewrite_root_approval
         )
     )
     if (
@@ -1257,6 +1314,7 @@ def update_application(
         or staged_approval
         or staged_active_approval
         or staged_alias_auth_approval
+        or staged_rewrite_root_approval
         or auto_config_push
     ):
         conn.commit()

@@ -144,6 +144,167 @@ def test_parse_alias_config_block() -> None:
     assert result.alias_auth_required is True
 
 
+def test_render_rewrite_root_injects_strip_and_response_rewrites() -> None:
+    block = render_alias_block(
+        DEFAULT_ALIAS_TEMPLATE,
+        apps_server="apps.example.com",
+        apps_protocol="https",
+        apps_port="8443",
+        apps_path="/",
+        alias="coder",
+        app_name="Coder",
+        app_id=42,
+        apps_rewrite_root=True,
+    )
+    # Prefix is stripped inbound (root proxy_pass).
+    assert "proxy_pass https://apps.example.com:8443/;" in block
+    # 30x Location headers rewritten back under the alias.
+    assert "proxy_redirect / /coder/;" in block
+    assert "proxy_redirect off;" not in block
+    # Body link rewriting for server-emitted root-absolute links.
+    assert 'proxy_set_header Accept-Encoding "";' in block
+    assert "sub_filter_once off;" in block
+    assert "sub_filter 'href=\"/' 'href=\"/coder/';" in block
+    assert "sub_filter 'src=\"/' 'src=\"/coder/';" in block
+    assert "sub_filter 'action=\"/' 'action=\"/coder/';" in block
+    # Marker present and parseable.
+    assert "# appmanager-rewrite-root: 1" in block
+
+
+def test_render_rewrite_root_off_by_default() -> None:
+    block = render_alias_block(
+        DEFAULT_ALIAS_TEMPLATE,
+        apps_server="apps.example.com",
+        apps_port="8080",
+        alias="grafana",
+        app_name="Grafana",
+        app_id=42,
+    )
+    assert "sub_filter" not in block
+    assert "proxy_redirect off;" in block
+    assert "# appmanager-rewrite-root: 0" in block
+
+
+def test_rewrite_root_round_trips_through_parse() -> None:
+    block = render_alias_block(
+        DEFAULT_ALIAS_TEMPLATE,
+        apps_server="apps.example.com",
+        apps_port="8080",
+        alias="coder",
+        app_name="Coder",
+        app_id=42,
+        apps_rewrite_root=True,
+    )
+    result = parse_alias_config_block(block)
+    assert result.status == "ok"
+    assert result.apps_rewrite_root is True
+    # And the off case parses back False.
+    off = render_alias_block(
+        DEFAULT_ALIAS_TEMPLATE,
+        apps_server="apps.example.com",
+        apps_port="8080",
+        alias="g",
+        app_name="G",
+        app_id=7,
+    )
+    assert parse_alias_config_block(off).apps_rewrite_root is False
+
+
+def test_rewrite_root_forces_root_path_over_custom_apps_path() -> None:
+    block = render_alias_block(
+        DEFAULT_ALIAS_TEMPLATE,
+        apps_server="apps.example.com",
+        apps_port="8443",
+        apps_protocol="https",
+        apps_path="/dashboard",
+        alias="coder",
+        app_name="Coder",
+        app_id=42,
+        apps_rewrite_root=True,
+    )
+    # Custom path is overridden to root when rewrite-root is on.
+    assert "proxy_pass https://apps.example.com:8443/;" in block
+    assert "/dashboard;" not in block
+
+
+def test_rewrite_root_on_crlf_template_still_injects() -> None:
+    crlf = DEFAULT_ALIAS_TEMPLATE.replace("\n", "\r\n")
+    block = render_alias_block(
+        crlf,
+        apps_server="apps.example.com",
+        apps_port="8080",
+        alias="coder",
+        app_name="Coder",
+        app_id=42,
+        apps_rewrite_root=True,
+    )
+    assert "proxy_redirect / /coder/;" in block
+    assert "sub_filter 'href=\"/' 'href=\"/coder/';" in block
+
+
+def test_rewrite_root_injects_when_template_lacks_proxy_redirect_off() -> None:
+    template = (
+        "location /ALIAS/ {\n"
+        "\t\tauth_request /api/auth/proxy-check/APPLICATION_ID/ALIAS;\n"
+        "\t\terror_page 401 = @appmanager_login;\n"
+        "\t\tproxy_pass APPS_PROTOCOL://APPS_SERVER:APPS_PORTAPPS_PATH;\n"
+        "}\n"
+    )
+    block = render_alias_block(
+        template,
+        apps_server="apps.example.com",
+        apps_port="8080",
+        alias="coder",
+        app_name="Coder",
+        app_id=42,
+        apps_rewrite_root=True,
+    )
+    # Fallback injection after proxy_pass lands the redirect + sub_filter.
+    assert "proxy_redirect / /coder/;" in block
+    assert "sub_filter 'src=\"/' 'src=\"/coder/';" in block
+
+
+def test_rewrite_root_replaces_all_proxy_redirect_off() -> None:
+    template = DEFAULT_ALIAS_TEMPLATE.replace(
+        "proxy_redirect off;",
+        "proxy_redirect off;\n\t\tproxy_redirect off;",
+    )
+    block = render_alias_block(
+        template,
+        apps_server="apps.example.com",
+        apps_port="8080",
+        alias="coder",
+        app_name="Coder",
+        app_id=42,
+        apps_rewrite_root=True,
+    )
+    # No stray "proxy_redirect off;" remains to re-disable rewriting.
+    assert "proxy_redirect off;" not in block
+    assert block.count("proxy_redirect / /coder/;") == 1
+
+
+def test_rewrite_root_raises_when_no_proxy_pass_to_strip() -> None:
+    # A template whose managed location has an auth_request but no port-form
+    # proxy_pass cannot be safely switched to root-rewrite mode.
+    template = (
+        "location /ALIAS/ {\n"
+        "\t\tauth_request /api/auth/proxy-check/APPLICATION_ID/ALIAS;\n"
+        "\t\terror_page 401 = @appmanager_login;\n"
+        "\t\tproxy_pass http://backend;\n"  # named upstream, no :port
+        "}\n"
+    )
+    with pytest.raises(ReverseProxyError):
+        render_alias_block(
+            template,
+            apps_server="apps.example.com",
+            apps_port="8080",
+            alias="coder",
+            app_name="Coder",
+            app_id=42,
+            apps_rewrite_root=True,
+        )
+
+
 @pytest.mark.parametrize(
     "alias,server,port",
     [

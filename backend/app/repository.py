@@ -1032,6 +1032,7 @@ def _row_to_application(
         "apps_port": row["apps_port"],
         "apps_path": row["apps_path"],
         "alias_auth_required": bool(row["alias_auth_required"]),
+        "apps_rewrite_root": bool(row["apps_rewrite_root"]),
         "is_private": bool(row["is_private"]),
         "pending_alias": row["pending_alias"],
         "pending_is_active": (
@@ -1041,6 +1042,11 @@ def _row_to_application(
             None
             if row["pending_alias_auth_required"] is None
             else bool(row["pending_alias_auth_required"])
+        ),
+        "pending_apps_rewrite_root": (
+            None
+            if row["pending_apps_rewrite_root"] is None
+            else bool(row["pending_apps_rewrite_root"])
         ),
         "needs_push": bool(row["needs_push"]),
         "publisher_team": publisher_teams[0] if publisher_teams else "",
@@ -1392,6 +1398,7 @@ def create_application(
     apps_port: str = "",
     apps_path: str = "",
     alias_auth_required: bool = True,
+    apps_rewrite_root: bool = False,
     is_private: bool = False,
     shared_user_ids: list[int] | None = None,
 ) -> dict[str, Any]:
@@ -1401,8 +1408,8 @@ def create_application(
             (name, description, url, url_type, icon_url, is_active,
              approval_status, created_by, sort_order, apps_server, apps_protocol,
              apps_port, apps_path,
-             alias_auth_required, is_private)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             alias_auth_required, apps_rewrite_root, is_private)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             name,
@@ -1419,6 +1426,7 @@ def create_application(
             apps_port,
             apps_path,
             int(alias_auth_required),
+            int(apps_rewrite_root),
             int(is_private),
         ),
     )
@@ -1476,6 +1484,7 @@ def update_application(
     apps_port: str | None = None,
     apps_path: str | None = None,
     alias_auth_required: bool | None = None,
+    apps_rewrite_root: bool | None = None,
     is_private: bool | None = None,
     shared_user_ids: list[int] | None = None,
     pending_alias: str | None = None,
@@ -1483,6 +1492,8 @@ def update_application(
     clear_pending_is_active: bool = False,
     pending_alias_auth_required: bool | None = None,
     clear_pending_alias_auth_required: bool = False,
+    pending_apps_rewrite_root: bool | None = None,
+    clear_pending_apps_rewrite_root: bool = False,
     needs_push: bool | None = None,
 ) -> dict[str, Any] | None:
     if get_application(conn, application_id) is None:
@@ -1518,6 +1529,8 @@ def update_application(
         columns["apps_path"] = apps_path
     if alias_auth_required is not None:
         columns["alias_auth_required"] = int(alias_auth_required)
+    if apps_rewrite_root is not None:
+        columns["apps_rewrite_root"] = int(apps_rewrite_root)
     if is_private is not None:
         columns["is_private"] = int(is_private)
     if pending_alias is not None:
@@ -1530,6 +1543,10 @@ def update_application(
         columns["pending_alias_auth_required"] = int(pending_alias_auth_required)
     if clear_pending_alias_auth_required:
         columns["pending_alias_auth_required"] = None
+    if pending_apps_rewrite_root is not None:
+        columns["pending_apps_rewrite_root"] = int(pending_apps_rewrite_root)
+    if clear_pending_apps_rewrite_root:
+        columns["pending_apps_rewrite_root"] = None
     if needs_push is not None:
         columns["needs_push"] = int(needs_push)
     if columns:

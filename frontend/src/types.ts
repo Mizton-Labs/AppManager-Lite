@@ -540,12 +540,16 @@ export interface Application {
   apps_path?: string;
   /** Whether AppManager auth protects the alias before proxying. */
   alias_auth_required: boolean;
+  /** Rewrite root-absolute paths for apps that assume they run at '/'. */
+  apps_rewrite_root?: boolean;
   /** A staged alias change awaiting approval; management/own-app responses only. */
   pending_alias?: string;
   /** A staged enable/disable change awaiting approval; management/own-app only. */
   pending_is_active?: boolean | null;
   /** A staged alias auth change awaiting approval; management/own-app only. */
   pending_alias_auth_required?: boolean | null;
+  /** A staged rewrite-root change awaiting approval; management/own-app only. */
+  pending_apps_rewrite_root?: boolean | null;
   /** True when current approved proxy config needs an admin push. */
   needs_push?: boolean;
   is_favorite?: boolean;
@@ -576,6 +580,7 @@ export interface AliasConfig {
   apps_port: string;
   apps_path: string;
   alias_auth_required: boolean;
+  apps_rewrite_root: boolean;
 }
 
 export interface CreateApplicationInput {
@@ -592,6 +597,7 @@ export interface CreateApplicationInput {
   apps_port?: string;
   apps_path?: string;
   alias_auth_required?: boolean;
+  apps_rewrite_root?: boolean;
   is_private?: boolean;
   shared_user_ids?: number[];
   created_by?: number;
@@ -612,6 +618,7 @@ export interface UpdateApplicationInput {
   apps_port?: string;
   apps_path?: string;
   alias_auth_required?: boolean;
+  apps_rewrite_root?: boolean;
   is_private?: boolean;
   shared_user_ids?: number[];
 }
