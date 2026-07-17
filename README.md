@@ -549,7 +549,7 @@ app-aware `auth_request`. The default template binds immutable identity into the
 generated block:
 
 ```nginx
-auth_request /api/auth/proxy-check?application_id=APPLICATION_ID&alias=ALIAS;
+auth_request /api/auth/proxy-check/APPLICATION_ID/ALIAS;
 error_page 401 = @appmanager_login;
 ```
 
@@ -571,8 +571,8 @@ shared auth block and pushes it if it is missing. The injected block is:
 
 ```nginx
 # >>> appmanager-lite-proxy-auth >>>
-location = /api/auth/proxy-check {
-    proxy_pass http://<appmanager-backend-host>:<port>/api/auth/proxy-check;
+location ^~ /api/auth/proxy-check/ {
+    proxy_pass http://<appmanager-backend-host>:<port>;
     proxy_set_header Host $host;
     proxy_set_header Cookie $http_cookie;
     proxy_set_header X-Real-IP $remote_addr;

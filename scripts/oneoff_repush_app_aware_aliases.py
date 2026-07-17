@@ -60,6 +60,13 @@ def main() -> int:
     rows_by_id = {row["id"]: row for row in rows}
     all_ids = sorted(set(rows_by_id) | deployed_ids)
     print(f"{'APPLY' if args.apply else 'DRY-RUN'}: {len(all_ids)} alias blocks/rows")
+    if args.apply:
+        shared = reverse_proxy.ensure_proxy_auth_config(settings)
+        if shared.status != "ok":
+            print("FAILED: could not upgrade shared proxy-auth location")
+            print(shared.transcript)
+            return 2
+        print("  ok shared proxy-auth location")
     failures = 0
     for app_id in all_ids:
         row = rows_by_id.get(app_id)

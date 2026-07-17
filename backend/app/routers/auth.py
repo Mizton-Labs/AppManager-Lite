@@ -121,11 +121,11 @@ def _user_out(user: dict[str, Any]) -> UserOut:
     )
 
 
-@router.get("/auth/proxy-check", status_code=status.HTTP_204_NO_CONTENT)
+@router.get("/auth/proxy-check/{application_id}/{alias}", status_code=status.HTTP_204_NO_CONTENT)
 def proxy_check(
     request: Request,
-    application_id: int = Query(..., ge=1),
-    alias: str = Query(..., min_length=1, max_length=128),
+    application_id: int,
+    alias: str,
     conn: sqlite3.Connection = Depends(get_db),
 ) -> StarletteResponse:
     app = repository.get_application(conn, application_id)

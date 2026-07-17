@@ -54,7 +54,7 @@ def test_render_substitutes_placeholders() -> None:
     assert "proxy_pass http://apps.example.com:8080/;" in block
     assert "location /grafana/" in block
     assert "location = /grafana" in block
-    assert "auth_request /api/auth/proxy-check?application_id=42&alias=grafana;" in block
+    assert "auth_request /api/auth/proxy-check/42/grafana;" in block
     assert "error_page 401 = @appmanager_login;" in block
     assert "Grafana" in block
     assert "1700000000" in block
@@ -91,13 +91,13 @@ def test_render_keeps_app_aware_auth_when_alias_is_public() -> None:
 
     assert "location /grafana/" in block
     assert "proxy_pass http://apps.example.com:8080/;" in block
-    assert "auth_request /api/auth/proxy-check?application_id=42&alias=grafana;" in block
+    assert "auth_request /api/auth/proxy-check/42/grafana;" in block
     assert "# appmanager-auth-required: 0" in block
 
 
 def test_render_upgrades_literal_tab_legacy_auth_line() -> None:
     legacy = DEFAULT_ALIAS_TEMPLATE.replace(
-        "auth_request /api/auth/proxy-check?application_id=APPLICATION_ID&alias=ALIAS;",
+        "auth_request /api/auth/proxy-check/APPLICATION_ID/ALIAS;",
         "auth_request /api/auth/proxy-check;",
     )
     block = render_alias_block(
@@ -106,7 +106,7 @@ def test_render_upgrades_literal_tab_legacy_auth_line() -> None:
     )
     assert block.count("auth_request ") == 1
     assert block.count("error_page 401 = @appmanager_login;") == 1
-    assert "auth_request /api/auth/proxy-check?application_id=42&alias=grafana;" in block
+    assert "auth_request /api/auth/proxy-check/42/grafana;" in block
 
 
 def test_render_moves_auth_from_unrelated_location_into_alias() -> None:
@@ -122,7 +122,7 @@ location /ALIAS/ {
     assert block.count("auth_request ") == 1
     assert block.count("error_page 401 = @appmanager_login;") == 1
     location = block.split("location /grafana/ {", 1)[1]
-    assert "auth_request /api/auth/proxy-check?application_id=42&alias=grafana;" in location
+    assert "auth_request /api/auth/proxy-check/42/grafana;" in location
 
 
 def test_parse_alias_config_block() -> None:
@@ -249,7 +249,7 @@ def test_read_alias_config_happy_path(monkeypatch) -> None:
     # appmanager-auth-required: 0
     location = /grafana {{ return 301 /grafana/; }}
     location /grafana/ {{
-      auth_request /api/auth/proxy-check?application_id=7&alias=grafana;
+      auth_request /api/auth/proxy-check/7/grafana;
       proxy_pass https://apps.example.com:8443/dashboard;
     }}
     {end}
@@ -404,12 +404,13 @@ def test_ensure_proxy_auth_config_injects_when_missing(monkeypatch) -> None:
 
     assert result.status == "ok", result.transcript
     assert PROXY_AUTH_BEGIN in runner.last_written
-    assert "proxy_pass http://appmanager:8000/api/auth/proxy-check;" in runner.last_written
+    assert "location ^~ /api/auth/proxy-check/" in runner.last_written
+    assert "proxy_pass http://appmanager:8000;" in runner.last_written
     assert any("nginx -s reload" in c for c in runner.calls)
     assert any("nginx -t" in c for c in runner.calls)
 
 
-def test_ensure_proxy_auth_config_skips_existing_marker(monkeypatch) -> None:
+def test_ensure_proxy_auth_config_upgrades_stale_existing_marker(monkeypatch) -> None:
     conf = f"http {{\n  server {{\n    {PROXY_AUTH_BEGIN}\n    {PROXY_AUTH_END}\n  }}\n}}"
     runner = _FakeRunner([("cat ", _Run(0, conf, ""))])
     _install(monkeypatch, runner)
@@ -417,8 +418,8 @@ def test_ensure_proxy_auth_config_skips_existing_marker(monkeypatch) -> None:
     result = ensure_proxy_auth_config(_SETTINGS)
 
     assert result.status == "ok"
-    assert "already present" in result.transcript
-    assert not any(c.startswith("WRITE:") for c in runner.calls)
+    assert any(c.startswith("WRITE:") for c in runner.calls)
+    assert "location ^~ /api/auth/proxy-check/" in runner.last_written
 
 
 def test_ensure_proxy_auth_config_reverts_on_reload_failure(monkeypatch) -> None:

@@ -35,7 +35,7 @@ def test_protected_route_requires_auth(client: TestClient) -> None:
 
 def test_proxy_check_requires_session(client: TestClient) -> None:
     app_id = _proxy_app()
-    resp = client.get("/api/auth/proxy-check", params={"application_id": app_id, "alias": "proxy-app"})
+    resp = client.get(f"/api/auth/proxy-check/{app_id}/proxy-app")
     assert resp.status_code == 401
 
 
@@ -72,7 +72,7 @@ def test_proxy_check_accepts_valid_session(client: TestClient) -> None:
         json={"username": "admin", "password": client.admin_password},  # type: ignore[attr-defined]
     )
     assert login.status_code == 200
-    resp = client.get("/api/auth/proxy-check", params={"application_id": app_id, "alias": "proxy-app"})
+    resp = client.get(f"/api/auth/proxy-check/{app_id}/proxy-app")
     assert resp.status_code == 204
     assert not resp.content
 
@@ -80,8 +80,7 @@ def test_proxy_check_accepts_valid_session(client: TestClient) -> None:
 def test_proxy_check_allows_anonymous_public_alias(client: TestClient) -> None:
     app_id = _proxy_app(auth_required=False)
     response = client.get(
-        "/api/auth/proxy-check",
-        params={"application_id": app_id, "alias": "proxy-app"},
+        f"/api/auth/proxy-check/{app_id}/proxy-app",
     )
     assert response.status_code == 204
 
@@ -90,18 +89,17 @@ def test_proxy_check_rejects_stale_alias_even_with_session(client: TestClient) -
     app_id = _proxy_app()
     client.post("/api/auth/login", json={"username": "admin", "password": client.admin_password})  # type: ignore[attr-defined]
     response = client.get(
-        "/api/auth/proxy-check",
-        params={"application_id": app_id, "alias": "old-proxy-app"},
+        f"/api/auth/proxy-check/{app_id}/old-proxy-app",
     )
     assert response.status_code == 403
 
 
 def test_proxy_check_auth_disabled_allows_nonprivate_but_denies_private(client_no_auth: TestClient) -> None:
     public_id = _proxy_app(auth_required=True)
-    public = client_no_auth.get("/api/auth/proxy-check", params={"application_id": public_id, "alias": "proxy-app"})
+    public = client_no_auth.get(f"/api/auth/proxy-check/{public_id}/proxy-app")
     assert public.status_code == 204
     private_id = _proxy_app(private=True)
-    private = client_no_auth.get("/api/auth/proxy-check", params={"application_id": private_id, "alias": "proxy-app"})
+    private = client_no_auth.get(f"/api/auth/proxy-check/{private_id}/proxy-app")
     assert private.status_code == 401
 
     shared_id = _proxy_app()
@@ -117,7 +115,7 @@ def test_proxy_check_auth_disabled_allows_nonprivate_but_denies_private(client_n
             "INSERT INTO application_user_shares (application_id, user_id) VALUES (?, ?)",
             (shared_id, user_id),
         )
-    shared = client_no_auth.get("/api/auth/proxy-check", params={"application_id": shared_id, "alias": "proxy-app"})
+    shared = client_no_auth.get(f"/api/auth/proxy-check/{shared_id}/proxy-app")
     assert shared.status_code == 401
 
 

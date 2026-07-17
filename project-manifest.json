@@ -217,7 +217,7 @@
       { "method": "GET", "path": "/api/health", "auth": "anonymous", "csrf": false, "summary": "Liveness check." },
       { "method": "GET", "path": "/api/session", "auth": "anonymous", "csrf": false, "summary": "Current session and branding (works before authentication)." },
       { "method": "GET", "path": "/api/auth/sso/config", "auth": "anonymous", "csrf": false, "summary": "Read enabled SSO login providers for the login page." },
-      { "method": "GET", "path": "/api/auth/proxy-check", "auth": "anonymous", "csrf": false, "summary": "App-aware nginx authorization bound to immutable application ID and literal alias; enforces state, privacy, teams, users, and public access policy." },
+      { "method": "GET", "path": "/api/auth/proxy-check/{application_id}/{alias}", "auth": "anonymous", "csrf": false, "summary": "App-aware nginx authorization bound to immutable application ID and literal alias; enforces state, privacy, teams, users, and public access policy." },
       { "method": "POST", "path": "/api/auth/login", "auth": "anonymous", "csrf": false, "summary": "Authenticate and start a session." },
       { "method": "GET", "path": "/api/auth/oidc/login", "auth": "anonymous", "csrf": false, "summary": "Start OIDC authorization-code login." },
       { "method": "GET", "path": "/api/auth/oidc/callback", "auth": "anonymous", "csrf": false, "summary": "Handle OIDC provider callback and start a local session." },

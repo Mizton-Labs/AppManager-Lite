@@ -65,7 +65,7 @@ DEFAULT_ALIAS_TEMPLATE = """\
 \t\treturn 301 /ALIAS/;
 \t}
 \tlocation /ALIAS/ {
-\t\tauth_request /api/auth/proxy-check?application_id=APPLICATION_ID&alias=ALIAS;
+\t\tauth_request /api/auth/proxy-check/APPLICATION_ID/ALIAS;
 \t\terror_page 401 = @appmanager_login;
 \t\tproxy_pass APPS_PROTOCOL://APPS_SERVER:APPS_PORTAPPS_PATH;
 \t\tproxy_read_timeout 7200s;
@@ -95,8 +95,9 @@ def render_proxy_auth_block(*, appmanager_host: str, appmanager_port: str) -> st
     if not _PORT_RE.match(appmanager_port) or not (1 <= int(appmanager_port) <= 65535):
         raise ReverseProxyError(f"Invalid AppManager backend port: {appmanager_port!r}")
     return f"""{PROXY_AUTH_BEGIN}
-location = /api/auth/proxy-check {{
-    proxy_pass http://{appmanager_host}:{appmanager_port}/api/auth/proxy-check;
+location ^~ /api/auth/proxy-check/ {{
+    # No replacement URI: preserve auth_request query arguments.
+    proxy_pass http://{appmanager_host}:{appmanager_port};
     proxy_set_header Host $host;
     proxy_set_header Cookie $http_cookie;
     proxy_set_header X-Real-IP $remote_addr;
@@ -238,7 +239,7 @@ def render_alias_block(
     # Replace ALIAS last so an APPNAME containing "ALIAS" is not affected first;
     # the comment header's ALIAS token is intentionally substituted too.
     block = block.replace("ALIAS", alias)
-    auth_line = f"auth_request /api/auth/proxy-check?application_id={int(app_id)}&alias={alias};"
+    auth_line = f"auth_request /api/auth/proxy-check/{int(app_id)}/{alias};"
     auth_pattern = r"auth_request\s+/api/auth/proxy-check[^;]*;"
     # Remove every legacy/global occurrence first, then inject exactly once in
     # the managed alias location. A comment or unrelated location can therefore
@@ -610,8 +611,7 @@ def read_alias_config(settings: dict, *, app_id: int) -> AliasConfigResult:
 
     parsed = parse_alias_config_block(block)
     expected_auth = (
-        f"auth_request /api/auth/proxy-check?application_id={int(app_id)}"
-        f"&alias={parsed.alias};"
+        f"auth_request /api/auth/proxy-check/{int(app_id)}/{parsed.alias};"
     )
     if parsed.status == "ok" and block.count(expected_auth) != 1:
         parsed.status = "failed"
@@ -681,10 +681,14 @@ def ensure_proxy_auth_config(settings: dict) -> PushResult:
         result.log(f"[FAIL] Could not read conf: {r.err or r.rc}")
         return result
     current_conf = r.out + "\n"
-    if PROXY_AUTH_BEGIN in current_conf and PROXY_AUTH_END in current_conf:
-        result.status = "ok"
-        result.log("[OK] Protected alias auth config already present")
-        return result
+    has_auth_block = PROXY_AUTH_BEGIN in current_conf and PROXY_AUTH_END in current_conf
+    if has_auth_block:
+        start = current_conf.index(PROXY_AUTH_BEGIN)
+        stop = current_conf.index(PROXY_AUTH_END, start) + len(PROXY_AUTH_END)
+        if current_conf[start:stop].strip() == block.strip():
+            result.status = "ok"
+            result.log("[OK] Protected alias auth config already current")
+            return result
 
     r = _ssh(host, key_path, f"cp {q_conf} {q_backup}")
     if r.rc != 0:
@@ -694,7 +698,12 @@ def ensure_proxy_auth_config(settings: dict) -> PushResult:
     result.log(f"[OK] Backup created: {backup_path}")
 
     try:
-        new_conf = inject_before_last_brace(current_conf, block)
+        if has_auth_block:
+            start = current_conf.index(PROXY_AUTH_BEGIN)
+            stop = current_conf.index(PROXY_AUTH_END, start) + len(PROXY_AUTH_END)
+            new_conf = current_conf[:start] + block.rstrip() + current_conf[stop:]
+        else:
+            new_conf = inject_before_last_brace(current_conf, block)
     except ReverseProxyError as exc:
         result.status = "failed"
         result.log(f"[FAIL] Injection failed: {exc}")

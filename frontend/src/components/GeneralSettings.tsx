@@ -8,8 +8,8 @@ import { fileToLogoDataUrl } from "../lib/image";
 import { resolveIconSrc } from "../lib/links";
 import { PlusIcon, XIcon } from "./icons";
 
-const AUTH_PROXY_SNIPPET = `location = /api/auth/proxy-check {
-    proxy_pass http://APPMANAGER_HOST:APPMANAGER_PORT/api/auth/proxy-check;
+const AUTH_PROXY_SNIPPET = `location ^~ /api/auth/proxy-check/ {
+    proxy_pass http://APPMANAGER_HOST:APPMANAGER_PORT;
     proxy_set_header Host $host;
     proxy_set_header Cookie $http_cookie;
     proxy_set_header X-Real-IP $remote_addr;

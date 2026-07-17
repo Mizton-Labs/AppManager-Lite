@@ -117,9 +117,9 @@ def test_private_alias_is_owner_and_admin_only(admin) -> None:
     with TestClient(client.app) as other_client:
         other_client.post("/api/auth/login", json={"username":"other.user@example.com","password":other["password"]})
         assert other_client.get("/api/applications").json() == []
-        denied = other_client.get("/api/auth/proxy-check", params={"application_id":app_id,"alias":"private-lab"})
+        denied = other_client.get(f"/api/auth/proxy-check/{app_id}/private-lab")
         assert denied.status_code == 403
-    assert client.get("/api/auth/proxy-check", params={"application_id":app_id,"alias":"private-lab"}).status_code == 204
+    assert client.get(f"/api/auth/proxy-check/{app_id}/private-lab").status_code == 204
 
 
 def test_explicit_user_share_and_case_insensitive_resolution(admin) -> None:
