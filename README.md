@@ -255,23 +255,40 @@ assertions must be signed; unsigned assertions are rejected.
 ## Application management
 
 A clean install starts with **no applications** — the Home and team sections are
-empty until an administrator or user adds applications from the Application
-Manager.
+empty until an administrator or user adds applications from **App Manager**.
 
-Applications can be shared through teams and/or exact user grants. The create
-and edit forms resolve a recipient case-insensitively by username or derived
-user ID before adding it. **Private Application** is available only for managed
-aliases: it disables team/user sharing and limits runtime access to the owner
-and administrators. Every managed alias, including intentionally public aliases,
-uses an app-aware proxy authorization check bound to its immutable application
-ID and current alias. This makes stale, disabled, rejected, renamed, private, or
-unauthorized alias blocks fail closed even when somebody knows the URL.
+**App Manager** is its own sidebar section (below Account, above Servers) and is
+available to every signed-in user; it replaces the former Settings tab for
+non-administrators. **Settings** (user management, teams, server provisioning,
+remote access, branding, reverse proxy) is administrator-only.
 
-Every signed-in user reaches **Settings** from the sidebar and can
-submit and edit applications for the teams they belong to. Administrators see the
-same area with every application (and its creator), a tab for user management, a
-**Teams** tab for managing teams, and a **General Settings** tab for branding
-(application name and logo) and reverse-proxy configuration.
+An application has one of three **target types**, chosen with radio buttons:
+
+- **Local alias** — an nginx-proxied managed alias.
+- **Full URL** — an external link opened in a new tab.
+- **Embedded App (private)** — an internal host/URL rendered inside the portal
+  in an iframe, reachable only from the **Embedded apps** sidebar section (below
+  Teams, above Config; scrollable) after login. Embedded apps do not require the
+  per-alias "Require AppManager authentication" toggle — they are always behind
+  login — and their access follows the same team/user/private configuration.
+  Selecting one shows a compact top bar with the app title above a full-height
+  frame that grows when the sidebar collapses. The source must permit being
+  framed (an app sending `X-Frame-Options: DENY`/a restrictive CSP cannot be
+  embedded). When AppManager is served over HTTPS the embedded source should be
+  `https://` too: the browser auto-upgrades `http://` sources
+  (`upgrade-insecure-requests`), so a plain-HTTP internal host without TLS will
+  not load. A source resolving to AppManager's own origin is rejected.
+
+The create/edit forms group access controls under a **Permissions** section:
+mark the app **Private** (owner + administrators only) or share it with whole
+**Teams** and/or specific **Users** (resolved case-insensitively by username or
+derived user ID). Private disables and clears team/user sharing. Private and
+user-restricted apps must be a mediated type (managed alias or embedded app).
+The **Require AppManager authentication** control is a toggle. Every managed
+alias, including intentionally public aliases, uses an app-aware proxy
+authorization check bound to its immutable application ID and current alias, so
+stale, disabled, rejected, renamed, private, or unauthorized alias blocks fail
+closed even when somebody knows the URL.
 
 Creating an application is collapsed behind a **New application** button. The
 list has a **filter** box (case-insensitive match across name, description, URL,
