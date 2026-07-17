@@ -40,6 +40,9 @@ export function ApplicationManager(props: {
   isAdmin: boolean;
   teamOptions: readonly string[];
   currentUser?: ApiUser | null;
+  /** Called after an application is created/edited/deleted so the shell can
+   *  refresh dependent navigation (e.g. the Embedded apps sidebar section). */
+  onAppsChanged?: () => void | Promise<void>;
 }) {
   const { isAdmin, teamOptions } = props;
   const editAppId = Number(new URLSearchParams(window.location.search).get("editApp") ?? "") || null;
@@ -57,6 +60,7 @@ export function ApplicationManager(props: {
   // issue_024: client-side filter over the loaded applications.
   const [filter, setFilter] = useState("");
 
+  const onAppsChanged = props.onAppsChanged;
   const reload = useCallback(async () => {
     const [nextApps, nextUsers] = await Promise.all([
       isAdmin ? api.listManagedApplications() : api.listMyApplications(),
@@ -64,7 +68,9 @@ export function ApplicationManager(props: {
     ]);
     setApps(nextApps);
     setOwnerOptions(nextUsers.filter((user) => user.is_active));
-  }, [isAdmin]);
+    // Let the shell refresh embedded-app navigation after any change.
+    void onAppsChanged?.();
+  }, [isAdmin, onAppsChanged]);
 
   useEffect(() => {
     setLoading(true);
@@ -487,6 +493,51 @@ function UserSharingFields(props: {
 }
 
 /**
+ * Grouped access controls for an application, shown together so the permission
+ * model is clear: mark the app Private (owner + admins only), or share it with
+ * whole Teams and/or specific Users. Private disables and clears both sharing
+ * controls. Selecting a specific user marks the app as an AppManager-mediated
+ * type (alias/embedded) with authentication required.
+ */
+function PermissionsFields(props: {
+  isPrivate: boolean;
+  onPrivateChange: (checked: boolean) => void;
+  teamOptions: readonly string[];
+  teams: string[];
+  onToggleTeam: (team: string) => void;
+  onSetTeams: (teams: string[]) => void;
+  users: ApplicationShareUser[];
+  onUsersChange: (users: ApplicationShareUser[]) => void;
+}) {
+  return (
+    <fieldset className="permissions-group">
+      <legend>Permissions</legend>
+      <p className="muted permissions-hint">
+        Control who can access this application: keep it private, or share it
+        with teams and/or specific users.
+      </p>
+      <Toggle
+        checked={props.isPrivate}
+        onChange={props.onPrivateChange}
+        label="Private application (only you and administrators)"
+      />
+      <TeamCheckboxes
+        options={props.teamOptions}
+        selected={props.teams}
+        onToggle={props.onToggleTeam}
+        onSetAll={props.onSetTeams}
+        disabled={props.isPrivate}
+      />
+      <UserSharingFields
+        users={props.users}
+        onChange={props.onUsersChange}
+        disabled={props.isPrivate}
+      />
+    </fieldset>
+  );
+}
+
+/**
  * The deployment base URL shown as a greyed prefix before a local alias, e.g.
  * `https://server/home/`. Derived from the document base URI (the backend
  * injects a matching `<base href>`), so it reflects the real origin and path
@@ -675,6 +726,7 @@ function UrlFields(props: {
   onUrlChange: (value: string) => void;
 }) {
   const isAlias = props.urlType === "alias";
+  const isEmbedded = props.urlType === "embedded";
   return (
     <div className="url-fields">
       <fieldset className="radio-group">
@@ -694,10 +746,20 @@ function UrlFields(props: {
             type="radio"
             name="url_type"
             value="url"
-            checked={!isAlias}
+            checked={props.urlType === "url"}
             onChange={() => props.onUrlTypeChange("url")}
           />
           <span>Full URL</span>
+        </label>
+        <label className="radio-option">
+          <input
+            type="radio"
+            name="url_type"
+            value="embedded"
+            checked={isEmbedded}
+            onChange={() => props.onUrlTypeChange("embedded")}
+          />
+          <span>Embedded App (private)</span>
         </label>
       </fieldset>
 
@@ -731,6 +793,26 @@ function UrlFields(props: {
             Letters, digits, underscores, and dashes only; maximum 30 characters.
           </span>
         </label>
+      ) : isEmbedded ? (
+        <label className="field">
+          <span>Embedded source URL</span>
+          <input
+            type="url"
+            value={props.url}
+            onChange={(e) => props.onUrlChange(e.target.value)}
+            placeholder="http://10.0.0.5:3000/"
+            aria-label="Embedded source URL"
+            required
+          />
+          <span className="muted logo-hint">
+            Internal host/IP or URL rendered inside the portal (iframe). Only
+            reachable from the Embedded apps sidebar after login. The source must
+            allow being embedded in a frame. When AppManager is served over
+            HTTPS, use an <code>https://</code> source: an <code>http://</code>
+            source is auto-upgraded by the browser and will not load if the
+            internal host has no TLS.
+          </span>
+        </label>
       ) : (
         <label className="field">
           <span>URL</span>
@@ -748,29 +830,54 @@ function UrlFields(props: {
   );
 }
 
+/**
+ * Accessible on/off switch. Rendered as a `role="switch"` button so it is a
+ * clear toggle (not a checkbox) and is keyboard/space-operable.
+ */
+function Toggle(props: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  label: string;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={props.checked}
+      aria-label={props.label}
+      disabled={props.disabled}
+      className={props.checked ? "toggle-switch on" : "toggle-switch"}
+      onClick={() => props.onChange(!props.checked)}
+    >
+      <span className="toggle-track" aria-hidden="true">
+        <span className="toggle-thumb" />
+      </span>
+      <span className="toggle-label">{props.label}</span>
+    </button>
+  );
+}
+
 function AliasAuthField(props: {
   checked: boolean;
   onChange: (checked: boolean) => void;
   disabled?: boolean;
 }) {
   return (
-    <label className="field checkbox-field">
-      <span>
-        <input
-          type="checkbox"
-          checked={props.checked}
-          disabled={props.disabled}
-          onChange={(e) => props.onChange(e.target.checked)}
-        />{" "}
-        Require AppManager authentication
-      </span>
+    <div className="field">
+      <Toggle
+        checked={props.checked}
+        onChange={props.onChange}
+        disabled={props.disabled}
+        label="Require AppManager authentication"
+      />
       {!props.checked && (
         <span className="alert warn" role="alert">
           This alias will be reachable without an AppManager session. Only disable
           this if the upstream app has its own authentication or is safe to expose.
         </span>
       )}
-    </label>
+    </div>
   );
 }
 
@@ -964,7 +1071,6 @@ function CreateApplicationCard(props: {
     <section className="card">
       <h2>New application</h2>
       <form className="create-form" onSubmit={onSubmit}>
-        <label className="field checkbox-field private-app-field"><span><input type="checkbox" checked={isPrivate} onChange={event => { const checked=event.target.checked; setIsPrivate(checked); if (checked) { setUrlType("alias"); setAliasAuthRequired(true); } }} /> Private Application</span><small>Only you and administrators can access this managed alias.</small></label>
         <label className="field">
           <span>Name</span>
           <input
@@ -978,7 +1084,12 @@ function CreateApplicationCard(props: {
         <UrlFields
           urlType={urlType}
           url={url}
-          onUrlTypeChange={value => { if (!isPrivate && sharedUsers.length === 0) setUrlType(value); }}
+          onUrlTypeChange={value => {
+            // Private/user-restricted apps must be a mediated type (alias or
+            // embedded); block switching to a plain full URL while restricted.
+            if ((isPrivate || sharedUsers.length > 0) && value === "url") return;
+            setUrlType(value);
+          }}
           onUrlChange={setUrl}
         />
 
@@ -1019,14 +1130,29 @@ function CreateApplicationCard(props: {
           onError={props.onError}
         />
 
-        <TeamCheckboxes
-          options={props.teamOptions}
-          selected={teams}
-          onToggle={toggleTeam}
-          onSetAll={setTeams}
-          disabled={isPrivate}
+        <PermissionsFields
+          isPrivate={isPrivate}
+          onPrivateChange={(checked) => {
+            setIsPrivate(checked);
+            if (checked) {
+              // Private requires a mediated type; keep embedded, else use alias.
+              if (urlType === "url") setUrlType("alias");
+              setAliasAuthRequired(true);
+            }
+          }}
+          teamOptions={props.teamOptions}
+          teams={teams}
+          onToggleTeam={toggleTeam}
+          onSetTeams={setTeams}
+          users={sharedUsers}
+          onUsersChange={(users) => {
+            setSharedUsers(users);
+            if (users.length) {
+              if (urlType === "url") setUrlType("alias");
+              setAliasAuthRequired(true);
+            }
+          }}
         />
-        <UserSharingFields users={sharedUsers} onChange={users => { setSharedUsers(users); if (users.length) { setUrlType("alias"); setAliasAuthRequired(true); } }} disabled={isPrivate}/>
 
         <div className="row-actions">
           <button
@@ -1507,11 +1633,13 @@ function ApplicationRow(props: {
             />
           </label>
 
-          <label className="field checkbox-field private-app-field"><span><input type="checkbox" checked={isPrivate} onChange={event => { const checked=event.target.checked; setIsPrivate(checked); if (checked) { setUrlType("alias"); setAliasAuthRequired(true); } }} /> Private Application</span><small>Only the owner and administrators can access this managed alias.</small></label>
           <UrlFields
             urlType={urlType}
             url={url}
-            onUrlTypeChange={value => { if (!isPrivate && sharedUsers.length === 0) setUrlType(value); }}
+            onUrlTypeChange={value => {
+              if ((isPrivate || sharedUsers.length > 0) && value === "url") return;
+              setUrlType(value);
+            }}
             onUrlChange={setUrl}
           />
 
@@ -1581,14 +1709,28 @@ function ApplicationRow(props: {
             </p>
           )}
 
-          <TeamCheckboxes
-            options={props.teamOptions}
-            selected={teams}
-            onToggle={toggleTeam}
-            onSetAll={setTeams}
-            disabled={isPrivate}
+          <PermissionsFields
+            isPrivate={isPrivate}
+            onPrivateChange={(checked) => {
+              setIsPrivate(checked);
+              if (checked) {
+                if (urlType === "url") setUrlType("alias");
+                setAliasAuthRequired(true);
+              }
+            }}
+            teamOptions={props.teamOptions}
+            teams={teams}
+            onToggleTeam={toggleTeam}
+            onSetTeams={setTeams}
+            users={sharedUsers}
+            onUsersChange={(users) => {
+              setSharedUsers(users);
+              if (users.length) {
+                if (urlType === "url") setUrlType("alias");
+                setAliasAuthRequired(true);
+              }
+            }}
           />
-          <UserSharingFields users={sharedUsers} onChange={users => { setSharedUsers(users); if (users.length) { setUrlType("alias"); setAliasAuthRequired(true); } }} disabled={isPrivate}/>
 
           <div className="row-actions">
             <button

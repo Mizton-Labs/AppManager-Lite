@@ -25,10 +25,10 @@ function makeSession(
   };
 }
 
-function renderShell(session: SessionState) {
+function renderShell(session: SessionState, initialPath = "/") {
   return render(
     <ThemeProvider>
-      <MemoryRouter initialEntries={["/"]}>
+      <MemoryRouter initialEntries={[initialPath]}>
         <PortalShell
           session={session}
           onLogout={() => undefined}
@@ -104,6 +104,10 @@ describe("PortalShell", () => {
     expect(
       within(nav).getByRole("link", { name: "Red Team" }),
     ).toBeInTheDocument();
+    // Admins get App Manager and the admin-only Settings link.
+    expect(
+      within(nav).getByRole("link", { name: "App Manager" }),
+    ).toBeInTheDocument();
     expect(
       within(nav).getByRole("link", { name: "Settings" }),
     ).toBeInTheDocument();
@@ -119,7 +123,7 @@ describe("PortalShell", () => {
     await screen.findByText(/No shared applications are available/i);
   });
 
-  it("shows Settings and every team to regular users", async () => {
+  it("shows App Manager (not Settings) and every team to regular users", async () => {
     renderShell(makeSession({ role: "user", teams: ["Red Team"] }));
 
     expect(screen.queryByRole("link", { name: "Manage" })).toBeNull();
@@ -131,10 +135,14 @@ describe("PortalShell", () => {
     expect(
       within(nav).getByRole("link", { name: "Threat Hunting" }),
     ).toBeInTheDocument();
-    // Settings is now available to every signed-in user.
+    // App Manager is available to every signed-in user...
     expect(
-      within(nav).getByRole("link", { name: "Settings" }),
+      within(nav).getByRole("link", { name: "App Manager" }),
     ).toBeInTheDocument();
+    // ...while Settings is admin-only.
+    expect(
+      within(nav).queryByRole("link", { name: "Settings" }),
+    ).toBeNull();
     // Account is always available.
     expect(
       within(nav).getByRole("link", { name: "Account" }),
@@ -146,6 +154,17 @@ describe("PortalShell", () => {
 
     // Let the HomeView application fetch settle inside act().
     await screen.findByText(/No shared applications are available/i);
+  });
+
+  it("redirects a non-admin away from the admin-only Settings route", async () => {
+    renderShell(makeSession({ role: "user", teams: ["Red Team"] }), "/settings");
+
+    // The route guard sends non-admins to Home; the Settings heading never
+    // renders. (Backend endpoints are independently admin-gated.)
+    await screen.findByText(/No shared applications are available/i);
+    expect(
+      screen.queryByRole("heading", { name: /^Settings$/ }),
+    ).toBeNull();
   });
 
   it("toggles the sidebar collapsed state", async () => {

@@ -2362,3 +2362,114 @@ textarea:focus-visible,
 .spark-area.spark-full {
   fill: var(--danger);
 }
+
+/* issue_local_029: toggle switch (role=switch) used for alias auth. */
+.toggle-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  color: var(--text);
+  font: inherit;
+}
+.toggle-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.toggle-track {
+  position: relative;
+  flex: none;
+  width: 40px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--border-strong);
+  transition: background 0.15s ease;
+}
+.toggle-switch.on .toggle-track {
+  background: var(--accent);
+}
+.toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s ease;
+}
+.toggle-switch.on .toggle-thumb {
+  transform: translateX(18px);
+}
+.toggle-switch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+.toggle-label {
+  font-size: 0.9rem;
+}
+
+/* Grouped permissions block in the create/edit forms. */
+.permissions-group {
+  display: grid;
+  gap: 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.9rem 1rem 1rem;
+}
+.permissions-group > legend {
+  padding: 0 0.4rem;
+  font-weight: 600;
+}
+.permissions-hint {
+  margin: 0;
+  font-size: 0.82rem;
+}
+
+/* Embedded apps sidebar section: scrolls when the list grows. */
+.sidebar-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.embedded-nav-icon {
+  border-radius: 4px;
+  object-fit: contain;
+}
+
+/* Embedded application view: compact title bar + full-height iframe that fills
+   the content area and grows when the sidebar collapses. */
+.embedded-view {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - var(--header-h) - 3rem);
+  min-height: 320px;
+}
+.embedded-topbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: var(--radius) var(--radius) 0 0;
+  background: var(--bg-elevated);
+  flex: none;
+}
+.embedded-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+.embedded-frame {
+  flex: 1;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 0 0 var(--radius) var(--radius);
+  background: var(--bg-card);
+}

@@ -1,10 +1,13 @@
 import type { ReactNode } from "react";
 import { NavLink } from "react-router-dom";
-import type { Team } from "../types";
+import type { Application, Team } from "../types";
 import { teamSlug } from "../teams";
 import { TeamIcon } from "./TeamIcon";
+import { resolveIconSrc } from "../lib/links";
 import {
   BookIcon,
+  FrameIcon,
+  GridIcon,
   HomeIcon,
   InfoIcon,
   ListIcon,
@@ -16,17 +19,18 @@ import {
 /**
  * Primary navigation. Sections mirror the product spec: Main, Teams (filtered to
  * the teams the account may see, each shown as a button-card with its own
- * icon), and Config. When `collapsed`, labels and section headings are hidden
- * by CSS, leaving icon-only navigation. Settings (application management) is
- * available to every signed-in user; administrators additionally manage other
- * users, teams, and reverse-proxy settings there, and get an Audit log link.
+ * icon), Embedded apps (in-portal iframes), and Config. When `collapsed`, labels
+ * and section headings are hidden by CSS, leaving icon-only navigation. App
+ * Manager is available to every signed-in user; Settings and the admin tools
+ * (App Statistics, Audit log) are administrator-only.
  */
 export function Sidebar(props: {
   teams: readonly Team[];
+  embeddedApps: readonly Application[];
   collapsed: boolean;
   isAdmin: boolean;
 }) {
-  const { teams, collapsed, isAdmin } = props;
+  const { teams, embeddedApps, collapsed, isAdmin } = props;
   return (
     <nav
       className={collapsed ? "sidebar collapsed" : "sidebar"}
@@ -53,11 +57,50 @@ export function Sidebar(props: {
         )}
       </Section>
 
+      <Section title="Embedded apps">
+        {embeddedApps.length === 0 ? (
+          <p className="sidebar-empty">No embedded apps</p>
+        ) : (
+          <div className="sidebar-scroll">
+            {embeddedApps.map((app) => {
+              const icon = resolveIconSrc(app.icon_url);
+              return (
+                <SideLink
+                  key={app.id}
+                  to={`/embedded/${app.id}`}
+                  icon={
+                    icon ? (
+                      <img
+                        className="embedded-nav-icon"
+                        src={icon}
+                        alt=""
+                        width={18}
+                        height={18}
+                      />
+                    ) : (
+                      <FrameIcon />
+                    )
+                  }
+                  label={app.name}
+                  collapsed={collapsed}
+                />
+              );
+            })}
+          </div>
+        )}
+      </Section>
+
       <Section title="Config">
         <SideLink
           to="/account"
           icon={<UserIcon />}
           label="Account"
+          collapsed={collapsed}
+        />
+        <SideLink
+          to="/app-manager"
+          icon={<GridIcon />}
+          label="App Manager"
           collapsed={collapsed}
         />
         <SideLink
@@ -72,12 +115,14 @@ export function Sidebar(props: {
           label="User Guide"
           collapsed={collapsed}
         />
-        <SideLink
-          to="/settings"
-          icon={<SlidersIcon />}
-          label="Settings"
-          collapsed={collapsed}
-        />
+        {isAdmin && (
+          <SideLink
+            to="/settings"
+            icon={<SlidersIcon />}
+            label="Settings"
+            collapsed={collapsed}
+          />
+        )}
         {isAdmin && (
           <SideLink to="/app-statistics" icon={<ListIcon />} label="App Statistics" collapsed={collapsed} />
         )}

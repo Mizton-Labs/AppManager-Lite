@@ -154,6 +154,28 @@ export function ServerIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+/** Grid of tiles — the App Manager section. */
+export function GridIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Glyph {...props}>
+      <rect x="3" y="3" width="7" height="7" rx="1.5" />
+      <rect x="14" y="3" width="7" height="7" rx="1.5" />
+      <rect x="3" y="14" width="7" height="7" rx="1.5" />
+      <rect x="14" y="14" width="7" height="7" rx="1.5" />
+    </Glyph>
+  );
+}
+
+/** Framed window — an embedded application. */
+export function FrameIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Glyph {...props}>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M3 9h18" />
+    </Glyph>
+  );
+}
+
 export function BookIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <Glyph {...props}>

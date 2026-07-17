@@ -285,7 +285,7 @@ describe("ApplicationManager", () => {
     render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
     await screen.findByText(/No applications yet/i);
     await userEvent.click(screen.getByRole("button", { name: /new application/i }));
-    await userEvent.click(screen.getByLabelText(/Private Application/i));
+    await userEvent.click(screen.getByRole("switch", { name: /private application/i }));
     expect(screen.getByRole("group", { name: "Teams" })).toBeDisabled();
     expect(screen.getByRole("group", { name: /Share with specific users/i })).toBeDisabled();
     await userEvent.type(screen.getByLabelText("Name"), "Private Tool");
@@ -296,6 +296,32 @@ describe("ApplicationManager", () => {
     const call = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
     expect(JSON.parse((call![1] as RequestInit).body as string)).toMatchObject({
       is_private: true, teams: [], shared_user_ids: [], alias_auth_required: true,
+    });
+  });
+
+  it("creates an embedded app with a source URL and no upstream fields", async () => {
+    const fetchMock = stubBackend([]);
+    render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
+    await screen.findByText(/No applications yet/i);
+    await userEvent.click(screen.getByRole("button", { name: /new application/i }));
+    await userEvent.click(
+      screen.getByRole("radio", { name: /embedded app \(private\)/i }),
+    );
+    await userEvent.type(screen.getByLabelText("Name"), "Grafana Embed");
+    await userEvent.type(
+      screen.getByLabelText(/embedded source url/i),
+      "http://10.0.0.5:3000/",
+    );
+    // Alias upstream fields must not appear for embedded apps.
+    expect(screen.queryByLabelText(/alias upstream port/i)).toBeNull();
+    await userEvent.click(
+      screen.getByRole("button", { name: /create application/i }),
+    );
+    const call = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
+    expect(JSON.parse((call![1] as RequestInit).body as string)).toMatchObject({
+      name: "Grafana Embed",
+      url: "http://10.0.0.5:3000/",
+      url_type: "embedded",
     });
   });
 
@@ -641,7 +667,7 @@ describe("ApplicationManager", () => {
     );
     await userEvent.type(screen.getByLabelText(/alias upstream port/i), "8080");
     await userEvent.click(
-      screen.getByRole("checkbox", { name: /require appmanager authentication/i }),
+      screen.getByRole("switch", { name: /require appmanager authentication/i }),
     );
 
     expect(

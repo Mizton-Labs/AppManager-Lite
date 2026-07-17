@@ -1,7 +1,7 @@
 export type Role = "admin" | "user";
 
 /** How an application's link is interpreted. */
-export type UrlType = "url" | "alias";
+export type UrlType = "url" | "alias" | "embedded";
 
 /** Lifecycle state of a submitted application. */
 export type ApprovalStatus = "pending" | "approved" | "rejected";
