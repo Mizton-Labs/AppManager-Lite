@@ -84,6 +84,7 @@ def _app_out(
         apps_path=app.get("apps_path", "") if include_creator else "",
         alias_auth_required=bool(app.get("alias_auth_required", True)),
         apps_rewrite_root=bool(app.get("apps_rewrite_root", False)),
+        pass_authenticated_user=bool(app.get("pass_authenticated_user", False)),
         pending_alias=app.get("pending_alias", "") if include_creator else "",
         pending_is_active=app.get("pending_is_active") if include_creator else None,
         pending_alias_auth_required=(
@@ -91,6 +92,9 @@ def _app_out(
         ),
         pending_apps_rewrite_root=(
             app.get("pending_apps_rewrite_root") if include_creator else None
+        ),
+        pending_pass_authenticated_user=(
+            app.get("pending_pass_authenticated_user") if include_creator else None
         ),
         needs_push=bool(app.get("needs_push")) if include_creator else False,
         is_favorite=is_favorite,
@@ -202,6 +206,7 @@ def _nginx_config_changed(
         ("is_active", payload.is_active),
         ("alias_auth_required", payload.alias_auth_required),
         ("apps_rewrite_root", payload.apps_rewrite_root),
+        ("pass_authenticated_user", payload.pass_authenticated_user),
         ("apps_server", payload.apps_server),
     )
     if any(value is not None and value != existing[key] for key, value in checks):
@@ -277,6 +282,7 @@ def _push_alias_on_approval(
                         is_active=app["is_active"],
                         alias_auth_required=app["alias_auth_required"],
                         apps_rewrite_root=bool(app.get("apps_rewrite_root")),
+                        pass_authenticated_user=bool(app.get("pass_authenticated_user")),
                     )
 
             transcript = result.transcript[:_MAX_PUSH_LOG]
@@ -716,6 +722,7 @@ def get_application_alias_config(
         apps_path=result.apps_path,
         alias_auth_required=result.alias_auth_required,
         apps_rewrite_root=result.apps_rewrite_root,
+        pass_authenticated_user=result.pass_authenticated_user,
     )
 
 
@@ -743,6 +750,30 @@ def create_application(
 
     if payload.url_type == "embedded":
         _enforce_embedded_alias_exists(conn, payload.url, actor.get("id"))
+
+    # Passing the authenticated user's identity upstream must never be
+    # possible for anything other than an authenticated managed alias: it is
+    # rejected outright rather than silently downgraded, since the caller
+    # explicitly asked for it.
+    effective_alias_auth_required = (
+        True if (payload.is_private or shared_user_ids) else payload.alias_auth_required
+    )
+    if payload.pass_authenticated_user:
+        if payload.url_type != "alias":
+            raise HTTPException(
+                status_code=400,
+                detail="Passing the authenticated user header requires a managed alias",
+            )
+        if not effective_alias_auth_required:
+            raise HTTPException(
+                status_code=400,
+                detail="Passing the authenticated user header requires alias authentication",
+            )
+        if not get_settings().enable_auth:
+            raise HTTPException(
+                status_code=400,
+                detail="Passing the authenticated user header requires authentication to be enabled",
+            )
 
     # Administrators and self-service users bypass review; everyone else queues
     # the application for approval.
@@ -775,8 +806,9 @@ def create_application(
         apps_protocol=apps_protocol,
         apps_port=apps_port,
         apps_path=apps_path,
-        alias_auth_required=True if payload.is_private or shared_user_ids else payload.alias_auth_required,
+        alias_auth_required=effective_alias_auth_required,
         apps_rewrite_root=payload.apps_rewrite_root,
+        pass_authenticated_user=payload.pass_authenticated_user,
         is_private=payload.is_private,
         shared_user_ids=shared_user_ids,
     )
@@ -849,6 +881,8 @@ def update_application(
         bool(existing.get("pending_alias"))
         or existing.get("pending_is_active") is not None
         or existing.get("pending_alias_auth_required") is not None
+        or existing.get("pending_apps_rewrite_root") is not None
+        or existing.get("pending_pass_authenticated_user") is not None
     )
     # An approved application cannot be rejected; only disable or delete it.
     # Staged changes on an otherwise-approved app can be approved, but they are
@@ -889,6 +923,39 @@ def update_application(
     # to them; the alias-auth constraint only applies to alias apps.
     if (resulting_private or resulting_users) and resulting_type == "alias" and payload.alias_auth_required is False:
         raise HTTPException(status_code=400, detail="Private or user-restricted aliases must require authentication")
+    # Passing the authenticated user's identity upstream is rejected outright
+    # whenever the resulting state cannot guarantee it: not a managed alias,
+    # not requiring alias authentication, or global auth disabled.
+    resulting_alias_auth_required = (
+        True
+        if (resulting_private or resulting_users)
+        else (
+            payload.alias_auth_required
+            if payload.alias_auth_required is not None
+            else existing["alias_auth_required"]
+        )
+    )
+    resulting_pass_authenticated_user = (
+        payload.pass_authenticated_user
+        if payload.pass_authenticated_user is not None
+        else existing.get("pass_authenticated_user", False)
+    )
+    if resulting_pass_authenticated_user:
+        if resulting_type != "alias":
+            raise HTTPException(
+                status_code=400,
+                detail="Passing the authenticated user header requires a managed alias",
+            )
+        if not resulting_alias_auth_required:
+            raise HTTPException(
+                status_code=400,
+                detail="Passing the authenticated user header requires alias authentication",
+            )
+        if not get_settings().enable_auth:
+            raise HTTPException(
+                status_code=400,
+                detail="Passing the authenticated user header requires authentication to be enabled",
+            )
     # Re-validate a changed url against the RESULTING type. The Update schema
     # accepts either an alias slug or an http URL when url_type is omitted (it
     # cannot know the stored type); enforce the correct shape here now that the
@@ -944,6 +1011,8 @@ def update_application(
                 payload.apps_port,
                 payload.apps_path,
                 payload.alias_auth_required,
+                payload.apps_rewrite_root,
+                payload.pass_authenticated_user,
                 payload.is_private,
                 payload.shared_user_ids,
             )
@@ -991,6 +1060,14 @@ def update_application(
         and payload.apps_rewrite_root is not None
         and payload.apps_rewrite_root != existing.get("apps_rewrite_root", False)
     )
+    stages_pass_authenticated_user = (
+        not is_admin
+        and not actor.get("self_service")
+        and existing["approval_status"] == "approved"
+        and resolved_url_type == "alias"
+        and payload.pass_authenticated_user is not None
+        and payload.pass_authenticated_user != existing.get("pass_authenticated_user", False)
+    )
     changes_access_scope = (
         payload.is_private is not None
         and payload.is_private != existing.get("is_private", False)
@@ -1000,6 +1077,7 @@ def update_application(
     )
     if changes_access_scope and (
         stages_alias or stages_active or stages_alias_auth or stages_rewrite_root
+        or stages_pass_authenticated_user
     ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1036,6 +1114,13 @@ def update_application(
     else:
         apps_rewrite_root_for_update = payload.apps_rewrite_root
         pending_apps_rewrite_root_for_update = None
+    if stages_pass_authenticated_user:
+        pass_authenticated_user_for_update: bool | None = None
+        pending_pass_authenticated_user_for_update: bool | None = payload.pass_authenticated_user
+        new_status = "approved"
+    else:
+        pass_authenticated_user_for_update = payload.pass_authenticated_user
+        pending_pass_authenticated_user_for_update = None
 
     config_changed = _nginx_config_changed(existing, payload, is_admin=is_admin)
     mark_needs_push = (
@@ -1065,12 +1150,14 @@ def update_application(
         apps_path=payload.apps_path,
         alias_auth_required=(True if resulting_private or resulting_users else alias_auth_required_for_update),
         apps_rewrite_root=apps_rewrite_root_for_update,
+        pass_authenticated_user=pass_authenticated_user_for_update,
         is_private=payload.is_private,
         shared_user_ids=payload.shared_user_ids,
         pending_alias=pending_alias_for_update,
         pending_is_active=pending_is_active_for_update,
         pending_alias_auth_required=pending_alias_auth_required_for_update,
         pending_apps_rewrite_root=pending_apps_rewrite_root_for_update,
+        pending_pass_authenticated_user=pending_pass_authenticated_user_for_update,
         needs_push=True if mark_needs_push else None,
     )
     assert updated is not None
@@ -1125,6 +1212,23 @@ def update_application(
             target_id=application_id,
             target_name=updated["name"],
             detail=f"pending_alias_auth_required={payload.alias_auth_required}",
+        )
+    if stages_pass_authenticated_user:
+        logger.info(
+            "Application authenticated-user header change staged id=%s pending=%s by=%r",
+            application_id,
+            payload.pass_authenticated_user,
+            actor.get("username"),
+        )
+        audit.record(
+            conn,
+            category=audit.CATEGORY_APPLICATION,
+            action="pass_authenticated_user_change_requested",
+            actor=actor,
+            target_type="application",
+            target_id=application_id,
+            target_name=updated["name"],
+            detail=f"pending_pass_authenticated_user={payload.pass_authenticated_user}",
         )
     if is_admin and payload.approval_status is not None:
         logger.info(
@@ -1198,6 +1302,12 @@ def update_application(
         and payload.approval_status == "approved"
         and staged_rewrite_root is not None
     )
+    staged_pass_authenticated_user = existing.get("pending_pass_authenticated_user")
+    staged_pass_authenticated_user_approval = (
+        is_admin
+        and payload.approval_status == "approved"
+        and staged_pass_authenticated_user is not None
+    )
     if staged_approval:
         repository.update_application(
             conn,
@@ -1250,12 +1360,16 @@ def update_application(
         applied_alias_auth = bool(staged_alias_auth)
         if current_scope["is_private"] or current_scope.get("shared_user_ids"):
             applied_alias_auth = True
-        repository.update_application(
-            conn,
-            application_id,
-            alias_auth_required=applied_alias_auth,
-            clear_pending_alias_auth_required=True,
-        )
+        update_kwargs: dict[str, Any] = {
+            "alias_auth_required": applied_alias_auth,
+            "clear_pending_alias_auth_required": True,
+        }
+        # Never leave the authenticated-user header live once alias
+        # authentication is no longer required -- there would be no
+        # authenticated session left to assert an identity for.
+        if not applied_alias_auth and current_scope.get("pass_authenticated_user"):
+            update_kwargs["pass_authenticated_user"] = False
+        repository.update_application(conn, application_id, **update_kwargs)
         logger.info(
             "Applied staged alias auth change id=%s required=%s by=%r",
             application_id,
@@ -1295,6 +1409,41 @@ def update_application(
             target_name=updated["name"],
             detail=f"apps_rewrite_root={bool(staged_rewrite_root)}",
         )
+    if staged_pass_authenticated_user_approval:
+        current_scope = repository.get_application(conn, application_id)
+        assert current_scope is not None
+        applied_pass_authenticated_user = bool(staged_pass_authenticated_user)
+        # Never let a previously valid staged request silently start exposing
+        # identity if the live alias no longer requires authentication (e.g.
+        # authentication was disabled between the request and the approval).
+        if applied_pass_authenticated_user and (
+            current_scope["url_type"] != "alias"
+            or not current_scope["alias_auth_required"]
+            or not get_settings().enable_auth
+        ):
+            applied_pass_authenticated_user = False
+        repository.update_application(
+            conn,
+            application_id,
+            pass_authenticated_user=applied_pass_authenticated_user,
+            clear_pending_pass_authenticated_user=True,
+        )
+        logger.info(
+            "Applied staged authenticated-user header change id=%s enabled=%s by=%r",
+            application_id,
+            applied_pass_authenticated_user,
+            actor.get("username"),
+        )
+        audit.record(
+            conn,
+            category=audit.CATEGORY_APPLICATION,
+            action="pass_authenticated_user_change_approved",
+            actor=actor,
+            target_type="application",
+            target_id=application_id,
+            target_name=updated["name"],
+            detail=f"pass_authenticated_user={applied_pass_authenticated_user}",
+        )
     auto_config_push = (
         (is_admin or actor.get("self_service"))
         and config_changed
@@ -1307,6 +1456,7 @@ def update_application(
             or staged_active_approval
             or staged_alias_auth_approval
             or staged_rewrite_root_approval
+            or staged_pass_authenticated_user_approval
         )
     )
     if (
@@ -1315,6 +1465,7 @@ def update_application(
         or staged_active_approval
         or staged_alias_auth_approval
         or staged_rewrite_root_approval
+        or staged_pass_authenticated_user_approval
         or auto_config_push
     ):
         conn.commit()

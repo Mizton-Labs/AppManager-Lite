@@ -5,7 +5,15 @@ import { getAppName, getLogoSrc } from "../branding";
 
 function safeNextPath(): string {
   const next = new URLSearchParams(window.location.search).get("next")?.trim() ?? "";
-  if (!next.startsWith("/") || next.startsWith("//")) return "";
+  // Mirrors the backend's `sso.safe_return_to`: only a same-origin,
+  // single-segment-rooted relative path is accepted. Backslashes are
+  // rejected too -- some browsers normalize a leading "/\" the same as "//",
+  // which would otherwise let a same-origin-looking value navigate off-site.
+  if (!next.startsWith("/")) return "";
+  if (next.startsWith("//")) return "";
+  if (next.includes("\\")) return "";
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f]/.test(next)) return "";
   return next;
 }
 

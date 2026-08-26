@@ -971,6 +971,37 @@ function RewriteRootField(props: {
   );
 }
 
+/** Opt-in "pass authenticated user" toggle for aliases whose upstream can use
+ * the signed-in AppManager identity (e.g. to apply per-user roles). When on,
+ * nginx forwards the fixed `X-AppManager-User` header, sourced only from the
+ * trusted auth check -- never from the client -- containing the signed-in
+ * account's username/email. Requires "Require AppManager authentication" to
+ * be enabled, since there is otherwise no authenticated identity to send. */
+function PassAuthenticatedUserField(props: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="field">
+      <Toggle
+        checked={props.checked}
+        onChange={props.onChange}
+        disabled={props.disabled}
+        label="Pass authenticated user header to app"
+      />
+      <span className="muted logo-hint">
+        Sends the signed-in user's account username/email to the app in a fixed{" "}
+        <code>X-AppManager-User</code> header, so it can apply per-user roles.
+        The value always comes from the current AppManager session, never from
+        the request itself. Only trust this header if the app is reachable
+        exclusively through this reverse proxy. Requires "Require AppManager
+        authentication".
+      </span>
+    </div>
+  );
+}
+
 /**
  * Logo chooser. A user may upload an image (downscaled in the browser to a small
  * square data URI) or paste an absolute image URL. When neither is provided, a
@@ -1076,6 +1107,7 @@ function CreateApplicationCard(props: {
   const [appsPath, setAppsPath] = useState("");
   const [aliasAuthRequired, setAliasAuthRequired] = useState(true);
   const [appsRewriteRoot, setAppsRewriteRoot] = useState(false);
+  const [passAuthenticatedUser, setPassAuthenticatedUser] = useState(false);
   const [isPrivate, setIsPrivate] = useState(false);
   const [sharedUsers, setSharedUsers] = useState<ApplicationShareUser[]>([]);
   const [busy, setBusy] = useState(false);
@@ -1118,6 +1150,11 @@ function CreateApplicationCard(props: {
   const showPort = urlType === "alias";
   const showServer = urlType === "alias";
   const isEmbedded = urlType === "embedded";
+  // Private/user-restricted aliases always require authentication regardless
+  // of the toggle; the authenticated-user header can only ever be sent when
+  // authentication is actually in effect.
+  const effectiveAliasAuthRequired =
+    isPrivate || sharedUsers.length > 0 ? true : aliasAuthRequired;
 
   function toggleTeam(team: string) {
     setTeams((current) =>
@@ -1159,6 +1196,9 @@ function CreateApplicationCard(props: {
         ...(showServer ? { apps_server: appsServer.trim() } : {}),
         ...(showPort ? { apps_path: normalizeAppsPath(appsPath) } : {}),
         ...(urlType === "alias" ? { apps_rewrite_root: appsRewriteRoot } : {}),
+        ...(urlType === "alias"
+          ? { pass_authenticated_user: effectiveAliasAuthRequired && passAuthenticatedUser }
+          : {}),
       });
       props.onCreated(created);
     } catch (err) {
@@ -1223,7 +1263,10 @@ function CreateApplicationCard(props: {
         {showPort && (
           <AliasAuthField
             checked={aliasAuthRequired}
-            onChange={setAliasAuthRequired}
+            onChange={(checked) => {
+              setAliasAuthRequired(checked);
+              if (!checked) setPassAuthenticatedUser(false);
+            }}
             disabled={isPrivate || sharedUsers.length > 0}
           />
         )}
@@ -1232,6 +1275,14 @@ function CreateApplicationCard(props: {
           <RewriteRootField
             checked={appsRewriteRoot}
             onChange={setAppsRewriteRoot}
+          />
+        )}
+
+        {showPort && (
+          <PassAuthenticatedUserField
+            checked={passAuthenticatedUser && effectiveAliasAuthRequired}
+            onChange={setPassAuthenticatedUser}
+            disabled={!effectiveAliasAuthRequired}
           />
         )}
 
@@ -1351,6 +1402,9 @@ function ApplicationRow(props: {
   const [appsRewriteRoot, setAppsRewriteRoot] = useState(
     !!app.apps_rewrite_root,
   );
+  const [passAuthenticatedUser, setPassAuthenticatedUser] = useState(
+    !!app.pass_authenticated_user,
+  );
   const [isPrivate, setIsPrivate] = useState(!!app.is_private);
   const [sharedUsers, setSharedUsers] = useState<ApplicationShareUser[]>(app.shared_users ?? []);
   const [ownerId, setOwnerId] = useState(String(app.created_by_id ?? ""));
@@ -1419,6 +1473,7 @@ function ApplicationRow(props: {
     setEmbeddedAlias(app.url_type === "embedded" ? app.url : "");
     setAliasAuthRequired(app.alias_auth_required);
     setAppsRewriteRoot(!!app.apps_rewrite_root);
+    setPassAuthenticatedUser(!!app.pass_authenticated_user);
     setIsPrivate(!!app.is_private);
     setSharedUsers(app.shared_users ?? []);
     setOwnerId(String(app.created_by_id ?? ""));
@@ -1435,6 +1490,7 @@ function ApplicationRow(props: {
     app.apps_path,
     app.alias_auth_required,
     app.apps_rewrite_root,
+    app.pass_authenticated_user,
     app.is_private,
     app.shared_users,
     app.created_by_id,
@@ -1459,6 +1515,7 @@ function ApplicationRow(props: {
       appsPath !== (app.apps_path ?? "") ||
       aliasAuthRequired !== app.alias_auth_required ||
       appsRewriteRoot !== !!app.apps_rewrite_root ||
+      passAuthenticatedUser !== !!app.pass_authenticated_user ||
       isPrivate !== !!app.is_private ||
       sharedUsers.length !== (app.shared_users ?? []).length ||
       sharedUsers.some(user => !(app.shared_users ?? []).some(existing => existing.id === user.id)) ||
@@ -1479,6 +1536,7 @@ function ApplicationRow(props: {
       appsPath,
       aliasAuthRequired,
       appsRewriteRoot,
+      passAuthenticatedUser,
       isPrivate,
       sharedUsers,
       ownerId,
@@ -1492,6 +1550,8 @@ function ApplicationRow(props: {
   const showPort = urlType === "alias";
   const showServer = urlType === "alias";
   const isEmbedded = urlType === "embedded";
+  const effectiveAliasAuthRequired =
+    isPrivate || sharedUsers.length > 0 ? true : aliasAuthRequired;
 
   useEffect(() => {
     let active = true;
@@ -1516,6 +1576,7 @@ function ApplicationRow(props: {
           setAppsPort(config.apps_port || app.apps_port || "");
           setAppsPath(config.apps_path || "");
           setAliasAuthRequired(config.alias_auth_required);
+          setPassAuthenticatedUser(config.pass_authenticated_user);
           setAliasConfigMessage("Loaded current deployed config from nginx.");
         } else {
           setAliasConfigMessage(config.log || "Current nginx alias config was not available.");
@@ -1578,6 +1639,14 @@ function ApplicationRow(props: {
                 {app.pending_alias_auth_required
                   ? "auth enable requested"
                   : "auth exclusion requested"}
+              </span>
+            )}
+          {app.pending_pass_authenticated_user !== null &&
+            app.pending_pass_authenticated_user !== undefined && (
+              <span className="status-badge warn push-needed">
+                {app.pending_pass_authenticated_user
+                  ? "user header enable requested"
+                  : "user header disable requested"}
               </span>
             )}
           {app.url_type === "alias" && !app.alias_auth_required && (
@@ -1698,7 +1767,11 @@ function ApplicationRow(props: {
             app.pending_alias ||
             (app.pending_is_active !== null && app.pending_is_active !== undefined) ||
             (app.pending_alias_auth_required !== null &&
-              app.pending_alias_auth_required !== undefined)) && (
+              app.pending_alias_auth_required !== undefined) ||
+            (app.pending_apps_rewrite_root !== null &&
+              app.pending_apps_rewrite_root !== undefined) ||
+            (app.pending_pass_authenticated_user !== null &&
+              app.pending_pass_authenticated_user !== undefined)) && (
             <button
               type="button"
               className="btn approve"
@@ -1832,7 +1905,10 @@ function ApplicationRow(props: {
           {showPort && (
             <AliasAuthField
               checked={aliasAuthRequired}
-              onChange={setAliasAuthRequired}
+              onChange={(checked) => {
+                setAliasAuthRequired(checked);
+                if (!checked) setPassAuthenticatedUser(false);
+              }}
               disabled={isPrivate || sharedUsers.length > 0}
             />
           )}
@@ -1841,6 +1917,14 @@ function ApplicationRow(props: {
             <RewriteRootField
               checked={appsRewriteRoot}
               onChange={setAppsRewriteRoot}
+            />
+          )}
+
+          {showPort && (
+            <PassAuthenticatedUserField
+              checked={passAuthenticatedUser && effectiveAliasAuthRequired}
+              onChange={setPassAuthenticatedUser}
+              disabled={!effectiveAliasAuthRequired}
             />
           )}
 
@@ -1935,6 +2019,9 @@ function ApplicationRow(props: {
                   ...(showServer ? { apps_server: appsServer.trim() } : {}),
                   ...(showPort ? { apps_path: normalizeAppsPath(appsPath) } : {}),
                   ...(urlType === "alias" ? { apps_rewrite_root: appsRewriteRoot } : {}),
+                  ...(urlType === "alias"
+                    ? { pass_authenticated_user: effectiveAliasAuthRequired && passAuthenticatedUser }
+                    : {}),
                   ...(isAdmin && ownerId ? { created_by: Number(ownerId) } : {}),
                 });
                 setEditing(false);

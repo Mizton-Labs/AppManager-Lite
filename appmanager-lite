@@ -31,6 +31,7 @@ LOG_FILE="$LOG_DIR/app.log"
 # operator can be warned about updates that may need manual follow-up.
 COMMIT_STAMP="$PID_DIR/last-run-commit"
 UVLOCK_STAMP="$PID_DIR/last-run-uvlock"
+FRONTEND_GIT_STAMP="$PID_DIR/last-frontend-git-state"
 
 VENV_PY="$VENV_DIR/bin/python"
 
@@ -188,6 +189,21 @@ git_head_timestamp() {
   git -C "$PROJECT_DIR" log -1 --format=%ct 2>/dev/null || true
 }
 
+# Exact Git state the frontend build is made from: the full HEAD object id and
+# either the checked-out branch name or a fixed "(detached)" marker -- the
+# About page bakes both the commit and branch into the build, so switching
+# branches at the *same* commit (e.g. after a fast-forward merge) must still
+# be treated as a build-input change even though no timestamp advances.
+# Empty when git is unavailable or HEAD cannot be resolved (not a checkout).
+git_frontend_state() {
+  command -v git >/dev/null 2>&1 || return 0
+  local commit branch
+  commit="$(git -C "$PROJECT_DIR" rev-parse --verify --quiet HEAD 2>/dev/null || true)"
+  [[ -n "$commit" ]] || return 0
+  branch="$(git -C "$PROJECT_DIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  printf '%s %s\n' "$commit" "${branch:-(detached)}"
+}
+
 # mtime (epoch seconds) of a path, or 0 when absent.
 mtime_of() {
   stat -c %Y "$1" 2>/dev/null || echo 0
@@ -231,13 +247,13 @@ frontend_deps_stale() {
 }
 
 # True (0) when the built frontend is missing or older than any build input.
-# Inputs are the Vite sources/config AND the git HEAD commit (baked into the
-# About page at build time). Errs toward rebuilding when timestamps are unknown.
+# Inputs are the Vite sources/config AND the git HEAD commit/branch (baked
+# into the About page at build time). Errs toward rebuilding when unknown.
 frontend_is_stale() {
   local dist_index="$FRONTEND_DIR/dist/index.html"
   [[ -f "$dist_index" ]] || return 0
 
-  local dist_mtime newest_src head_ts
+  local dist_mtime newest_src head_ts current_state stamped_state
   dist_mtime="$(mtime_of "$dist_index")"
 
   # Newest mtime across everything Vite consumes.
@@ -253,7 +269,28 @@ frontend_is_stale() {
   head_ts="$(git_head_timestamp)"
   [[ -n "$head_ts" && "$head_ts" -gt "$dist_mtime" ]] && return 0
 
+  # Switching to a different branch pointing at the *same* commit (e.g. after
+  # a fast-forward merge) does not advance any timestamp above, but the About
+  # page's baked-in branch would still be wrong -- compare the exact git state
+  # the last successful build recorded.
+  current_state="$(git_frontend_state)"
+  if [[ -n "$current_state" ]]; then
+    stamped_state="$(cat "$FRONTEND_GIT_STAMP" 2>/dev/null || true)"
+    [[ "$current_state" != "$stamped_state" ]] && return 0
+  fi
+
   return 1
+}
+
+# Record the git state (commit + branch) the frontend was just built from, so
+# a later branch-only switch at the same commit is detected next time. Safe
+# no-op outside a git checkout.
+record_frontend_git_state() {
+  local state
+  state="$(git_frontend_state)"
+  [[ -n "$state" ]] || return 0
+  mkdir -p "$PID_DIR"
+  printf '%s' "$state" >"$FRONTEND_GIT_STAMP" 2>/dev/null || true
 }
 
 ensure_frontend() {
@@ -265,9 +302,11 @@ ensure_frontend() {
   if [[ "$FORCE_REBUILD" -eq 1 ]]; then
     log "building frontend (--rebuild)"
     ( cd "$FRONTEND_DIR" && npm run build )
+    record_frontend_git_state
   elif frontend_is_stale; then
-    log "building frontend (sources or commit changed since last build)"
+    log "building frontend (sources, config, or git commit/branch changed since last build)"
     ( cd "$FRONTEND_DIR" && npm run build )
+    record_frontend_git_state
   else
     log "frontend already up to date (skipping build; use --rebuild to force)"
   fi

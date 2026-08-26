@@ -100,11 +100,11 @@ Useful start flags:
 On every `start`/`restart` the script keeps things current automatically: it
 runs `uv sync` for the backend (uv is the only Python dependency manager),
 reinstalls frontend dependencies when the lockfile changed, and **rebuilds the
-frontend whenever its sources, config, or the current commit changed** since the
-last build (use `--rebuild` only to force a build). It also **warns when the
-checked-out code advanced** since the last start — the database migrates
-automatically on start (additive, idempotent), but any destructive schema or
-dependency change may need manual follow-up.
+frontend whenever its sources, config, or the current commit/branch changed**
+since the last build (use `--rebuild` only to force a build). It also **warns
+when the checked-out code advanced** since the last start — the database
+migrates automatically on start (additive, idempotent), but any destructive
+schema or dependency change may need manual follow-up.
 
 ### First-run administrator
 
@@ -308,6 +308,22 @@ JavaScript (SPA `fetch`, dynamic imports, WebSocket URLs), so a JS-root-assuming
 single-page app may still not work fully; such apps ultimately need to be served
 at their own root (dedicated origin/subdomain). Off by default.
 
+The **Pass authenticated user header to app** toggle (alias apps) forwards the
+signed-in AppManager account's stored username/email upstream as a fixed
+`X-AppManager-User` header, so the app can apply per-user roles without its own
+login. The value always comes from nginx's trusted `auth_request` result
+(`$upstream_http_x_appmanager_user`), never from the incoming request, so a
+client can never spoof it — when the toggle is off (the default), the alias
+block explicitly clears any client-supplied `X-AppManager-User` header before
+proxying. It can only be enabled for a managed alias that requires AppManager
+authentication (**Require AppManager authentication** must stay on; turning
+that off clears this toggle too), and only while authentication is enabled
+deployment-wide; the API rejects any other combination. **Trust boundary:**
+this header is only meaningful if the upstream app is reachable exclusively
+through this reverse proxy — an app directly reachable by users could still
+receive a forged header if it trusts the header from any other path. Off by
+default.
+
 Creating an application is collapsed behind a **New application** button. The
 list has a **filter** box (case-insensitive match across name, description, URL,
 teams, and owner). For an administrator, their own applications are shown first
@@ -494,6 +510,15 @@ itself.
   closed. Private and specific-user aliases always require authentication. Admins
   and self-service owners apply this immediately; non-self-service owners stage
   the change for admin approval.
+- **Authenticated-user header.** An alias that requires AppManager authentication
+  may opt in to forwarding the signed-in account's stored username/email upstream
+  as `X-AppManager-User`, sourced only from the trusted `auth_request` result and
+  never the client's own request; disabled aliases always clear the header rather
+  than merely omitting it. Requires **Alias authentication** to stay on (and
+  authentication enabled deployment-wide) — disabling either one is rejected while
+  this is on. Admins and self-service owners apply this immediately;
+  non-self-service owners stage it for admin approval, and approval never
+  silently re-enables it if authentication was disabled in the meantime.
 - **Alias upstream.** Each alias application has its own upstream target, shown
   only for alias apps: protocol (`http` by default), server host/IP (prefilled
   from the user's configured apps host/IP when available), mandatory port, and
@@ -588,6 +613,20 @@ auth_request /api/auth/proxy-check/APPLICATION_ID/ALIAS;
 error_page 401 = @appmanager_login;
 ```
 
+When the application has **Pass authenticated user header to app** enabled,
+the same managed location also forwards the `auth_request` result upstream —
+never a client-supplied value — as `X-AppManager-User`, and explicitly clears
+that header when the setting is off:
+
+```nginx
+# opted in:
+auth_request_set $appmanager_user_APPLICATION_ID $upstream_http_x_appmanager_user;
+proxy_set_header X-AppManager-User $appmanager_user_APPLICATION_ID;
+
+# opted out (the default):
+proxy_set_header X-AppManager-User "";
+```
+
 After upgrading an existing deployment, back up the database/nginx configuration,
 pull the new code **without restarting**, then run:
 
@@ -632,6 +671,19 @@ AppManager and alias paths should be served from the same domain so the browser
 sends the AppManager session cookie to direct alias requests. If TLS terminates
 at nginx, configure uvicorn to trust forwarded headers from that proxy, for
 example `FORWARDED_ALLOW_IPS=<nginx-ip>`.
+
+A user who reaches a protected alias while signed out is redirected to the
+portal login with the alias path preserved as `next`; after OIDC/SAML SSO,
+the callback does not redirect straight back to that alias. It first redirects
+to a same-origin `GET /api/auth/sso/complete?next=...` landing page (re-validating
+the destination), which then navigates to the alias. This extra same-origin hop
+exists because the session cookie is `SameSite=Strict`: the OIDC/SAML callback
+itself is the tail end of a cross-site navigation from the identity provider, so
+some browsers can omit a just-set Strict cookie from an immediate redirect that
+is still part of that chain. Ending the chain on the completion page first means
+the follow-up navigation to the alias is a fresh same-origin request that
+reliably carries the cookie. Local username/password login is unaffected — it is
+an in-app request, not a top-level cross-site redirect.
 
 Existing deployments keep the alias template stored in the database. To migrate
 an existing deployment, save the new AppManager backend host/port in General
@@ -972,11 +1024,15 @@ interface to the admin default.
 
 The **About** page (sidebar, after Settings) shows the application
 name, a link to the source repository on GitHub, the build version with its
-commit hash, the development team, and any administrator-configured
-collaborators. The version, commit, and development-team list are injected at
-build time from `package.json` and the git commit history; because the
-lifecycle script rebuilds the frontend when the commit changes, a `start`/
-`restart` after a new commit refreshes them automatically (or use `--rebuild`).
+commit hash, the branch that build was produced from, the development team,
+and any administrator-configured collaborators. The version, commit, branch,
+and development-team list are injected at build time from `package.json` and
+the git commit history; because the lifecycle script rebuilds the frontend
+when the commit **or the checked-out branch** changes, a `start`/`restart`
+after a new commit or a branch switch refreshes them automatically (or use
+`--rebuild`). The branch shows the short branch name (e.g. `main`), or
+`detached HEAD`/`unavailable` when the build was made from a detached
+checkout or outside a git repository, respectively.
 
 The **development team** is derived only from the repository's commit authors,
 canonicalized through `.mailmap` to GitHub handles, and displayed once per

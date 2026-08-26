@@ -5,13 +5,16 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 
-def _proxy_app(*, auth_required: bool = True, private: bool = False) -> int:
+def _proxy_app(
+    *, auth_required: bool = True, private: bool = False, pass_authenticated_user: bool = False
+) -> int:
     from app.db import get_connection
     with get_connection() as conn:
         cur = conn.execute(
-            "INSERT INTO applications (name,url,url_type,is_active,approval_status,alias_auth_required,is_private) "
-            "VALUES ('Proxy app','proxy-app','alias',1,'approved',?,?)",
-            (int(auth_required), int(private)),
+            "INSERT INTO applications "
+            "(name,url,url_type,is_active,approval_status,alias_auth_required,is_private,pass_authenticated_user) "
+            "VALUES ('Proxy app','proxy-app','alias',1,'approved',?,?,?)",
+            (int(auth_required), int(private), int(pass_authenticated_user)),
         )
         return int(cur.lastrowid)
 
@@ -75,6 +78,99 @@ def test_proxy_check_accepts_valid_session(client: TestClient) -> None:
     resp = client.get(f"/api/auth/proxy-check/{app_id}/proxy-app")
     assert resp.status_code == 204
     assert not resp.content
+    # Opt-in is off by default: no identity is forwarded upstream.
+    assert "x-appmanager-user" not in resp.headers
+
+
+def test_proxy_check_returns_identity_header_when_opted_in(client: TestClient) -> None:
+    app_id = _proxy_app(pass_authenticated_user=True)
+    client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": client.admin_password},  # type: ignore[attr-defined]
+    )
+    resp = client.get(f"/api/auth/proxy-check/{app_id}/proxy-app")
+    assert resp.status_code == 204
+    assert resp.headers["x-appmanager-user"] == "admin"
+
+
+def test_proxy_check_ignores_client_supplied_identity_header(client: TestClient) -> None:
+    app_id = _proxy_app(pass_authenticated_user=True)
+    client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": client.admin_password},  # type: ignore[attr-defined]
+    )
+    resp = client.get(
+        f"/api/auth/proxy-check/{app_id}/proxy-app",
+        headers={"X-AppManager-User": "attacker@example.com"},
+    )
+    assert resp.status_code == 204
+    assert resp.headers["x-appmanager-user"] == "admin"
+
+
+def test_proxy_check_public_alias_never_returns_identity_even_if_opted_in(
+    client: TestClient,
+) -> None:
+    # Data-level inconsistency (opt-in bit set on a public alias) must never
+    # leak identity: the server-side invariant is enforced regardless.
+    app_id = _proxy_app(auth_required=False, pass_authenticated_user=True)
+    client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": client.admin_password},  # type: ignore[attr-defined]
+    )
+    resp = client.get(f"/api/auth/proxy-check/{app_id}/proxy-app")
+    assert resp.status_code == 204
+    assert "x-appmanager-user" not in resp.headers
+
+
+def test_proxy_check_auth_disabled_never_returns_identity(
+    client_no_auth: TestClient,
+) -> None:
+    app_id = _proxy_app(auth_required=True, pass_authenticated_user=True)
+    resp = client_no_auth.get(f"/api/auth/proxy-check/{app_id}/proxy-app")
+    assert resp.status_code == 204
+    assert "x-appmanager-user" not in resp.headers
+
+
+def _login_as_unsafe_username_user(client: TestClient, username: str) -> None:
+    """Provision a user with a username that would be unsafe to place in a raw
+    HTTP header (e.g. as an SSO-provisioned account might carry, since SSO
+    claims are not restricted to the local email-format validator) and start
+    a session for them, bypassing the normal create/login API so the unsafe
+    value reaches the database directly.
+    """
+    from app.db import get_connection
+    from app import sessions
+
+    with get_connection() as conn:
+        cur = conn.execute(
+            "INSERT INTO users (username, password_hash, role, is_active, self_service) "
+            "VALUES (?, 'x', 'admin', 1, 1)",
+            (username,),
+        )
+        user_id = int(cur.lastrowid)
+        created = sessions.create_session(conn, user_id)
+    client.cookies.set(sessions.SESSION_COOKIE_NAME, created["session_id"])
+
+
+def test_proxy_check_suppresses_crlf_username_instead_of_injecting_header(
+    client: TestClient,
+) -> None:
+    app_id = _proxy_app(pass_authenticated_user=True)
+    _login_as_unsafe_username_user(client, "attacker@example.com\r\nX-Injected: 1")
+    resp = client.get(f"/api/auth/proxy-check/{app_id}/proxy-app")
+    assert resp.status_code == 204
+    assert "x-appmanager-user" not in resp.headers
+    assert "x-injected" not in resp.headers
+
+
+def test_proxy_check_suppresses_non_latin1_username_instead_of_crashing(
+    client: TestClient,
+) -> None:
+    app_id = _proxy_app(pass_authenticated_user=True)
+    _login_as_unsafe_username_user(client, "用户@example.com")
+    resp = client.get(f"/api/auth/proxy-check/{app_id}/proxy-app")
+    assert resp.status_code == 204
+    assert "x-appmanager-user" not in resp.headers
 
 
 def test_proxy_check_allows_anonymous_public_alias(client: TestClient) -> None:

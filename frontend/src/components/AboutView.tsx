@@ -3,16 +3,19 @@ import { GithubIcon } from "./icons";
 
 /**
  * About page. Shows the application name, a link to the source repository, the
- * build version (with the commit baked in at build time), the development team,
- * and any administrator-configured collaborators.
+ * build version (with the commit baked in at build time), the branch that
+ * build came from, the development team, and any administrator-configured
+ * collaborators.
  *
- * The version, commit, and development-team list are injected at build time
- * from package.json and the git commit history (see vite.config.ts). The
- * collaborators are an admin-managed list delivered with the session.
+ * The version, commit, branch, and development-team list are injected at
+ * build time from package.json and the git commit history (see
+ * vite.config.ts). The collaborators are an admin-managed list delivered with
+ * the session.
  */
 export function AboutView() {
   const version = __APP_VERSION__;
   const commit = __APP_COMMIT__;
+  const branch = __APP_BRANCH__;
   const contributors = __APP_CONTRIBUTORS__;
   const collaborators = getCollaborators();
 
@@ -51,6 +54,13 @@ export function AboutView() {
               <code>
                 {version} ({commit})
               </code>
+            </dd>
+          </div>
+
+          <div className="detail-row">
+            <dt>Branch</dt>
+            <dd>
+              <code>{branch}</code>
             </dd>
           </div>
 

@@ -23,6 +23,21 @@ function commitHash(): string {
   return git("rev-parse --short HEAD") || "dev";
 }
 
+/**
+ * Git branch baked into the build, so the About page can show exactly which
+ * checkout produced the running frontend (helpful when the same commit is
+ * built from more than one branch, e.g. after a fast-forward merge).
+ *
+ *  - a valid HEAD on a named branch: the short branch name (e.g. "main").
+ *  - a valid HEAD not on a branch (detached checkout, e.g. CI building a
+ *    tag/commit directly): "detached HEAD".
+ *  - no git checkout at all (HEAD cannot be resolved): "unavailable".
+ */
+function branchName(): string {
+  if (!git("rev-parse --verify --quiet HEAD")) return "unavailable";
+  return git("symbolic-ref --quiet --short HEAD") || "detached HEAD";
+}
+
 /** Names that are bots/automation, not human contributors. */
 const BOT_AUTHORS = new Set(["cortex"]);
 
@@ -71,6 +86,7 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
     __APP_COMMIT__: JSON.stringify(commitHash()),
+    __APP_BRANCH__: JSON.stringify(branchName()),
     __APP_CONTRIBUTORS__: JSON.stringify(contributors()),
   },
   server: {

@@ -210,6 +210,106 @@ def test_rewrite_root_round_trips_through_parse() -> None:
     assert parse_alias_config_block(off).apps_rewrite_root is False
 
 
+# --- authenticated-user header ---------------------------------------------
+
+
+def test_render_clears_identity_header_by_default() -> None:
+    block = render_alias_block(
+        DEFAULT_ALIAS_TEMPLATE,
+        apps_server="apps.example.com",
+        apps_port="8080",
+        alias="grafana",
+        app_name="Grafana",
+        app_id=42,
+    )
+    assert 'proxy_set_header X-AppManager-User "";' in block
+    assert "auth_request_set" not in block
+    assert block.count("X-AppManager-User") == 1
+    assert "# appmanager-pass-authenticated-user: 0" in block
+
+
+def test_render_forwards_identity_header_when_opted_in() -> None:
+    block = render_alias_block(
+        DEFAULT_ALIAS_TEMPLATE,
+        apps_server="apps.example.com",
+        apps_port="8080",
+        alias="grafana",
+        app_name="Grafana",
+        app_id=42,
+        pass_authenticated_user=True,
+    )
+    assert (
+        "auth_request_set $appmanager_user_42 $upstream_http_x_appmanager_user;"
+        in block
+    )
+    assert "proxy_set_header X-AppManager-User $appmanager_user_42;" in block
+    assert 'proxy_set_header X-AppManager-User "";' not in block
+    assert block.count("X-AppManager-User") == 1
+    assert "# appmanager-pass-authenticated-user: 1" in block
+
+
+def test_identity_header_round_trips_through_parse() -> None:
+    on = render_alias_block(
+        DEFAULT_ALIAS_TEMPLATE,
+        apps_server="apps.example.com",
+        apps_port="8080",
+        alias="grafana",
+        app_name="Grafana",
+        app_id=42,
+        pass_authenticated_user=True,
+    )
+    assert parse_alias_config_block(on).pass_authenticated_user is True
+    off = render_alias_block(
+        DEFAULT_ALIAS_TEMPLATE,
+        apps_server="apps.example.com",
+        apps_port="8080",
+        alias="g",
+        app_name="G",
+        app_id=7,
+    )
+    assert parse_alias_config_block(off).pass_authenticated_user is False
+
+
+def test_legacy_deployed_block_without_marker_parses_identity_as_off() -> None:
+    block = """
+    location = /grafana { return 301 /grafana/; }
+    location /grafana/ {
+        auth_request /api/auth/proxy-check;
+        error_page 401 = @appmanager_login;
+        proxy_pass https://apps.example.com:8443/dashboard;
+    }
+    """
+    result = parse_alias_config_block(block)
+    assert result.status == "ok"
+    assert result.pass_authenticated_user is False
+
+
+def test_render_strips_client_facing_identity_directive_from_custom_template() -> None:
+    # A hand-edited/legacy template that already names the header (e.g. left
+    # over from a manual attempt, or naming a plain client header) must never
+    # survive rendering unmanaged -- it is always replaced by exactly one
+    # managed directive.
+    template = DEFAULT_ALIAS_TEMPLATE.replace(
+        "proxy_set_header Host $host;",
+        "proxy_set_header Host $host;\n"
+        '\t\tproxy_set_header X-AppManager-User $http_x_appmanager_user;\n'
+        "\t\tauth_request_set $spoofed $upstream_http_x_appmanager_user;\n",
+    )
+    block = render_alias_block(
+        template,
+        apps_server="apps.example.com",
+        apps_port="8080",
+        alias="grafana",
+        app_name="Grafana",
+        app_id=42,
+        pass_authenticated_user=True,
+    )
+    assert block.count("X-AppManager-User") == 1
+    assert "$http_x_appmanager_user" not in block
+    assert "$spoofed" not in block
+    assert "proxy_set_header X-AppManager-User $appmanager_user_42;" in block
+
+
 def test_rewrite_root_forces_root_path_over_custom_apps_path() -> None:
     block = render_alias_block(
         DEFAULT_ALIAS_TEMPLATE,
@@ -466,6 +566,27 @@ def test_push_happy_path(monkeypatch) -> None:
     assert any("cp " in c for c in runner.calls)  # backup
     assert any("nginx -s reload" in c for c in runner.calls)
     assert any("nginx -t" in c for c in runner.calls)
+
+
+def test_push_forwards_pass_authenticated_user_flag(monkeypatch) -> None:
+    runner = _FakeRunner(
+        [
+            ("cat ", _Run(0, "http {\n  server {\n  }\n}", "")),
+        ]
+    )
+    _install(monkeypatch, runner)
+    result = push_alias(
+        _SETTINGS,
+        apps_server="apps.example.com",
+        apps_port="8080",
+        alias="grafana",
+        app_name="Grafana",
+        app_id=7,
+        pass_authenticated_user=True,
+    )
+    assert result.status == "ok", result.transcript
+    assert "proxy_set_header X-AppManager-User $appmanager_user_7;" in runner.last_written
+    assert "# appmanager-pass-authenticated-user: 1" in runner.last_written
 
 
 def _ssh_targets(runner) -> set[str]:

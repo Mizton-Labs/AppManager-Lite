@@ -35,6 +35,41 @@ def _admin_password(tmp_path: Path) -> str:
     raise AssertionError("first-run admin password not found")
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "/grafana/",
+        "/grafana/dashboards/1?orgId=2",
+        "/",
+    ],
+)
+def test_safe_return_to_accepts_relative_paths(value: str) -> None:
+    from app.sso import safe_return_to
+
+    assert safe_return_to(value) == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        "",
+        "https://evil.example/path",
+        "http://evil.example/path",
+        "//evil.example/path",
+        "/\\evil.example",
+        "\\evil.example",
+        "/grafana\r\nSet-Cookie: x=1",
+        "/grafana\x00",
+        "relative-without-slash",
+    ],
+)
+def test_safe_return_to_rejects_unsafe_values(value: str | None) -> None:
+    from app.sso import safe_return_to
+
+    assert safe_return_to(value) == ""
+
+
 def test_sso_config_lists_enabled_providers(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -214,10 +249,20 @@ def test_oidc_callback_provisions_user_and_session(
             f"/api/auth/oidc/callback?code=abc&state={state}",
             follow_redirects=False,
         )
+        # The callback lands on a same-origin completion hop (not directly on
+        # the alias) so the just-set Strict session cookie reliably survives
+        # into the next same-origin navigation; the completion page then
+        # targets the original safe destination.
+        assert resp.status_code == 302
+        completion_location = resp.headers["location"]
+        assert completion_location.startswith("http://testserver/api/auth/sso/complete?")
+        assert parse_qs(urlparse(completion_location).query)["next"] == ["/grafana/"]
+        completion = client.get(completion_location, follow_redirects=False)
         session = client.get("/api/session").json()
 
-    assert resp.status_code == 302
-    assert resp.headers["location"] == "/grafana/"
+    assert completion.status_code == 200
+    assert completion.headers["cache-control"] == "no-store"
+    assert 'url=/grafana/"' in completion.text
     assert session["authenticated"] is True
     assert session["user"]["username"] == "new.user@example.com"
     assert session["user"]["role"] == "user"
@@ -297,4 +342,101 @@ def test_saml_acs_requires_relay_state(
         resp = client.post("/api/auth/saml/acs", data={"SAMLResponse": "x"})
 
     assert resp.status_code == 400
-    assert resp.json()["detail"] == "SAML response is missing RelayState"
+
+
+class _FakeSamlAuth:
+    """Minimal stand-in for ``OneLogin_Saml2_Auth`` used only in tests."""
+
+    def __init__(self, email: str) -> None:
+        self._email = email
+
+    def login(self, return_to: str | None = None) -> str:
+        return f"https://idp.example.com/sso?RelayState={return_to}"
+
+    def process_response(self, request_id: str | None = None) -> None:
+        return None
+
+    def get_errors(self) -> list[str]:
+        return []
+
+    def is_authenticated(self) -> bool:
+        return True
+
+
+def test_saml_acs_completes_via_same_origin_hop_and_targets_alias(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    with _client(
+        monkeypatch,
+        tmp_path,
+        APP_SAML_ENABLED="1",
+        APP_SAML_IDP_ENTITY_ID="https://idp.example.com",
+        APP_SAML_IDP_SSO_URL="https://idp.example.com/sso",
+        APP_SAML_IDP_X509_CERT="cert",
+    ) as client:
+        from app import sso
+        from app.db import get_connection
+
+        async def _fake_saml_auth(request, settings):  # noqa: ANN001
+            return _FakeSamlAuth("saml.user@example.com")
+
+        monkeypatch.setattr(sso, "saml_auth", _fake_saml_auth)
+
+        login = client.get(
+            "/api/auth/saml/login",
+            params={"next": "/grafana/dashboards/1?orgId=2"},
+            follow_redirects=False,
+        )
+        with get_connection() as conn:
+            state = conn.execute(
+                "SELECT state FROM sso_auth_flows WHERE protocol='saml'"
+            ).fetchone()["state"]
+        assert login.status_code == 302
+
+        monkeypatch.setattr(
+            sso,
+            "email_from_saml_auth",
+            lambda auth, settings: "saml.user@example.com",
+        )
+        resp = client.post(
+            "/api/auth/saml/acs",
+            data={"SAMLResponse": "x", "RelayState": state},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+        completion_location = resp.headers["location"]
+        assert completion_location.startswith("http://testserver/api/auth/sso/complete?")
+        assert parse_qs(urlparse(completion_location).query)["next"] == [
+            "/grafana/dashboards/1?orgId=2"
+        ]
+        completion = client.get(completion_location, follow_redirects=False)
+        session = client.get("/api/session").json()
+
+    assert completion.status_code == 200
+    assert 'url=/grafana/dashboards/1?orgId=2"' in completion.text
+    assert session["authenticated"] is True
+    assert session["user"]["username"] == "saml.user@example.com"
+    assert session["auth_method"] == "saml"
+
+
+def test_sso_complete_falls_back_to_portal_root_for_unsafe_next(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    with _client(monkeypatch, tmp_path) as client:
+        resp = client.get(
+            "/api/auth/sso/complete?next=https://evil.example/phish"
+        )
+
+    assert resp.status_code == 200
+    assert 'url=/"' in resp.text
+    assert "evil.example" not in resp.text
+
+
+def test_sso_complete_defaults_to_portal_root_without_next(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    with _client(monkeypatch, tmp_path) as client:
+        resp = client.get("/api/auth/sso/complete")
+
+    assert resp.status_code == 200
+    assert 'url=/"' in resp.text

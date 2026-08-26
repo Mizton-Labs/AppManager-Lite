@@ -121,6 +121,8 @@ function stubBackend(
         apps_port: app?.apps_port ?? "",
         apps_path: app?.apps_path ?? "",
         alias_auth_required: app?.alias_auth_required ?? true,
+        apps_rewrite_root: app?.apps_rewrite_root ?? false,
+        pass_authenticated_user: app?.pass_authenticated_user ?? false,
       });
     }
     const retryMatch = url.match(/\/api\/applications\/(\d+)\/push-retry$/);
@@ -868,6 +870,110 @@ describe("ApplicationManager", () => {
     );
     expect(JSON.parse((patchCall![1] as RequestInit).body as string)).toMatchObject(
       { apps_rewrite_root: false },
+    );
+  });
+
+  it("keeps the authenticated-user header toggle off by default and disabled without alias auth", async () => {
+    const fetchMock = stubBackend([]);
+    render(<ApplicationManager isAdmin={false} teamOptions={["Threat Hunting"]} />);
+
+    await screen.findByText(/have not submitted any applications/i);
+    await userEvent.click(
+      screen.getByRole("button", { name: /new application/i }),
+    );
+    await userEvent.type(screen.getByLabelText("Name"), "Velo");
+    await userEvent.type(
+      screen.getByLabelText(/local alias relative path/i),
+      "velo",
+    );
+
+    const headerSwitch = screen.getByRole("switch", {
+      name: /pass authenticated user header to app/i,
+    });
+    expect(headerSwitch).not.toBeChecked();
+
+    const authSwitch = screen.getByRole("switch", {
+      name: /require appmanager authentication/i,
+    });
+    await userEvent.click(authSwitch);
+    expect(authSwitch).not.toBeChecked();
+    expect(headerSwitch).toBeDisabled();
+    void fetchMock;
+  });
+
+  it("submits an alias with the authenticated-user header toggle enabled", async () => {
+    const fetchMock = stubBackend([]);
+    render(<ApplicationManager isAdmin={false} teamOptions={["Threat Hunting"]} />);
+
+    await screen.findByText(/have not submitted any applications/i);
+    await userEvent.click(
+      screen.getByRole("button", { name: /new application/i }),
+    );
+
+    await userEvent.type(screen.getByLabelText("Name"), "Velo");
+    await userEvent.type(
+      screen.getByLabelText(/local alias relative path/i),
+      "velo",
+    );
+    await userEvent.type(
+      screen.getByLabelText(/alias upstream server host or ip/i),
+      "apps.example.com",
+    );
+    await userEvent.type(screen.getByLabelText(/alias upstream port/i), "8080");
+    const headerSwitch = screen.getByRole("switch", {
+      name: /pass authenticated user header to app/i,
+    });
+    await userEvent.click(headerSwitch);
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /create application/i }),
+    );
+    const postCall = fetchMock.mock.calls.find(
+      ([, init]) => (init?.method ?? "GET") === "POST",
+    );
+    expect(JSON.parse((postCall![1] as RequestInit).body as string)).toMatchObject(
+      {
+        url: "velo",
+        url_type: "alias",
+        pass_authenticated_user: true,
+      },
+    );
+  });
+
+  it("prefills the authenticated-user header toggle when editing an alias app", async () => {
+    const fetchMock = stubBackend([
+      makeApp({
+        id: 11,
+        name: "Velo",
+        url: "velo",
+        url_type: "alias",
+        apps_server: "apps.example.com",
+        apps_port: "8080",
+        pass_authenticated_user: true,
+        created_by_id: 1,
+      }),
+    ]);
+    render(
+      <ApplicationManager
+        isAdmin
+        teamOptions={ALL_TEAMS}
+        currentUser={makeUser({ id: 1, role: "admin", username: "admin@example.com" })}
+      />,
+    );
+    await screen.findByText("Velo");
+    await userEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    const headerSwitch = await screen.findByRole("switch", {
+      name: /pass authenticated user header to app/i,
+    });
+    expect(headerSwitch).toBeChecked();
+    // Toggling off makes the form dirty and sends the new value.
+    await userEvent.click(headerSwitch);
+    await userEvent.click(screen.getByRole("button", { name: /save changes/i }));
+    const patchCall = fetchMock.mock.calls.find(
+      ([, init]) => (init?.method ?? "GET") === "PATCH",
+    );
+    expect(JSON.parse((patchCall![1] as RequestInit).body as string)).toMatchObject(
+      { pass_authenticated_user: false },
     );
   });
 

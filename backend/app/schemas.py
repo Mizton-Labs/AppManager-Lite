@@ -546,12 +546,18 @@ class ApplicationOut(BaseModel):
     alias_auth_required: bool = True
     # Opt-in "rewrite root paths" mode for apps that assume they run at '/'.
     apps_rewrite_root: bool = False
+    # Opt-in: forward the authenticated portal user's canonical stored
+    # username/email upstream as the fixed ``X-AppManager-User`` header.
+    # Only ever emitted for an alias whose nginx auth_request already
+    # validated the session; never for public aliases or auth-disabled mode.
+    pass_authenticated_user: bool = False
     # A staged alias change awaiting approval (management/own-app responses
     # only). Empty unless the owner edited the alias and it is pending review.
     pending_alias: str = ""
     pending_is_active: bool | None = None
     pending_alias_auth_required: bool | None = None
     pending_apps_rewrite_root: bool | None = None
+    pending_pass_authenticated_user: bool | None = None
     needs_push: bool = False
     is_favorite: bool = False
     visits_7d: int | None = None
@@ -635,6 +641,7 @@ class AliasConfigOut(BaseModel):
     apps_path: str = ""
     alias_auth_required: bool = True
     apps_rewrite_root: bool = False
+    pass_authenticated_user: bool = False
 
 
 class CreateApplicationRequest(BaseModel):
@@ -654,6 +661,7 @@ class CreateApplicationRequest(BaseModel):
     apps_path: str = Field(default="", max_length=256)
     alias_auth_required: bool = True
     apps_rewrite_root: bool = False
+    pass_authenticated_user: bool = False
     is_private: bool = False
     shared_user_ids: list[int] = Field(default_factory=list, max_length=50)
 
@@ -743,6 +751,7 @@ class UpdateApplicationRequest(BaseModel):
     apps_path: str | None = Field(default=None, max_length=256)
     alias_auth_required: bool | None = None
     apps_rewrite_root: bool | None = None
+    pass_authenticated_user: bool | None = None
     created_by: int | None = None
     is_private: bool | None = None
     shared_user_ids: list[int] | None = Field(default=None, max_length=50)

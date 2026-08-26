@@ -113,6 +113,10 @@ def test_init_db_migrates_legacy_database(legacy_db: Path) -> None:
             "pending_alias",
             "pending_is_active",
             "needs_push",
+            "apps_rewrite_root",
+            "pending_apps_rewrite_root",
+            "pass_authenticated_user",
+            "pending_pass_authenticated_user",
         } <= acols
         tcols = {r["name"] for r in conn.execute("PRAGMA table_info(teams)")}
         assert "sort_order" in tcols
@@ -136,6 +140,15 @@ def test_init_db_migrates_legacy_database(legacy_db: Path) -> None:
             "SELECT alias_template FROM settings WHERE id = 1"
         ).fetchone()["alias_template"]
         assert "location /ALIAS/" in template
+        # The authenticated-user header opt-in defaults to off for every
+        # existing row migrated from a legacy database.
+        app_row = conn.execute(
+            "SELECT pass_authenticated_user, pending_pass_authenticated_user "
+            "FROM applications LIMIT 1"
+        ).fetchone()
+        if app_row is not None:
+            assert app_row["pass_authenticated_user"] == 0
+            assert app_row["pending_pass_authenticated_user"] is None
 
 
 def test_legacy_admin_backfilled_to_self_service(legacy_db: Path) -> None:
