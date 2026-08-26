@@ -385,6 +385,21 @@ offers a **"Create servers for this user"** toggle (on by default, preserving
 prior behavior); turning it off skips server provisioning entirely regardless
 of which templates exist, for an account-only user.
 
+Deleting a user who owns one or more servers requires an explicit
+**server disposition**, shown as a checkbox in the delete confirmation:
+unchecked (default) **transfers** the servers' ownership to the deleting
+administrator, leaving every guest, provisioning record, and deferred-deletion
+state completely untouched; checked **destroys** them, but only after every
+server is confirmed safe to destroy against a live Proxmox read — the whole
+deletion is blocked (the account and its servers are left untouched) if any
+server's Proxmox **protection** flag is enabled, or if its live state cannot
+be verified at all (provider unconfigured/unreachable, or the check fails).
+Deletion is never attempted with unverifiable or protected servers as a
+silent fallback; a server already confirmed absent from Proxmox has nothing
+to protect and its stale record is simply removed. This mirrors the existing
+**"Also delete this user's apps"** checkbox, which likewise defaults to
+transferring ownership to the deleting administrator.
+
 Every user account carries its own **Ed25519 SSH keypair**, generated at user
 creation (existing accounts are backfilled automatically on startup). From the
 **Account** page a user can view their public key, download the private or

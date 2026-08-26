@@ -2239,6 +2239,24 @@ def list_user_servers(
     return [_row_to_user_server(r) for r in rows]
 
 
+def transfer_user_servers(
+    conn: sqlite3.Connection, from_user_id: int, to_user_id: int
+) -> int:
+    """Reassign ownership of every server from one user to another.
+
+    Used when deleting a user who chose to keep (not destroy) their servers:
+    the guests, records, provisioning history, and deferred-deletion state are
+    left completely untouched -- only ``user_id`` changes. Returns the number
+    of rows reassigned.
+    """
+    cur = conn.execute(
+        "UPDATE user_servers SET user_id = ?, updated_at = datetime('now') "
+        "WHERE user_id = ?",
+        (to_user_id, from_user_id),
+    )
+    return cur.rowcount
+
+
 def server_name_exists(conn: sqlite3.Connection, name: str) -> bool:
     """True when any server (any owner) already has this name, case-insensitive.
 

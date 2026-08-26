@@ -180,10 +180,16 @@ export function UserManagement(props: { currentUser: ApiUser | null }) {
                               });
                             })
                           }
-                          onDelete={(deleteApps) =>
+                          onDelete={(deleteApps, deleteServers) =>
                             runAction(async () => {
                               await api.deleteUser(user.id, {
                                 delete_apps: deleteApps,
+                                server_disposition: deleteServers
+                                  ? "delete"
+                                  : "transfer",
+                                transfer_servers_to_user_id: deleteServers
+                                  ? undefined
+                                  : props.currentUser?.id,
                               });
                             })
                           }
@@ -612,7 +618,7 @@ function UserRow(props: {
   isSelf: boolean;
   onSave: (input: UpdateUserInput) => void;
   onResetPassword: () => void;
-  onDelete: (deleteApps: boolean) => void;
+  onDelete: (deleteApps: boolean, deleteServers: boolean) => void;
 }) {
   const { user } = props;
   const [editing, setEditing] = useState(false);
@@ -621,6 +627,7 @@ function UserRow(props: {
   const [expanded, setExpanded] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleteApps, setDeleteApps] = useState(false);
+  const [deleteServers, setDeleteServers] = useState(false);
   const [role, setRole] = useState<Role>(user.role);
   const [teams, setTeams] = useState<string[]>(user.teams);
   const [selfService, setSelfService] = useState(user.self_service);
@@ -851,13 +858,27 @@ function UserRow(props: {
                   />
                   <span>Also delete this user's apps</span>
                 </label>
+                <label className="checkbox inline-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={deleteServers}
+                    onChange={(e) => setDeleteServers(e.target.checked)}
+                  />
+                  <span>
+                    Also delete this user's server(s) (destroys only
+                    verified, unprotected guests; blocked if any is protected
+                    or cannot be verified). Unchecked transfers any owned
+                    servers to you instead.
+                  </span>
+                </label>
                 <button
                   type="button"
                   className="btn danger"
                   onClick={() => {
-                    props.onDelete(deleteApps);
+                    props.onDelete(deleteApps, deleteServers);
                     setConfirmingDelete(false);
                     setDeleteApps(false);
+                    setDeleteServers(false);
                   }}
                 >
                   Confirm delete
@@ -868,6 +889,7 @@ function UserRow(props: {
                   onClick={() => {
                     setConfirmingDelete(false);
                     setDeleteApps(false);
+                    setDeleteServers(false);
                   }}
                 >
                   Cancel

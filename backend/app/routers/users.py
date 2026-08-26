@@ -12,7 +12,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from .. import audit, jumpserver, repository, security, sessions
+from .. import audit, jumpserver, proxmox, repository, security, servers, sessions
 from ..deps import get_current_user, get_db, require_admin, verify_csrf
 from ..schemas import (
     CreateUserRequest,
@@ -24,7 +24,11 @@ from ..schemas import (
     UserOut,
     ApplicationShareUserOut,
 )
-from .provisioning import provision_default_servers
+from .provisioning import (
+    _provider_config,
+    _provider_configured,
+    provision_default_servers,
+)
 
 router = APIRouter(tags=["users"])
 
@@ -68,6 +72,115 @@ def _guard_last_admin(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot remove the last active administrator",
+        )
+
+
+def _preflight_delete_owned_servers(
+    conn: sqlite3.Connection, owned_servers: list[dict[str, Any]]
+) -> None:
+    """Verify every server is safe to destroy before deleting its owner.
+
+    Never destroys anything itself, and never leaves the account partially
+    deleted: this only inspects live Proxmox state and raises (aborting the
+    whole deletion, before any change is made) if any server cannot be
+    confirmed safe. A guest is blocked when its Proxmox "protection" flag is
+    on, or when its live state cannot be verified at all (provider
+    unconfigured/unreachable, or the guest's presence/protection could not be
+    read) -- unknown is treated the same as protected, never as "safe to
+    destroy". A guest already confirmed absent from Proxmox has nothing to
+    protect and is allowed through (its record is simply removed).
+
+    Includes every row with a ``vmid`` regardless of ``status`` -- a
+    ``"failed"`` provisioning record can still carry a real, live guest (the
+    clone succeeded but a later step errored), so it must be verified exactly
+    like a ``"created"`` row rather than silently skipped, since the destroy
+    step below will still act on it.
+    """
+    candidates = [s for s in owned_servers if s.get("vmid")]
+    if not candidates:
+        return
+    settings_row = repository.get_settings_row(conn)
+    if not _provider_configured(settings_row):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Cannot verify this user's server(s) against Proxmox (no "
+                "provider configured); deletion is blocked. Transfer the "
+                "servers instead, or configure the provider first."
+            ),
+        )
+    config = _provider_config(settings_row)
+    inventory_result = proxmox.ProxmoxResult()
+    inventory = proxmox.list_cluster_guest_inventory(config, result=inventory_result)
+    if inventory_result.status != "ok":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Could not read live Proxmox inventory; deletion is blocked "
+                "so a server is never assumed destroyable. Try again, or "
+                "transfer the servers instead."
+            ),
+        )
+    blocked: list[str] = []
+    for server in candidates:
+        vmid = int(server["vmid"])
+        if vmid not in inventory:
+            continue  # confirmed absent: nothing to protect
+        protect_result = proxmox.ProxmoxResult()
+        protected = proxmox.get_guest_protection(
+            config,
+            node=server.get("node", "") or inventory[vmid]["node"],
+            kind=server.get("kind", "lxc"),
+            vmid=vmid,
+            result=protect_result,
+        )
+        if protected is None:
+            blocked.append(f"{server['name']} (protection state unknown)")
+        elif protected:
+            blocked.append(f"{server['name']} (Proxmox protection is enabled)")
+    if blocked:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Cannot delete this user: the following server(s) block "
+                "automatic destruction: " + "; ".join(blocked) + ". Remove "
+                "Proxmox protection manually first, or transfer the servers "
+                "to another user instead."
+            ),
+        )
+
+
+def _destroy_owned_server_for_deletion(
+    conn: sqlite3.Connection, row: dict[str, Any]
+) -> None:
+    """Destroy one server as part of deleting its owner (preflight already
+    confirmed it is safe). Removes the DB record only after a successful
+    destroy (or when the guest is already confirmed gone)."""
+    settings_row = repository.get_settings_row(conn)
+    if not _provider_configured(settings_row):
+        # Preflight already required a configured provider for any server
+        # with a vmid; a reference/never-provisioned row has nothing to
+        # destroy either way.
+        repository.delete_user_server(conn, row["user_id"], row["id"])
+        return
+    outcome = servers.destroy_server(
+        provider_config=_provider_config(settings_row),
+        node=row.get("node", ""),
+        vmid=row.get("vmid"),
+        kind=row.get("kind", "lxc"),
+    )
+    if outcome.get("status") == "ok":
+        repository.delete_user_server(conn, row["user_id"], row["id"])
+    else:
+        # Preflight passed but the destroy itself failed (e.g. transient
+        # error) -- surface this loudly rather than silently deleting the
+        # user while a guest survives untracked.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Failed to destroy server '{row['name']}'; user deletion "
+                "aborted so no guest is left untracked. Try again."
+            ),
         )
 
 
@@ -295,6 +408,8 @@ def reset_user_password(
 def delete_user(
     user_id: int,
     delete_apps: bool = Query(default=False),
+    server_disposition: str | None = Query(default=None),
+    transfer_servers_to_user_id: int | None = Query(default=None),
     admin: dict[str, Any] = Depends(require_admin),
     __: None = Depends(verify_csrf),
     conn: sqlite3.Connection = Depends(get_db),
@@ -308,6 +423,38 @@ def delete_user(
             detail="You cannot delete your own account",
         )
     _guard_last_admin(conn, target, removing=True)
+
+    owned_servers = repository.list_user_servers(conn, user_id)
+    if owned_servers:
+        if server_disposition not in ("transfer", "delete"):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"This user owns {len(owned_servers)} server(s). Specify "
+                    "server_disposition=transfer (with "
+                    "transfer_servers_to_user_id) or server_disposition=delete."
+                ),
+            )
+        if server_disposition == "transfer":
+            if transfer_servers_to_user_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="transfer_servers_to_user_id is required to transfer servers",
+                )
+            if transfer_servers_to_user_id == user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Cannot transfer servers to the account being deleted",
+                )
+            recipient = repository.get_user_by_id(conn, transfer_servers_to_user_id)
+            if recipient is None or not recipient["is_active"]:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Server transfer recipient must be an existing, active user",
+                )
+        else:  # "delete": every server must be confirmed safe to destroy first
+            _preflight_delete_owned_servers(conn, owned_servers)
+
     # Capture the target jump account + public key before the row is deleted so
     # the jump-server account's key can be revoked afterwards. In shared mode
     # the key lives in the shared jumper account; in per-user mode it lives in
@@ -316,6 +463,20 @@ def delete_user(
     _jump_os_user = jumpserver.target_account(_jump_cfg, target)
     _jump_key = repository.get_user_ssh_key(conn, user_id) or {}
     _jump_pubkey = _jump_key.get("public_key", "")
+
+    if owned_servers:
+        if server_disposition == "transfer":
+            repository.transfer_user_servers(
+                conn, user_id, transfer_servers_to_user_id
+            )
+            logger.info(
+                "Transferred %s server(s) from deleted user id=%s to id=%s",
+                len(owned_servers), user_id, transfer_servers_to_user_id,
+            )
+        else:
+            for row in owned_servers:
+                _destroy_owned_server_for_deletion(conn, row)
+
     repository.delete_user(
         conn,
         user_id,

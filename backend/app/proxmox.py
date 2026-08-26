@@ -412,6 +412,32 @@ def get_guest_pools(
     return pools
 
 
+def get_guest_protection(
+    config: dict[str, Any],
+    *,
+    node: str,
+    kind: str,
+    vmid: int,
+    result: ProxmoxResult,
+) -> bool | None:
+    """Whether a guest's Proxmox "protection" flag is enabled.
+
+    Returns ``None`` (never raises) when this cannot be determined -- no
+    node, an unreadable config, or any provider error -- so a caller about to
+    perform a destructive operation can treat "unknown" the same as
+    "protected" (fail closed) rather than silently assuming it is safe.
+    """
+    if not node:
+        return None
+    kind_path = "lxc" if kind == "lxc" else "qemu"
+    data = _call(
+        config, "GET", f"/nodes/{node}/{kind_path}/{vmid}/config", result=result
+    )
+    if result.status != "ok" or not isinstance(data, dict):
+        return None
+    return bool(data.get("protection"))
+
+
 def next_vmid(config: dict[str, Any], *, result: ProxmoxResult) -> int | None:
     data = _call(config, "GET", "/cluster/nextid", result=result)
     if result.status != "ok":

@@ -518,3 +518,62 @@ describe("UserManagement create-servers toggle", () => {
   });
 });
 
+describe("UserManagement delete confirmation", () => {
+  it("defaults to transferring owned servers to the acting admin", async () => {
+    const fetchMock = stubUsers();
+    render(
+      <UserManagement
+        currentUser={makeUser({ id: 1, role: "admin", username: "admin" })}
+      />,
+    );
+    const row = (
+      await screen.findByText("analyst.one@example.com", { selector: ".user-name" })
+    ).closest("article") as HTMLElement;
+    await userEvent.click(within(row).getByRole("button", { name: /^edit$/i }));
+    await userEvent.click(within(row).getByRole("button", { name: /^delete$/i }));
+    await userEvent.click(
+      within(row).getByRole("button", { name: /confirm delete/i }),
+    );
+
+    const deleteCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).includes("/api/users/3") &&
+        (init?.method ?? "GET").toUpperCase() === "DELETE",
+    );
+    expect(deleteCall).toBeDefined();
+    const url = String(deleteCall![0]);
+    expect(url).toContain("server_disposition=transfer");
+    expect(url).toContain("transfer_servers_to_user_id=1");
+  });
+
+  it("sends server_disposition=delete when the checkbox is checked", async () => {
+    const fetchMock = stubUsers();
+    render(
+      <UserManagement
+        currentUser={makeUser({ id: 1, role: "admin", username: "admin" })}
+      />,
+    );
+    const row = (
+      await screen.findByText("analyst.one@example.com", { selector: ".user-name" })
+    ).closest("article") as HTMLElement;
+    await userEvent.click(within(row).getByRole("button", { name: /^edit$/i }));
+    await userEvent.click(within(row).getByRole("button", { name: /^delete$/i }));
+    await userEvent.click(
+      within(row).getByRole("checkbox", {
+        name: /also delete this user's server/i,
+      }),
+    );
+    await userEvent.click(
+      within(row).getByRole("button", { name: /confirm delete/i }),
+    );
+
+    const deleteCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).includes("/api/users/3") &&
+        (init?.method ?? "GET").toUpperCase() === "DELETE",
+    );
+    expect(deleteCall).toBeDefined();
+    expect(String(deleteCall![0])).toContain("server_disposition=delete");
+  });
+});
+
