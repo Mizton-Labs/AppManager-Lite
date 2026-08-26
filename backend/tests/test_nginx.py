@@ -26,6 +26,7 @@ from app.reverse_proxy import (
     remove_alias,
     remove_marked_block,
     render_alias_block,
+    render_proxy_auth_block,
 )
 
 _SETTINGS = {
@@ -36,6 +37,17 @@ _SETTINGS = {
     "appmanager_proxy_port": "8000",
     "alias_template": DEFAULT_ALIAS_TEMPLATE,
 }
+
+
+def test_proxy_auth_block_is_internal_and_forwards_fetch_dest() -> None:
+    block = render_proxy_auth_block(
+        appmanager_host="appmanager", appmanager_port="8000"
+    )
+    # Only reachable via nginx's own auth_request subrequest, never directly.
+    assert "internal;" in block
+    # Forwarded explicitly (trusted: only reachable through the internal
+    # subrequest above) for authorized-alias-visit classification.
+    assert "proxy_set_header Sec-Fetch-Dest $http_sec_fetch_dest;" in block
 
 
 # --- render --------------------------------------------------------------

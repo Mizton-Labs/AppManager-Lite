@@ -130,6 +130,23 @@ CREATE TABLE IF NOT EXISTS application_usage_daily (
     PRIMARY KEY (application_id, usage_date, visitor_key)
 );
 
+-- Authorized alias visits (issue_local_031): counted from nginx's app-aware
+-- auth_request classification of the *original* alias request (a GET whose
+-- Sec-Fetch-Dest is document or iframe), not the frontend card click that
+-- application_usage_daily above records. Deliberately a separate table/metric:
+-- it includes direct/deep-linked alias navigation the card-click metric
+-- misses, but only proves the request was *authorized*, not that the
+-- upstream responded successfully. visitor_key is "user:<id>" for a
+-- protected alias's authenticated caller, or "anonymous" for a public alias
+-- or an auth-disabled deployment -- never derived from IP/UA/cookies.
+CREATE TABLE IF NOT EXISTS application_alias_usage_daily (
+    application_id INTEGER NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+    usage_date     TEXT NOT NULL,
+    visitor_key    TEXT NOT NULL,
+    request_count  INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (application_id, usage_date, visitor_key)
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
@@ -279,6 +296,8 @@ CREATE INDEX IF NOT EXISTS idx_application_favorites_app
     ON application_favorites(application_id);
 CREATE INDEX IF NOT EXISTS idx_application_usage_daily_date
     ON application_usage_daily(usage_date);
+CREATE INDEX IF NOT EXISTS idx_application_alias_usage_daily_date
+    ON application_alias_usage_daily(usage_date);
 CREATE INDEX IF NOT EXISTS idx_audit_category_id ON audit_log(category, id);
 CREATE INDEX IF NOT EXISTS idx_bundle_template_mappings_template
     ON bundle_template_mappings(template_id);
@@ -378,6 +397,7 @@ _APPLICATION_CHILD_TABLES = (
     "application_user_shares",
     "application_favorites",
     "application_usage_daily",
+    "application_alias_usage_daily",
 )
 
 

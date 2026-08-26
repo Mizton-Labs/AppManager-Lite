@@ -580,8 +580,23 @@ export interface Application {
 export interface ApplicationShareUser { id: number; username: string; user_id: string; }
 
 export interface ApplicationTrendPoint { date: string; launches: number; unique_users: number; }
-export interface ApplicationStatisticsRow { application_id: number; name: string; launches: number; unique_users: number; favorites: number; visits_7d: number; }
-export interface ApplicationStatistics { days: number; launches: number; unique_users: number; favorites: number; trend: ApplicationTrendPoint[]; applications: ApplicationStatisticsRow[]; app_trends: ApplicationTrendSeries[]; user_activity: UserActivityRow[]; }
+export interface ApplicationStatisticsRow {
+  application_id: number; name: string; launches: number; unique_users: number;
+  favorites: number; visits_7d: number;
+  /** Authorized alias visits (direct/deep-link/iframe navigation via nginx,
+   * separate from the portal card-click "launches" above). */
+  alias_visits: number;
+  unique_alias_users: number;
+  anonymous_alias_visits: number;
+}
+export interface ApplicationStatistics {
+  days: number; launches: number; unique_users: number; favorites: number;
+  trend: ApplicationTrendPoint[]; applications: ApplicationStatisticsRow[];
+  app_trends: ApplicationTrendSeries[]; user_activity: UserActivityRow[];
+  alias_visits: number;
+  unique_alias_users: number;
+  anonymous_alias_visits: number;
+}
 export interface ApplicationTrendSeries { application_id: number; name: string; launches: number; points: ApplicationTrendPoint[]; }
 export interface UserActivityRow { user_id: string; launches: number; applications_used: number; }
 export interface ApplicationUserActivity { user_id: string; launches: number; active_days: number; last_activity: string; }

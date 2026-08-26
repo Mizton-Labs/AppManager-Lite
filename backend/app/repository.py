@@ -11,6 +11,8 @@ import re
 import secrets
 import shlex
 import sqlite3
+import threading
+import time
 from typing import Any
 
 from . import keystore, security, sshkeys
@@ -1223,6 +1225,58 @@ def record_application_launch(conn: sqlite3.Connection, application_id: int, vis
     conn.execute(
         "DELETE FROM application_usage_daily WHERE usage_date < date('now', '-90 days')"
     )
+
+
+# In-process throttle for the alias-visit retention sweep below: unlike the
+# card-click launch above (already rate-limited to one request per user per
+# app per few seconds at the API layer), an authorized alias visit is
+# recorded on every matching nginx auth_request, which can be every page
+# load's document navigation. Running a DELETE on every single one would be
+# needless write amplification on a hot path that must never fail the
+# caller's authorization; retention is swept at most once per process per day
+# instead. Best-effort and non-blocking: never raises, and a missed sweep
+# (e.g. multiple worker processes, each with their own timer) is harmless --
+# it just runs again the next call in that process after the interval.
+_alias_usage_retention_lock = threading.Lock()
+_alias_usage_last_swept: float = 0.0
+_ALIAS_USAGE_RETENTION_INTERVAL_SECONDS = 24 * 60 * 60
+
+
+def record_application_alias_visit(
+    conn: sqlite3.Connection, application_id: int, visitor_key: str
+) -> None:
+    """Record one authorized alias visit (issue_local_031).
+
+    Best-effort by contract of its only caller (``proxy_check``): any
+    exception here must never turn an already-authorized request into a
+    denial, so callers should wrap this in their own try/except and merely
+    log a failure rather than propagate it.
+    """
+    conn.execute(
+        "INSERT INTO application_alias_usage_daily "
+        "(application_id, usage_date, visitor_key, request_count) "
+        "VALUES (?, date('now'), ?, 1) "
+        "ON CONFLICT(application_id, usage_date, visitor_key) "
+        "DO UPDATE SET request_count = request_count + 1",
+        (application_id, visitor_key),
+    )
+    global _alias_usage_last_swept
+    now = time.monotonic()
+    if now - _alias_usage_last_swept < _ALIAS_USAGE_RETENTION_INTERVAL_SECONDS:
+        return
+    if not _alias_usage_retention_lock.acquire(blocking=False):
+        return
+    try:
+        if now - _alias_usage_last_swept < _ALIAS_USAGE_RETENTION_INTERVAL_SECONDS:
+            return
+        conn.execute(
+            "DELETE FROM application_alias_usage_daily "
+            "WHERE usage_date < date('now', '-90 days')"
+        )
+        _alias_usage_last_swept = now
+    finally:
+        _alias_usage_retention_lock.release()
+
 
 
 def application_card_statistics(

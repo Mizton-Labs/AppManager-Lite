@@ -609,6 +609,15 @@ class ApplicationStatisticsRow(BaseModel):
     unique_users: int
     favorites: int
     visits_7d: int
+    # Authorized alias visits (issue_local_031): counted from nginx's
+    # app-aware auth_request for the *original* alias request (direct
+    # navigation, deep links, and embedded iframes included), separately from
+    # the "launches" above (which only count a card click in the portal).
+    # Anonymous visits (public aliases, or auth-disabled deployments) count
+    # toward this total but never toward unique_alias_users.
+    alias_visits: int = 0
+    unique_alias_users: int = 0
+    anonymous_alias_visits: int = 0
 
 
 class ApplicationTrendSeries(BaseModel):
@@ -651,6 +660,12 @@ class ApplicationStatisticsOut(BaseModel):
     applications: list[ApplicationStatisticsRow]
     app_trends: list[ApplicationTrendSeries]
     user_activity: list[UserActivityRow]
+    # Overall authorized-alias-visit totals over the same date range; see
+    # ApplicationStatisticsRow for the metric's exact meaning and privacy
+    # notes. Zero for a deployment with no alias traffic yet.
+    alias_visits: int = 0
+    unique_alias_users: int = 0
+    anonymous_alias_visits: int = 0
 
 
 class AliasConfigOut(BaseModel):

@@ -199,6 +199,24 @@ def proxy_check(
     alias: str,
     conn: sqlite3.Connection = Depends(get_db),
 ) -> StarletteResponse:
+    def _record_visit(visitor_key: str) -> None:
+        # Best-effort, and only for the request nginx classified as the
+        # original browser document/iframe navigation (the shared proxy-auth
+        # location forwards Sec-Fetch-Dest verbatim from the original
+        # request; auth_request subrequests always report GET regardless of
+        # the original method, so the check is on the header, not the
+        # request's own method here). Never lets a recording failure turn an
+        # already-authorized request into a denial.
+        dest = request.headers.get("sec-fetch-dest", "").strip().lower()
+        if dest not in ("document", "iframe"):
+            return
+        try:
+            repository.record_application_alias_visit(conn, application_id, visitor_key)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Could not record alias visit for application_id=%s", application_id
+            )
+
     app = repository.get_application(conn, application_id)
     if (
         app is None
@@ -211,6 +229,7 @@ def proxy_check(
     # Intentionally public aliases still pass through this state-aware endpoint,
     # but do not require a portal session.
     if not app["is_private"] and not app["alias_auth_required"]:
+        _record_visit("anonymous")
         return StarletteResponse(status_code=status.HTTP_204_NO_CONTENT)
     settings = get_settings()
     if not settings.enable_auth:
@@ -218,6 +237,7 @@ def proxy_check(
         # historical open behavior for non-private apps, but never fail private
         # aliases open.
         if not app["is_private"] and not app.get("shared_user_ids"):
+            _record_visit("anonymous")
             return StarletteResponse(status_code=status.HTTP_204_NO_CONTENT)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
     session_id = request.cookies.get(sessions.SESSION_COOKIE_NAME)
@@ -231,6 +251,7 @@ def proxy_check(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
     if not repository.can_access_application(conn, app, user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    _record_visit(f"user:{user['id']}")
     # Only ever assert the caller's identity to the upstream when the owner
     # explicitly opted in on a managed alias that requires AppManager
     # authentication -- never for a public alias, never derived from

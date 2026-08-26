@@ -353,6 +353,26 @@ Analytics store daily aggregate launch counts and do not expose named-user
 activity in the dashboard. Per-user daily rows are retained for 90 days to
 calculate unique-user trends, then purged during launch recording.
 
+The dashboard also shows **authorized alias visits** as a separate metric from
+launches: nginx's app-aware `auth_request` (see [Protecting direct alias
+links](#protecting-direct-alias-links)) classifies the *original* browser
+request using its `Sec-Fetch-Dest` header, and counts one authorized visit for
+each `document` or `iframe` navigation to an active, approved alias —
+including direct navigation and deep links that never touch a portal card, and
+embedded-app iframes. Subresources (scripts, styles, images, API calls),
+denied/unauthorized requests, and requests missing that header are never
+counted, and a count only proves the request was *authorized*, not that the
+upstream application responded successfully. A protected alias attributes its
+visits to the signed-in account; a public alias, or any alias reached while
+authentication is disabled deployment-wide, always counts as **anonymous** —
+anonymous visits add to the total but never to the unique-alias-user count.
+This is stored in its own table (`application_alias_usage_daily`, 90-day
+retention, swept at most once per day) and is never mixed with the
+card-launch metric above, since the two measure different things. Existing
+deployments must re-push the shared reverse-proxy auth block (see
+[Protecting direct alias links](#protecting-direct-alias-links)) after
+upgrading for this to start counting.
+
 The **User
 management** tab likewise collapses **Create user** behind an **Add user**
 button and offers a filter over username, user ID, role, and teams; user cards
@@ -681,12 +701,14 @@ shared auth block and pushes it if it is missing. The injected block is:
 ```nginx
 # >>> appmanager-lite-proxy-auth >>>
 location ^~ /api/auth/proxy-check/ {
+    internal;
     proxy_pass http://<appmanager-backend-host>:<port>;
     proxy_set_header Host $host;
     proxy_set_header Cookie $http_cookie;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Sec-Fetch-Dest $http_sec_fetch_dest;
     proxy_pass_request_body off;
     proxy_set_header Content-Length "";
 }
@@ -696,6 +718,12 @@ location @appmanager_login {
 }
 # <<< appmanager-lite-proxy-auth <<<
 ```
+
+`internal;` means this location can only be reached via nginx's own
+`auth_request` subrequest, never called directly by a client — this is what
+makes the forwarded `Sec-Fetch-Dest` header trustworthy for the authorized-alias-visit
+statistics described above (auth_request subrequests inherit the original
+request's headers, only its own method is always reported as `GET`).
 
 The setup result and log are shown immediately in General Settings. If the marked
 block already exists, AppManager leaves it in place and reports that protected

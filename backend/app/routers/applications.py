@@ -586,10 +586,13 @@ def application_statistics(
         "SELECT a.id, a.name, COALESCE(SUM(u.launch_count), 0) launches, "
         "COUNT(DISTINCT u.visitor_key) unique_users, "
         "(SELECT COUNT(*) FROM application_favorites f WHERE f.application_id = a.id) favorites, "
-        "(SELECT COALESCE(SUM(launch_count),0) FROM application_usage_daily d WHERE d.application_id=a.id AND d.usage_date>=date('now','-6 days')) visits_7d "
+        "(SELECT COALESCE(SUM(launch_count),0) FROM application_usage_daily d WHERE d.application_id=a.id AND d.usage_date>=date('now','-6 days')) visits_7d, "
+        "(SELECT COALESCE(SUM(request_count),0) FROM application_alias_usage_daily d2 WHERE d2.application_id=a.id AND d2.usage_date>=date('now', ?)) alias_visits, "
+        "(SELECT COUNT(DISTINCT visitor_key) FROM application_alias_usage_daily d3 WHERE d3.application_id=a.id AND d3.usage_date>=date('now', ?) AND visitor_key LIKE 'user:%') unique_alias_users, "
+        "(SELECT COALESCE(SUM(request_count),0) FROM application_alias_usage_daily d4 WHERE d4.application_id=a.id AND d4.usage_date>=date('now', ?) AND visitor_key='anonymous') anonymous_alias_visits "
         "FROM applications a LEFT JOIN application_usage_daily u ON u.application_id=a.id AND u.usage_date>=date('now', ?) "
         "GROUP BY a.id ORDER BY launches DESC, favorites DESC, a.name",
-        (f"-{days - 1} days",),
+        (f"-{days - 1} days", f"-{days - 1} days", f"-{days - 1} days", f"-{days - 1} days"),
     ).fetchall()
     top_apps = [row for row in apps if row["launches"] > 0][:10]
     top_ids = [row["id"] for row in top_apps]
@@ -621,7 +624,32 @@ def application_statistics(
         (f"-{days - 1} days",),
     ).fetchone()["c"]
     favorites = conn.execute("SELECT COUNT(*) c FROM application_favorites").fetchone()["c"]
-    return ApplicationStatisticsOut(days=days, launches=total_launches, unique_users=unique_users, favorites=favorites, trend=trend, applications=[ApplicationStatisticsRow(application_id=row["id"], name=row["name"], launches=row["launches"], unique_users=row["unique_users"], favorites=row["favorites"], visits_7d=row["visits_7d"]) for row in apps], app_trends=app_trends, user_activity=[UserActivityRow(user_id=repository.derive_user_id(row["username"]), launches=row["launches"], applications_used=row["applications_used"]) for row in user_rows])
+    alias_totals = conn.execute(
+        "SELECT COALESCE(SUM(request_count),0) alias_visits, "
+        "COUNT(DISTINCT CASE WHEN visitor_key LIKE 'user:%' THEN visitor_key END) unique_alias_users, "
+        "COALESCE(SUM(CASE WHEN visitor_key='anonymous' THEN request_count ELSE 0 END),0) anonymous_alias_visits "
+        "FROM application_alias_usage_daily WHERE usage_date >= date('now', ?)",
+        (f"-{days - 1} days",),
+    ).fetchone()
+    return ApplicationStatisticsOut(
+        days=days, launches=total_launches, unique_users=unique_users, favorites=favorites,
+        trend=trend,
+        applications=[
+            ApplicationStatisticsRow(
+                application_id=row["id"], name=row["name"], launches=row["launches"],
+                unique_users=row["unique_users"], favorites=row["favorites"],
+                visits_7d=row["visits_7d"], alias_visits=row["alias_visits"],
+                unique_alias_users=row["unique_alias_users"],
+                anonymous_alias_visits=row["anonymous_alias_visits"],
+            )
+            for row in apps
+        ],
+        app_trends=app_trends,
+        user_activity=[UserActivityRow(user_id=repository.derive_user_id(row["username"]), launches=row["launches"], applications_used=row["applications_used"]) for row in user_rows],
+        alias_visits=alias_totals["alias_visits"],
+        unique_alias_users=alias_totals["unique_alias_users"],
+        anonymous_alias_visits=alias_totals["anonymous_alias_visits"],
+    )
 
 
 @router.get("/application-statistics/{application_id}/users", response_model=ApplicationStatisticsDetailOut)

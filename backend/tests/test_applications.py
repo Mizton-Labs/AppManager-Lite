@@ -92,6 +92,39 @@ def test_statistics_zero_fill_complete_date_range(admin) -> None:
         assert len(ranged.json()["app_trends"][0]["points"]) == days
 
 
+def test_statistics_includes_authorized_alias_visits(admin) -> None:
+    client, csrf, _ = admin
+    app = _seed_app(client, csrf, "Alias Visited", "https://example.com/av", ["Red Team"])
+    other = _seed_app(client, csrf, "Alias Unvisited", "https://example.com/au", ["Red Team"])
+    from app.db import get_connection
+
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO application_alias_usage_daily "
+            "(application_id, usage_date, visitor_key, request_count) "
+            "VALUES (?, date('now'), 'user:1', 4)",
+            (app["id"],),
+        )
+        conn.execute(
+            "INSERT INTO application_alias_usage_daily "
+            "(application_id, usage_date, visitor_key, request_count) "
+            "VALUES (?, date('now'), 'anonymous', 2)",
+            (app["id"],),
+        )
+
+    body = client.get("/api/application-statistics", params={"days": 7}).json()
+    assert body["alias_visits"] == 6
+    assert body["unique_alias_users"] == 1
+    assert body["anonymous_alias_visits"] == 2
+
+    rows = {row["name"]: row for row in body["applications"]}
+    assert rows["Alias Visited"]["alias_visits"] == 6
+    assert rows["Alias Visited"]["unique_alias_users"] == 1
+    assert rows["Alias Visited"]["anonymous_alias_visits"] == 2
+    assert rows["Alias Unvisited"]["alias_visits"] == 0
+    assert rows["Alias Unvisited"]["unique_alias_users"] == 0
+
+
 def test_clean_install_has_no_applications(admin) -> None:
     # A fresh database starts with no applications (no placeholder seed).
     client, _csrf, _ = admin

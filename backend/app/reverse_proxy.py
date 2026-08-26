@@ -96,6 +96,12 @@ def render_proxy_auth_block(*, appmanager_host: str, appmanager_port: str) -> st
         raise ReverseProxyError(f"Invalid AppManager backend port: {appmanager_port!r}")
     return f"""{PROXY_AUTH_BEGIN}
 location ^~ /api/auth/proxy-check/ {{
+    # internal: only reachable via nginx's own auth_request subrequest, never
+    # directly from a client -- this is what makes the Sec-Fetch-Dest header
+    # below trustworthy (a request classification, not a security boundary by
+    # itself, but only meaningful when it cannot be forged by calling this
+    # path directly).
+    internal;
     # No replacement URI: preserve auth_request query arguments.
     proxy_pass http://{appmanager_host}:{appmanager_port};
     proxy_set_header Host $host;
@@ -103,6 +109,12 @@ location ^~ /api/auth/proxy-check/ {{
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
+    # auth_request subrequests inherit the original client request's headers
+    # (only the subrequest's own method is forced to GET), so this reflects
+    # the real navigation type the browser reported for the original alias
+    # request -- used only to classify document/iframe navigations for
+    # authorized-alias-visit statistics, never for authorization decisions.
+    proxy_set_header Sec-Fetch-Dest $http_sec_fetch_dest;
     proxy_pass_request_body off;
     proxy_set_header Content-Length "";
 }}
