@@ -309,6 +309,13 @@ export interface UserServer {
   is_apps_server?: boolean;
   /** Live Proxmox pool membership, resolved on list; transient, never persisted. */
   poolid?: string;
+  /** Live Proxmox presence classification, resolved on list; transient, never
+   * persisted, and never used to auto-delete a record: "live" (confirmed
+   * present), "missing" (an authoritative inventory read completed and the
+   * guest was not found), or "unverified" (the provider is unconfigured,
+   * unreachable, or the read failed -- absence is never inferred). Empty for
+   * a server with no vmid yet, or a failed provisioning record. */
+  presence?: "live" | "missing" | "unverified" | "";
   access_reset?: AccessResetOutcome[];
 }
 

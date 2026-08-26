@@ -747,6 +747,14 @@ export function ServerCard(props: {
             ) : server.status === "reference" ? (
               <span className="status-badge ok">reference</span>
             ) : null}
+            {server.presence === "missing" ? (
+              <span
+                className="status-badge rejected"
+                title="A live Proxmox inventory read completed and did not find this guest. The record has not been removed; verify in Proxmox and use an admin action to reconcile it."
+              >
+                needs attention: missing from Proxmox
+              </span>
+            ) : null}
           </div>
           <p className="muted server-meta">
             {server.template_name && <>Template: {server.template_name} · </>}

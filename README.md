@@ -969,6 +969,16 @@ is shown). This reflects the guest's *actual* current pool membership, so
 pools assigned directly in Proxmox appear too; it is a response-only hint and
 is never stored in AppManager's database.
 
+The list also checks each server against a **live Proxmox inventory** (one
+additional cluster-wide read per list, alongside the pool lookup). A server
+confirmed absent from a successful, authoritative read (e.g. deleted directly
+in Proxmox) is never silently removed from AppManager's own records; instead
+its card shows a **"needs attention: missing from Proxmox"** badge so an
+administrator can investigate and reconcile it manually. When the provider is
+unconfigured, unreachable, or the read fails for any reason, existing records
+are left exactly as they are — absence is only ever inferred from a
+successful inventory read, never from an outage or a permission error.
+
 Deleting a server is **deferred and reversible for 24 hours**. After an
 explicit "this is permanent" confirmation, the server enters a **deletion
 pending** state with a countdown and a **Cancel deletion** action; owners and

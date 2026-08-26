@@ -155,6 +155,26 @@ describe("UserServersPanel", () => {
     expect(screen.queryByText(/^Pool:/)).toBeNull();
   });
 
+  it("shows a needs-attention badge when confirmed missing from Proxmox", async () => {
+    stubServers([makeServer({ presence: "missing" })]);
+    render(
+      <UserServersPanel userId={7} canCreate={false} canDelete={false} />,
+    );
+    expect(await screen.findByText("coder box - 10.0.7.42")).toBeInTheDocument();
+    expect(
+      screen.getByText(/needs attention: missing from proxmox/i),
+    ).toBeInTheDocument();
+  });
+
+  it("omits the needs-attention badge when presence is live or unverified", async () => {
+    stubServers([makeServer({ presence: "live" })]);
+    render(
+      <UserServersPanel userId={7} canCreate={false} canDelete={false} />,
+    );
+    expect(await screen.findByText("coder box - 10.0.7.42")).toBeInTheDocument();
+    expect(screen.queryByText(/needs attention/i)).toBeNull();
+  });
+
   it("creates a server with pubkey users and shows success", async () => {
     const fetchMock = stubServers();
     render(

@@ -2546,6 +2546,84 @@ def test_servers_overview_derived_user_id_survives_rename(admin, monkeypatch) ->
     assert owners["newname@example.com"]["derived_user_id"] == "oldname"
 
 
+def test_server_presence_live_when_confirmed_in_inventory(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    fake = _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    member = _create_member(client, csrf)
+    created = _create_server_for(
+        client, csrf, member["user"]["id"], template["id"], name="a"
+    )
+    # The fake provider reports this vmid as live inventory.
+    fake.live_vmids.add(created["vmid"])
+
+    resp = client.get(f"/api/users/{member['user']['id']}/servers")
+    assert resp.status_code == 200, resp.text
+    server = next(s for s in resp.json() if s["id"] == created["id"])
+    assert server["presence"] == "live"
+
+
+def test_server_presence_missing_when_confirmed_absent(admin, monkeypatch) -> None:
+    """A guest removed directly in Proxmox is never silently deleted from
+    AppManager's own list; it is only classified as 'missing' so an admin can
+    investigate."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)  # live_vmids empty: nothing is in inventory.
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    member = _create_member(client, csrf)
+    created = _create_server_for(
+        client, csrf, member["user"]["id"], template["id"], name="a"
+    )
+
+    resp = client.get(f"/api/users/{member['user']['id']}/servers")
+    assert resp.status_code == 200, resp.text
+    server = next(s for s in resp.json() if s["id"] == created["id"])
+    assert server["presence"] == "missing"
+    # The record itself is untouched -- still present in the response/DB.
+    assert server["id"] == created["id"]
+
+
+def test_server_presence_unverified_when_provider_unconfigured(admin) -> None:
+    client, csrf, _ = admin
+    # No provider configured at all: nothing to annotate against, but any
+    # existing servers (e.g. reference rows) must never be treated as absent.
+    resp = client.get("/api/servers/overview")
+    assert resp.status_code == 200, resp.text
+
+
+def test_server_presence_unverified_on_provider_failure(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    fake = _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    member = _create_member(client, csrf)
+    created = _create_server_for(
+        client, csrf, member["user"]["id"], template["id"], name="a"
+    )
+
+    # Simulate an outage/permission failure on the inventory call specifically
+    # (distinct from "confirmed absent"): the record must be marked
+    # unverified, never missing.
+    real_call = fake.__call__
+
+    def _fail_resources(method, url, *, headers, verify, json_body=None):
+        if "/cluster/resources" in url:
+            return (403, "Forbidden")
+        return real_call(method, url, headers=headers, verify=verify, json_body=json_body)
+
+    monkeypatch.setattr(proxmox, "_http_request", _fail_resources)
+
+    resp = client.get(f"/api/users/{member['user']['id']}/servers")
+    assert resp.status_code == 200, resp.text
+    server = next(s for s in resp.json() if s["id"] == created["id"])
+    assert server["presence"] == "unverified"
+
+
 def test_servers_overview_user_sees_only_their_own(admin, monkeypatch) -> None:
     client, csrf, _ = admin
     _FakeProxmox(monkeypatch)

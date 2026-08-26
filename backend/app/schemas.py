@@ -1502,6 +1502,16 @@ class UserServerOut(BaseModel):
     # provider on list (empty when the provider is unconfigured/unreachable or
     # the guest is not in a pool). Never persisted.
     poolid: str = ""
+    # Transient, response-only live-presence classification, resolved from a
+    # single cluster-wide Proxmox inventory read per list (never persisted):
+    # "live" (the guest exists there), "missing" (an authoritative inventory
+    # read completed and the guest was not found -- the DB record is *not*
+    # deleted; it is surfaced for the admin/owner to investigate), or
+    # "unverified" (the provider is unconfigured, unreachable, or the read
+    # failed -- the last-known record is shown as-is; absence is never
+    # inferred from a failed or partial read). Empty for a server with no
+    # vmid yet (e.g. a still-pending create) or a failed provisioning record.
+    presence: str = ""
     # Transient result returned by Reset access on servers. It contains only
     # target/account/status metadata, never SSH key material or admin paths.
     access_reset: list[AccessResetOut] = Field(default_factory=list)
