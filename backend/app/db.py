@@ -86,11 +86,13 @@ CREATE TABLE IF NOT EXISTS applications (
     apps_path        TEXT    NOT NULL DEFAULT '',
     alias_auth_required INTEGER NOT NULL DEFAULT 1,
     apps_rewrite_root INTEGER NOT NULL DEFAULT 0,
+    pass_authenticated_user INTEGER NOT NULL DEFAULT 0,
     is_private      INTEGER NOT NULL DEFAULT 0,
     pending_alias    TEXT    NOT NULL DEFAULT '',
     pending_is_active INTEGER,
     pending_alias_auth_required INTEGER,
     pending_apps_rewrite_root INTEGER,
+    pending_pass_authenticated_user INTEGER,
     needs_push       INTEGER NOT NULL DEFAULT 0,
     last_push_status TEXT,
     last_push_log    TEXT    NOT NULL DEFAULT '',
@@ -716,6 +718,16 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     _add_column(
         conn, "applications", "apps_rewrite_root", "INTEGER NOT NULL DEFAULT 0"
     )
+    # Opt-in: forward the authenticated portal user's canonical stored
+    # username/email to the upstream as the fixed ``X-AppManager-User``
+    # header. Off by default; only ever populated for a local alias whose
+    # nginx auth_request has already validated the session, and only when
+    # alias authentication is required (never for public aliases or
+    # auth-disabled deployments). See app/routers/auth.py:proxy_check and
+    # app/reverse_proxy.py.
+    _add_column(
+        conn, "applications", "pass_authenticated_user", "INTEGER NOT NULL DEFAULT 0"
+    )
 
     # A staged alias change awaiting approval. When a non-self-service owner
     # edits the alias, the new value is held here while the application keeps
@@ -724,6 +736,7 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     _add_column(conn, "applications", "pending_is_active", "INTEGER")
     _add_column(conn, "applications", "pending_alias_auth_required", "INTEGER")
     _add_column(conn, "applications", "pending_apps_rewrite_root", "INTEGER")
+    _add_column(conn, "applications", "pending_pass_authenticated_user", "INTEGER")
     _add_column(conn, "applications", "needs_push", "INTEGER NOT NULL DEFAULT 0")
 
     # The reverse-proxy config gained an optional SSH user (ssh user@host).

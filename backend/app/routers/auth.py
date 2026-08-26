@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import html
 import io
 import logging
 import secrets
 import sqlite3
 import stat
+import urllib.parse
 import zipfile
 from datetime import datetime, timezone
 from typing import Any
@@ -20,7 +22,7 @@ from fastapi import (
     Response,
     status,
 )
-from fastapi.responses import PlainTextResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from starlette.responses import Response as StarletteResponse
 
 from .. import (
@@ -93,6 +95,53 @@ def _redirect_after_login(return_to: str | None = None) -> str:
     return sso.safe_return_to(return_to) or _post_login_redirect()
 
 
+def _sso_completion_redirect(request: Request, return_to: str) -> str:
+    """Build the same-origin SSO completion URL carrying the safe destination.
+
+    The OIDC/SAML callback runs as part of a cross-site top-level navigation
+    from the identity provider back to this origin. Redirecting straight from
+    that callback to the protected alias can leave the just-set
+    ``SameSite=Strict`` session cookie out of the immediate follow-up request
+    in some browsers, since it is still part of the redirect chain that began
+    cross-site. Bouncing through a same-origin completion page first ends that
+    chain, so the subsequent navigation to the alias is a fresh same-origin
+    request that reliably carries the Strict cookie.
+    """
+    completion_url = str(request.url_for("sso_complete"))
+    query = urllib.parse.urlencode({"next": sso.safe_return_to(return_to)})
+    return f"{completion_url}?{query}"
+
+
+@router.get("/auth/sso/complete", name="sso_complete")
+def sso_complete(next: str | None = None) -> HTMLResponse:
+    """Same-origin landing page that completes an SSO login.
+
+    Reached only via the same-origin redirect issued by the OIDC/SAML
+    callback after the session cookie has already been set on this response's
+    request/response cycle; this page merely performs one more same-origin
+    navigation to the originally requested (already-validated) destination so
+    that navigation carries the ``SameSite=Strict`` session cookie reliably.
+    The destination is re-validated here regardless of the caller.
+    """
+    target = _redirect_after_login(next)
+    escaped = html.escape(target, quote=True)
+    body = (
+        "<!doctype html><html><head><meta charset=\"utf-8\">"
+        f"<meta http-equiv=\"refresh\" content=\"0; url={escaped}\">"
+        "<title>Signing you in…</title></head><body>"
+        f"<p>Signing you in… If you are not redirected, "
+        f"<a href=\"{escaped}\">continue</a>.</p>"
+        "</body></html>"
+    )
+    return HTMLResponse(
+        body,
+        headers={
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+        },
+    )
+
+
 def _create_session_response(
     response: Response,
     conn: sqlite3.Connection,
@@ -119,6 +168,28 @@ def _user_out(user: dict[str, Any]) -> UserOut:
         theme=user.get("theme", ""),
         teams=user["teams"],
     )
+
+
+def _safe_identity_header_value(value: str) -> str | None:
+    """Sanitize a value before it is ever placed in a raw response header.
+
+    Returns ``None`` (never raises) when the value is unsafe: header values
+    must be Latin-1 encodable or the ASGI server rejects/crashes on it, and
+    any control character (including CR/LF) must never reach a raw header,
+    since some intermediaries could otherwise treat it as a header/response
+    injection vector. The stored username is normally a validated local email
+    address, but an SSO-provisioned account's username is derived from an
+    identity provider's claims and is not guaranteed to satisfy either
+    constraint, so this is re-checked at the point of emission regardless of
+    where the value came from.
+    """
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
+        return None
+    try:
+        value.encode("latin-1")
+    except UnicodeEncodeError:
+        return None
+    return value
 
 
 @router.get("/auth/proxy-check/{application_id}/{alias}", status_code=status.HTTP_204_NO_CONTENT)
@@ -160,6 +231,22 @@ def proxy_check(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
     if not repository.can_access_application(conn, app, user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    # Only ever assert the caller's identity to the upstream when the owner
+    # explicitly opted in on a managed alias that requires AppManager
+    # authentication -- never for a public alias, never derived from
+    # anything the client sent, and never the auth-disabled synthetic user.
+    if app.get("pass_authenticated_user") and app["alias_auth_required"]:
+        identity = _safe_identity_header_value(user["username"])
+        if identity is not None:
+            return StarletteResponse(
+                status_code=status.HTTP_204_NO_CONTENT,
+                headers={"X-AppManager-User": identity},
+            )
+        logger.warning(
+            "Suppressing authenticated-user header for user id=%s: username is "
+            "not a safe header value",
+            user["id"],
+        )
     return StarletteResponse(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -346,7 +433,8 @@ def oidc_callback(
     email = str(claims.get("email") or claims.get("preferred_username") or "")
     user = sso.user_from_sso_claims(conn, settings, email=email)
     redirect = RedirectResponse(
-        _redirect_after_login(flow["return_to"]), status_code=status.HTTP_302_FOUND
+        _sso_completion_redirect(request, flow["return_to"]),
+        status_code=status.HTTP_302_FOUND,
     )
     _create_session_response(redirect, conn, user, auth_method="oidc")
     logger.info("OIDC login succeeded for username=%r (id=%s)", user["username"], user["id"])
@@ -403,7 +491,8 @@ async def saml_acs(
     email = sso.email_from_saml_auth(auth, settings)
     user = sso.user_from_sso_claims(conn, settings, email=email)
     redirect = RedirectResponse(
-        _redirect_after_login(flow["return_to"]), status_code=status.HTTP_302_FOUND
+        _sso_completion_redirect(request, flow["return_to"]),
+        status_code=status.HTTP_302_FOUND,
     )
     _create_session_response(redirect, conn, user, auth_method="saml")
     logger.info("SAML login succeeded for username=%r (id=%s)", user["username"], user["id"])

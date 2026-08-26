@@ -143,4 +143,23 @@ describe("Login", () => {
     expect(await screen.findByRole("link", { name: "Sign in with SSO" }))
       .toHaveAttribute("href", "http://localhost:3000/api/auth/oidc/login");
   });
+
+  it("ignores a backslash-prefixed next value that browsers may treat as protocol-relative", async () => {
+    window.history.pushState({}, "", "/?next=/%5Cevil.example");
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        enabled: true,
+        local_login_enabled: true,
+        providers: [{ protocol: "oidc", label: "SSO", login_url: "auth/oidc/login" }],
+      }),
+    } as Response);
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderLogin();
+
+    expect(await screen.findByRole("link", { name: "Sign in with SSO" }))
+      .toHaveAttribute("href", "http://localhost:3000/api/auth/oidc/login");
+  });
 });

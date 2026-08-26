@@ -145,6 +145,7 @@ class AliasConfigResult(PushResult):
     apps_path: str = ""
     alias_auth_required: bool = True
     apps_rewrite_root: bool = False
+    pass_authenticated_user: bool = False
 
 
 _ALIAS_LOCATION_RE = re.compile(r"location\s+/([^\s/{]+)/\s*\{")
@@ -185,6 +186,12 @@ def parse_alias_config_block(block: str) -> AliasConfigResult:
     result.alias_auth_required = bool(int(auth_mode.group(1))) if auth_mode else True
     rewrite_mode = re.search(r"# appmanager-rewrite-root:\s*([01])", block)
     result.apps_rewrite_root = bool(int(rewrite_mode.group(1))) if rewrite_mode else False
+    identity_mode = re.search(
+        r"# appmanager-pass-authenticated-user:\s*([01])", block
+    )
+    result.pass_authenticated_user = (
+        bool(int(identity_mode.group(1))) if identity_mode else False
+    )
     result.log("[OK] Parsed deployed alias config from nginx.")
     return result
 
@@ -200,6 +207,7 @@ def render_alias_block(
     apps_path: str = "",
     alias_auth_required: bool = True,
     apps_rewrite_root: bool = False,
+    pass_authenticated_user: bool = False,
     app_id: int = 0,
     timestamp: int | None = None,
 ) -> str:
@@ -216,6 +224,14 @@ def render_alias_block(
     (``proxy_redirect`` for Location headers; ``sub_filter`` for HTML
     href/src/action). This helps server-emitted root-absolute links; it does not
     fix paths a client app builds at runtime in JavaScript.
+
+    When ``pass_authenticated_user`` is set, the managed location forwards the
+    authenticated portal user's canonical stored username/email upstream as a
+    fixed ``X-AppManager-User`` header, sourced only from the trusted
+    ``auth_request`` subrequest's response (``$upstream_http_x_appmanager_user``)
+    -- never from a client-supplied header. When unset, any client-supplied
+    value is explicitly cleared before proxying, so a caller can never spoof
+    this header regardless of the setting.
     """
     alias = (alias or "").strip().strip("/")
     apps_server = (apps_server or "").strip()
@@ -278,12 +294,53 @@ def render_alias_block(
             "Alias template must render exactly one app-aware proxy auth request"
         )
 
+    # Forward (or explicitly clear) the trusted-identity header. Any
+    # client-facing or legacy directive naming this header is stripped first,
+    # so a custom/legacy template can never leave a spoofable or duplicate
+    # directive in place.
+    block = re.sub(
+        r"[ \t]*auth_request_set\s+\$\w+\s+\$upstream_http_x_appmanager_user;\n",
+        "",
+        block,
+    )
+    block = re.sub(
+        r"[ \t]*proxy_set_header\s+X-AppManager-User\s+[^;]*;\n",
+        "",
+        block,
+    )
+    identity_var = f"$appmanager_user_{int(app_id)}"
+    if pass_authenticated_user:
+        identity_lines = (
+            f"\t\tauth_request_set {identity_var} $upstream_http_x_appmanager_user;\n"
+            f"\t\tproxy_set_header X-AppManager-User {identity_var};\n"
+        )
+    else:
+        identity_lines = '\t\tproxy_set_header X-AppManager-User "";\n'
+    block, identity_inserted = re.subn(
+        rf"(location\s+/{re.escape(alias)}/\s*\{{\s*\n\t\t{re.escape(auth_line)}\n"
+        rf"\t\terror_page 401 = @appmanager_login;\n)",
+        lambda m: m.group(1) + identity_lines,
+        block,
+        count=1,
+    )
+    if identity_inserted != 1:
+        raise ReverseProxyError(
+            "Alias template has no unique managed alias location for the "
+            "authenticated-user header"
+        )
+    if block.count("X-AppManager-User") != 1:
+        raise ReverseProxyError(
+            "Alias template must render exactly one authenticated-user header "
+            "directive"
+        )
+
     if apps_rewrite_root:
         block = _apply_rewrite_root(block, alias)
 
     return (
         f"# appmanager-auth-required: {int(alias_auth_required)}\n"
         f"# appmanager-rewrite-root: {int(apps_rewrite_root)}\n"
+        f"# appmanager-pass-authenticated-user: {int(pass_authenticated_user)}\n"
         f"{block}"
     )
 
@@ -487,6 +544,7 @@ def push_alias(
     is_active: bool = True,
     alias_auth_required: bool = True,
     apps_rewrite_root: bool = False,
+    pass_authenticated_user: bool = False,
 ) -> PushResult:
     """Push one application alias to the remote nginx server.
 
@@ -536,6 +594,7 @@ def push_alias(
             app_name=app_name,
             alias_auth_required=alias_auth_required,
             apps_rewrite_root=apps_rewrite_root,
+            pass_authenticated_user=pass_authenticated_user,
             app_id=app_id,
         )
     except ReverseProxyError as exc:

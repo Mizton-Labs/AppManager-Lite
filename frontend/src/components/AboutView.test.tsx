@@ -27,6 +27,20 @@ describe("AboutView", () => {
     expect(screen.getByText(/\(.+\)/)).toBeInTheDocument();
   });
 
+  it("shows the build branch directly below the version", () => {
+    render(<AboutView />);
+    const version = screen.getByText("Version").closest(".detail-row");
+    const branch = screen.getByText("Branch").closest(".detail-row");
+    expect(version).not.toBeNull();
+    expect(branch).not.toBeNull();
+    // The Branch row appears immediately after the Version row in the DOM.
+    expect(
+      version!.compareDocumentPosition(branch!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(within(branch as HTMLElement).getByText(__APP_BRANCH__)).toBeInTheDocument();
+  });
+
   it("lists the development team from the injected git contributors", () => {
     render(<AboutView />);
     const team = screen.getByText("Development team").closest(".detail-row");

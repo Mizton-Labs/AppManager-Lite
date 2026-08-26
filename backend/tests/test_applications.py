@@ -1041,6 +1041,295 @@ def test_non_self_service_alias_auth_change_is_staged(admin) -> None:
     assert body["pending_alias_auth_required"] is None
 
 
+def test_pass_authenticated_user_defaults_off_and_round_trips(admin) -> None:
+    client, csrf, _ = admin
+    resp = _create_app(
+        client,
+        csrf,
+        url="withuserheader",
+        url_type="alias",
+        apps_server="apps.example.com",
+        apps_port="8080",
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["pass_authenticated_user"] is False
+
+    resp2 = _create_app(
+        client,
+        csrf,
+        url="withuserheader2",
+        url_type="alias",
+        apps_server="apps.example.com",
+        apps_port="8080",
+        pass_authenticated_user=True,
+    )
+    assert resp2.status_code == 201, resp2.text
+    body = resp2.json()
+    assert body["pass_authenticated_user"] is True
+    app_id = body["id"]
+
+    edited = client.patch(
+        f"/api/applications/{app_id}",
+        json={"pass_authenticated_user": False},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["pass_authenticated_user"] is False
+
+
+def test_pass_authenticated_user_rejected_for_public_alias(admin) -> None:
+    client, csrf, _ = admin
+    resp = _create_app(
+        client,
+        csrf,
+        url="publicwithheader",
+        url_type="alias",
+        apps_server="apps.example.com",
+        apps_port="8080",
+        alias_auth_required=False,
+        pass_authenticated_user=True,
+    )
+    assert resp.status_code == 400, resp.text
+
+
+def test_pass_authenticated_user_rejected_for_non_alias(admin) -> None:
+    client, csrf, _ = admin
+    resp = _create_app(
+        client,
+        csrf,
+        url="https://example.com/tool",
+        url_type="url",
+        pass_authenticated_user=True,
+    )
+    assert resp.status_code == 400, resp.text
+
+
+def test_pass_authenticated_user_rejected_when_auth_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENABLE_AUTH", "0")
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    try:
+        from app.main import create_app
+
+        with TestClient(create_app()) as client:
+            resp = _create_app(
+                client,
+                "",
+                url="noauthheader",
+                url_type="alias",
+                apps_server="apps.example.com",
+                apps_port="8080",
+                pass_authenticated_user=True,
+            )
+            assert resp.status_code == 400, resp.text
+    finally:
+        monkeypatch.delenv("APP_ENABLE_AUTH", raising=False)
+        get_settings.cache_clear()
+
+
+def test_disabling_alias_auth_rejected_while_header_still_enabled(admin) -> None:
+    client, csrf, _ = admin
+    created = _create_app(
+        client,
+        csrf,
+        url="headerthenauthoff",
+        url_type="alias",
+        apps_server="apps.example.com",
+        apps_port="8080",
+        pass_authenticated_user=True,
+    )
+    assert created.status_code == 201, created.text
+    app_id = created.json()["id"]
+
+    resp = client.patch(
+        f"/api/applications/{app_id}",
+        json={"alias_auth_required": False},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 400, resp.text
+
+
+def test_non_self_service_pass_authenticated_user_change_is_staged(admin) -> None:
+    client, csrf, _ = admin
+    password = _create_member(client, csrf, "headerstager", ["Red Team"])
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login", json={"username": "headerstager", "password": password}
+        )
+        mcsrf = login.json()["csrf_token"]
+        created = member.post(
+            "/api/applications",
+            json={
+                "name": "Header Alias",
+                "url": "headeralias",
+                "url_type": "alias",
+                "teams": ["Red Team"],
+                "apps_port": "8080",
+            },
+            headers={"X-CSRF-Token": mcsrf},
+        )
+        assert created.status_code == 201, created.text
+        app_id = created.json()["id"]
+
+    approved = client.patch(
+        f"/api/applications/{app_id}",
+        json={"approval_status": "approved"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert approved.status_code == 200, approved.text
+
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login", json={"username": "headerstager", "password": password}
+        )
+        mcsrf = login.json()["csrf_token"]
+        staged = member.patch(
+            f"/api/applications/{app_id}",
+            json={"pass_authenticated_user": True},
+            headers={"X-CSRF-Token": mcsrf},
+        )
+    assert staged.status_code == 200, staged.text
+    body = staged.json()
+    # Live value unchanged; the change is staged pending review.
+    assert body["pass_authenticated_user"] is False
+    assert body["pending_pass_authenticated_user"] is True
+
+    applied = client.patch(
+        f"/api/applications/{app_id}",
+        json={"approval_status": "approved"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert applied.status_code == 200, applied.text
+    body = applied.json()
+    assert body["pass_authenticated_user"] is True
+    assert body["pending_pass_authenticated_user"] is None
+
+
+def test_staged_pass_authenticated_user_never_applied_if_auth_disabled_meanwhile(
+    admin,
+) -> None:
+    """A staged enable request must never silently start exposing identity if
+    alias authentication was disabled on the live app between the request and
+    the admin's approval."""
+    client, csrf, _ = admin
+    password = _create_member(client, csrf, "clampstager", ["Red Team"])
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login", json={"username": "clampstager", "password": password}
+        )
+        mcsrf = login.json()["csrf_token"]
+        created = member.post(
+            "/api/applications",
+            json={
+                "name": "Clamp Alias",
+                "url": "clampalias",
+                "url_type": "alias",
+                "teams": ["Red Team"],
+                "apps_port": "8080",
+            },
+            headers={"X-CSRF-Token": mcsrf},
+        )
+        assert created.status_code == 201, created.text
+        app_id = created.json()["id"]
+
+    client.patch(
+        f"/api/applications/{app_id}",
+        json={"approval_status": "approved"},
+        headers={"X-CSRF-Token": csrf},
+    )
+
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login", json={"username": "clampstager", "password": password}
+        )
+        mcsrf = login.json()["csrf_token"]
+        member.patch(
+            f"/api/applications/{app_id}",
+            json={"pass_authenticated_user": True},
+            headers={"X-CSRF-Token": mcsrf},
+        )
+
+    # Admin disables alias authentication live before approving the staged
+    # header request.
+    client.patch(
+        f"/api/applications/{app_id}",
+        json={"alias_auth_required": False},
+        headers={"X-CSRF-Token": csrf},
+    )
+    approved = client.patch(
+        f"/api/applications/{app_id}",
+        json={"approval_status": "approved"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert approved.status_code == 200, approved.text
+    body = approved.json()
+    assert body["pass_authenticated_user"] is False
+    assert body["pending_pass_authenticated_user"] is None
+
+
+def test_non_self_service_owner_cannot_even_stage_disabling_auth_while_header_is_live(
+    admin,
+) -> None:
+    """The request-time invariant (pass_authenticated_user implies alias auth)
+    is enforced against the live state before staging is even considered, so a
+    non-self-service owner cannot submit a disable request that would leave
+    the header on with authentication off -- there is nothing to clamp later
+    because the inconsistent state can never be persisted as a pending value."""
+    client, csrf, _ = admin
+    password = _create_member(client, csrf, "reverseclamp", ["Red Team"])
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login", json={"username": "reverseclamp", "password": password}
+        )
+        mcsrf = login.json()["csrf_token"]
+        created = member.post(
+            "/api/applications",
+            json={
+                "name": "Reverse Clamp Alias",
+                "url": "reverseclampalias",
+                "url_type": "alias",
+                "teams": ["Red Team"],
+                "apps_port": "8080",
+            },
+            headers={"X-CSRF-Token": mcsrf},
+        )
+        assert created.status_code == 201, created.text
+        app_id = created.json()["id"]
+
+    client.patch(
+        f"/api/applications/{app_id}",
+        json={"approval_status": "approved"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    # Admin enables identity forwarding live (immediate, admin edit).
+    enabled = client.patch(
+        f"/api/applications/{app_id}",
+        json={"pass_authenticated_user": True},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert enabled.status_code == 200, enabled.text
+    assert enabled.json()["pass_authenticated_user"] is True
+
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login", json={"username": "reverseclamp", "password": password}
+        )
+        mcsrf = login.json()["csrf_token"]
+        rejected = member.patch(
+            f"/api/applications/{app_id}",
+            json={"alias_auth_required": False},
+            headers={"X-CSRF-Token": mcsrf},
+        )
+    assert rejected.status_code == 400, rejected.text
+
+    # The live app is unchanged: still requiring auth, still forwarding.
+    current = client.get("/api/applications/manage").json()
+    row = next(a for a in current if a["id"] == app_id)
+    assert row["alias_auth_required"] is True
+    assert row["pass_authenticated_user"] is True
+
+
 def test_alias_rejects_path_separators(admin) -> None:
     client, csrf, _ = admin
     # Aliases are a single URL-safe segment: separators are rejected.

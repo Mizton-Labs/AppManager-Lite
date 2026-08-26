@@ -542,6 +542,9 @@ export interface Application {
   alias_auth_required: boolean;
   /** Rewrite root-absolute paths for apps that assume they run at '/'. */
   apps_rewrite_root?: boolean;
+  /** Forward the authenticated user's stored username/email upstream as
+   * `X-AppManager-User` (alias apps only; requires alias authentication). */
+  pass_authenticated_user?: boolean;
   /** A staged alias change awaiting approval; management/own-app responses only. */
   pending_alias?: string;
   /** A staged enable/disable change awaiting approval; management/own-app only. */
@@ -550,6 +553,8 @@ export interface Application {
   pending_alias_auth_required?: boolean | null;
   /** A staged rewrite-root change awaiting approval; management/own-app only. */
   pending_apps_rewrite_root?: boolean | null;
+  /** A staged authenticated-user header change awaiting approval; management/own-app only. */
+  pending_pass_authenticated_user?: boolean | null;
   /** True when current approved proxy config needs an admin push. */
   needs_push?: boolean;
   is_favorite?: boolean;
@@ -581,6 +586,7 @@ export interface AliasConfig {
   apps_path: string;
   alias_auth_required: boolean;
   apps_rewrite_root: boolean;
+  pass_authenticated_user: boolean;
 }
 
 export interface CreateApplicationInput {
@@ -598,6 +604,7 @@ export interface CreateApplicationInput {
   apps_path?: string;
   alias_auth_required?: boolean;
   apps_rewrite_root?: boolean;
+  pass_authenticated_user?: boolean;
   is_private?: boolean;
   shared_user_ids?: number[];
   created_by?: number;
@@ -619,6 +626,7 @@ export interface UpdateApplicationInput {
   apps_path?: string;
   alias_auth_required?: boolean;
   apps_rewrite_root?: boolean;
+  pass_authenticated_user?: boolean;
   is_private?: boolean;
   shared_user_ids?: number[];
 }

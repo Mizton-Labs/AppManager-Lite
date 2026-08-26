@@ -35,8 +35,24 @@ def sso_enabled(settings: Settings) -> bool:
 
 
 def safe_return_to(value: str | None) -> str:
+    """Validate a post-login/SSO redirect target.
+
+    Only a same-origin, single-segment-rooted relative path is accepted.
+    Rejects anything that could be interpreted by a browser as a different
+    origin: absolute URLs, protocol-relative (``//host``) URLs, backslashes
+    (some browsers normalize a leading ``/\\`` the same as ``//``, and
+    backslashes are never legitimate in a path), and control characters
+    (CR/LF/NUL, which could otherwise be used for header/response injection
+    if this value were ever echoed into a raw header by other tooling).
+    """
     value = (value or "").strip()
-    if not value.startswith("/") or value.startswith("//"):
+    if not value.startswith("/"):
+        return ""
+    if value.startswith("//"):
+        return ""
+    if "\\" in value:
+        return ""
+    if any(ord(ch) < 0x20 for ch in value):
         return ""
     return value
 
