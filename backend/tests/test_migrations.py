@@ -166,6 +166,43 @@ def test_legacy_admin_backfilled_to_self_service(legacy_db: Path) -> None:
     assert user_ss == 0
 
 
+def test_legacy_users_get_backfilled_immutable_derived_id(legacy_db: Path) -> None:
+    from app import db, repository
+
+    db.init_db()
+    with db.get_connection() as conn:
+        acols = {r[1] for r in conn.execute("PRAGMA table_info(users)")}
+        assert "derived_user_id" in acols
+        admin_row = conn.execute(
+            "SELECT derived_user_id FROM users WHERE username='legacy_admin'"
+        ).fetchone()
+        user_row = conn.execute(
+            "SELECT derived_user_id FROM users WHERE username='legacy_user'"
+        ).fetchone()
+        assert admin_row["derived_user_id"] == repository.derive_user_id(
+            "legacy_admin"
+        )
+        assert user_row["derived_user_id"] == repository.derive_user_id(
+            "legacy_user"
+        )
+        assert admin_row["derived_user_id"]
+        assert user_row["derived_user_id"]
+
+        # A unique index exists on the immutable identity...
+        idx = {r["name"] for r in conn.execute("PRAGMA index_list(users)")}
+        assert "idx_users_derived_user_id" in idx
+        # ...and on case-insensitive username.
+        assert "idx_users_username_ci" in idx
+
+    # Idempotent: re-running init_db does not change the already-assigned id.
+    db.init_db()
+    with db.get_connection() as conn:
+        admin_row2 = conn.execute(
+            "SELECT derived_user_id FROM users WHERE username='legacy_admin'"
+        ).fetchone()
+    assert admin_row2["derived_user_id"] == admin_row["derived_user_id"]
+
+
 def test_legacy_application_gets_safe_defaults(legacy_db: Path) -> None:
     from app import db
 

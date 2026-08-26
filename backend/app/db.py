@@ -18,6 +18,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
     username             TEXT    NOT NULL UNIQUE,
+    derived_user_id      TEXT    NOT NULL DEFAULT '',
     password_hash        TEXT    NOT NULL,
     role                 TEXT    NOT NULL CHECK (role IN ('admin', 'user')),
     is_active            INTEGER NOT NULL DEFAULT 1,
@@ -978,6 +979,53 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_user_servers_name_ci "
             "ON user_servers(lower(name))"
+        )
+    except sqlite3.IntegrityError:
+        pass
+
+    # issue_local_031: persist an immutable resource identity separate from
+    # the mutable sign-in username/email. Previously the "derived user ID"
+    # (used to name servers, OS accounts, jump accounts, Proxmox pools, and
+    # SSH bundle values) was recomputed from ``username`` on every read, so
+    # editing a user's email would silently rename all of that -- existing
+    # server/account names would then no longer match. ``derived_user_id`` is
+    # computed once here for every existing row and never changed again by
+    # application code once set.
+    _add_column(conn, "users", "derived_user_id", "TEXT NOT NULL DEFAULT ''")
+    from . import repository as _repository  # local import: avoid any import-time cycle
+
+    for row in conn.execute(
+        "SELECT id, username FROM users WHERE derived_user_id = ''"
+    ).fetchall():
+        conn.execute(
+            "UPDATE users SET derived_user_id = ? WHERE id = ?",
+            (_repository.derive_user_id(row["username"]), row["id"]),
+        )
+
+    # Enforce the resource identity's immutability/uniqueness as a backstop to
+    # the application-level check. Best-effort: if legacy data already
+    # produced the same derived ID for two accounts (e.g. two different email
+    # domains sharing a local part), the index cannot be created; the
+    # application check still prevents new collisions. New deployments are
+    # unaffected since fresh accounts practically never collide.
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_derived_user_id "
+            "ON users(derived_user_id)"
+        )
+    except sqlite3.IntegrityError:
+        pass
+
+    # Sign-in usernames/emails must be treated as case-insensitively unique
+    # everywhere (SSO providers such as Entra may report varying casing), so
+    # enforce that as a database backstop too. Same best-effort pattern: an
+    # existing case-insensitive duplicate leaves this index uncreated rather
+    # than blocking startup; the application-level check (case-insensitive
+    # lookup before insert/rename) still guards new collisions.
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_ci "
+            "ON users(lower(username))"
         )
     except sqlite3.IntegrityError:
         pass

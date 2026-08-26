@@ -67,15 +67,12 @@ def derive_user_id(username: str) -> str:
 def user_id_conflict(
     conn: sqlite3.Connection, user_id: str, *, exclude_id: int | None = None
 ) -> bool:
-    """True when another user's derived identifier equals ``user_id``.
-
-    Derived identifiers are not stored, so this scans usernames; user counts
-    are small (an admin-managed portal), which keeps this trivial.
-    """
-    rows = conn.execute(
-        "SELECT username FROM users WHERE id IS NOT ?", (exclude_id,)
-    ).fetchall()
-    return any(derive_user_id(r["username"]) == user_id for r in rows)
+    """True when another user's immutable resource identity equals ``user_id``."""
+    row = conn.execute(
+        "SELECT 1 FROM users WHERE derived_user_id = ? AND id IS NOT ?",
+        (user_id, exclude_id),
+    ).fetchone()
+    return row is not None
 
 
 def _row_to_user(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
@@ -83,7 +80,10 @@ def _row_to_user(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
     return {
         "id": row["id"],
         "username": row["username"],
-        "user_id": derive_user_id(row["username"]),
+        # Fall back to live derivation only for a row somehow missing the
+        # persisted value (e.g. an in-memory/test row built without it); every
+        # row read after migration has a stored, immutable value.
+        "user_id": row["derived_user_id"] or derive_user_id(row["username"]),
         "role": row["role"],
         "is_active": bool(row["is_active"]),
         "must_change_password": bool(row["must_change_password"]),
@@ -272,8 +272,11 @@ def get_user_by_id(
 def get_user_by_username(
     conn: sqlite3.Connection, username: str
 ) -> sqlite3.Row | None:
+    """Case-insensitive lookup: sign-in emails are treated as the same
+    account regardless of case (local login, SSO, and admin lookups all use
+    this), matching ``idx_users_username_ci``."""
     return conn.execute(
-        "SELECT * FROM users WHERE username = ?", (username,)
+        "SELECT * FROM users WHERE lower(username) = lower(?)", (username,)
     ).fetchone()
 
 
@@ -312,6 +315,7 @@ def create_user(
     apps_server_ip: str = "",
     apps_port: str = "",
 ) -> dict[str, Any]:
+    username = username.strip().lower()
     existing = get_user_by_username(conn, username)
     if existing is not None:
         raise ValueError("A user with that username already exists.")
@@ -330,13 +334,14 @@ def create_user(
     cur = conn.execute(
         """
         INSERT INTO users
-            (username, password_hash, role, must_change_password, self_service,
-             apps_server, apps_server_ip, apps_port,
+            (username, derived_user_id, password_hash, role, must_change_password,
+             self_service, apps_server, apps_server_ip, apps_port,
              ssh_private_key, ssh_public_key, ssh_key_generated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         """,
         (
             username,
+            user_id,
             security.hash_password(password),
             role,
             int(must_change_password),
@@ -389,6 +394,7 @@ def update_user(
     conn: sqlite3.Connection,
     user_id: int,
     *,
+    username: str | None = None,
     role: str | None = None,
     teams: list[str] | None = None,
     is_active: bool | None = None,
@@ -399,6 +405,19 @@ def update_user(
 ) -> dict[str, Any] | None:
     if get_user_by_id(conn, user_id) is None:
         return None
+    if username is not None:
+        username = username.strip().lower()
+        existing = get_user_by_username(conn, username)
+        if existing is not None and existing["id"] != user_id:
+            raise ValueError("A user with that username already exists.")
+        # The sign-in email may change; the immutable resource identity
+        # (derived_user_id -- server names, OS/jump accounts, pools, SSH
+        # bundle values) intentionally never changes here.
+        conn.execute(
+            "UPDATE users SET username = ?, updated_at = datetime('now') "
+            "WHERE id = ?",
+            (username, user_id),
+        )
     if role is not None:
         conn.execute(
             "UPDATE users SET role = ?, updated_at = datetime('now') WHERE id = ?",
@@ -2234,13 +2253,14 @@ def server_name_exists(conn: sqlite3.Connection, name: str) -> bool:
 
 
 def list_all_servers(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    """Every server across all users, each annotated with its owner's username.
+    """Every server across all users, each annotated with its owner's username
+    and immutable derived user ID.
 
-    Used by the admin server overview; the caller derives the owner id from the
-    username as needed.
+    Used by the admin server overview.
     """
     rows = conn.execute(
         "SELECT s.*, u.username AS owner_username, "
+        "u.derived_user_id AS owner_user_id, "
         "st.is_apps_server AS tpl_is_apps_server "
         "FROM user_servers s JOIN users u ON u.id = s.user_id "
         "LEFT JOIN server_templates st ON st.id = s.template_id "
@@ -2250,6 +2270,9 @@ def list_all_servers(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     for r in rows:
         server = _row_to_user_server(r)
         server["owner_username"] = r["owner_username"]
+        server["owner_user_id"] = r["owner_user_id"] or derive_user_id(
+            r["owner_username"]
+        )
         out.append(server)
     return out
 

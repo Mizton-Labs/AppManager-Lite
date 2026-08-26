@@ -2521,6 +2521,31 @@ def test_servers_overview_admin_sees_all_grouped_by_owner(admin, monkeypatch) ->
     assert len(owners["nadia@example.com"]["servers"]) == 1
 
 
+def test_servers_overview_derived_user_id_survives_rename(admin, monkeypatch) -> None:
+    """issue_local_031: the overview's derived_user_id must reflect the
+    immutable resource identity, not be re-derived from the (now renamed)
+    current username."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    u1 = _create_member(client, csrf, username="oldname@example.com")
+    _create_server_for(client, csrf, u1["user"]["id"], template["id"], name="a")
+
+    client.patch(
+        f"/api/users/{u1['user']['id']}",
+        json={"username": "newname@example.com"},
+        headers={"X-CSRF-Token": csrf},
+    )
+
+    resp = client.get("/api/servers/overview")
+    assert resp.status_code == 200, resp.text
+    owners = {o["username"]: o for o in resp.json()["owners"]}
+    assert "newname@example.com" in owners
+    assert owners["newname@example.com"]["derived_user_id"] == "oldname"
+
+
 def test_servers_overview_user_sees_only_their_own(admin, monkeypatch) -> None:
     client, csrf, _ = admin
     _FakeProxmox(monkeypatch)

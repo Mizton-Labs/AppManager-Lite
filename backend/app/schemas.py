@@ -72,6 +72,22 @@ _SSH_USER_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
+def _clean_email_username(value: str) -> str:
+    """Validate and canonicalize a sign-in username (must be an email).
+
+    Trims whitespace and lowercases: sign-in usernames are matched
+    case-insensitively everywhere (local login, SSO, and this normalization),
+    so storing a canonical lowercase form keeps display and comparisons
+    consistent.
+    """
+    value = value.strip()
+    if not value:
+        raise ValueError("Username must not be empty.")
+    if not _EMAIL_RE.match(value):
+        raise ValueError("Username must be an email address.")
+    return value.lower()
+
+
 def _validate_apps_server(value: str) -> str:
     """An optional bare hostname where a user runs their applications."""
     value = value.strip()
@@ -292,12 +308,7 @@ class CreateUserRequest(BaseModel):
     @field_validator("username")
     @classmethod
     def _clean_username(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            raise ValueError("Username must not be empty.")
-        if not _EMAIL_RE.match(value):
-            raise ValueError("Username must be an email address.")
-        return value
+        return _clean_email_username(value)
 
     @field_validator("role")
     @classmethod
@@ -322,12 +333,18 @@ class CreateUserRequest(BaseModel):
 
 
 class UpdateUserRequest(BaseModel):
+    username: str | None = Field(default=None, min_length=1, max_length=128)
     role: str | None = None
     teams: list[str] | None = None
     is_active: bool | None = None
     self_service: bool | None = None
     apps_server: str | None = Field(default=None, max_length=253)
     apps_server_ip: str | None = Field(default=None, max_length=45)
+
+    @field_validator("username")
+    @classmethod
+    def _clean_username(cls, value: str | None) -> str | None:
+        return None if value is None else _clean_email_username(value)
 
     @field_validator("role")
     @classmethod

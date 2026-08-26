@@ -208,16 +208,20 @@ def update_user(
                 detail="Cannot remove the last active administrator",
             )
 
-    updated = repository.update_user(
-        conn,
-        user_id,
-        role=payload.role,
-        teams=payload.teams,
-        is_active=payload.is_active,
-        self_service=payload.self_service,
-        apps_server=payload.apps_server,
-        apps_server_ip=payload.apps_server_ip,
-    )
+    try:
+        updated = repository.update_user(
+            conn,
+            user_id,
+            username=payload.username,
+            role=payload.role,
+            teams=payload.teams,
+            is_active=payload.is_active,
+            self_service=payload.self_service,
+            apps_server=payload.apps_server,
+            apps_server_ip=payload.apps_server_ip,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     assert updated is not None
     if payload.is_active is False:
         sessions.delete_user_sessions(conn, user_id)
@@ -232,6 +236,15 @@ def update_user(
         payload.self_service,
         admin.get("username"),
     )
+    detail = (
+        f"role={payload.role} is_active={payload.is_active} "
+        f"teams={payload.teams} self_service={payload.self_service}"
+    )
+    if payload.username is not None and payload.username != target["username"]:
+        detail += (
+            f" username_old={target['username']} username_new={payload.username} "
+            f"derived_user_id={updated['user_id']}"
+        )
     audit.record(
         conn,
         category=audit.CATEGORY_USER,
@@ -239,9 +252,8 @@ def update_user(
         actor=admin,
         target_type="user",
         target_id=user_id,
-        target_name=target["username"],
-        detail=f"role={payload.role} is_active={payload.is_active} "
-        f"teams={payload.teams} self_service={payload.self_service}",
+        target_name=updated["username"],
+        detail=detail,
     )
     return _user_out(updated)
 

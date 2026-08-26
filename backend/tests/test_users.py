@@ -340,3 +340,110 @@ def test_non_admin_cannot_manage_users(admin) -> None:
         )
     assert listing.status_code == 403
     assert delete.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# issue_local_031: mutable sign-in email, immutable resource identity, and
+# case-insensitive username matching.
+# ---------------------------------------------------------------------------
+
+
+def test_create_user_normalizes_email_case_and_whitespace(admin) -> None:
+    client, csrf, _ = admin
+    resp = _create(client, csrf, "  Mixed.Case@Example.COM  ")
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["user"]["username"] == "mixed.case@example.com"
+
+
+def test_create_user_rejects_case_insensitive_duplicate(admin) -> None:
+    client, csrf, _ = admin
+    first = _create(client, csrf, "casedup@example.com")
+    assert first.status_code == 201, first.text
+    dup = _create(client, csrf, "CaseDup@Example.com")
+    assert dup.status_code == 409, dup.text
+
+
+def test_update_user_can_change_sign_in_email(admin) -> None:
+    client, csrf, _ = admin
+    created = _create(client, csrf, "renameme@example.com").json()["user"]
+    old_derived_id = created["user_id"]
+    resp = client.patch(
+        f"/api/users/{created['id']}",
+        json={"username": "renamed@example.com"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["username"] == "renamed@example.com"
+    # The immutable resource identity never changes on rename.
+    assert body["user_id"] == old_derived_id
+
+
+def test_update_user_rejects_case_insensitive_conflict(admin) -> None:
+    client, csrf, _ = admin
+    _create(client, csrf, "existing@example.com")
+    other = _create(client, csrf, "other@example.com").json()["user"]
+    resp = client.patch(
+        f"/api/users/{other['id']}",
+        json={"username": "Existing@Example.com"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 409, resp.text
+
+
+def test_update_user_email_only_preserves_other_fields(admin) -> None:
+    client, csrf, _ = admin
+    created = _create(
+        client, csrf, "preserve@example.com", teams=["Red Team"]
+    ).json()["user"]
+    resp = client.patch(
+        f"/api/users/{created['id']}",
+        json={"username": "preserved@example.com"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["teams"] == ["Red Team"]
+    assert body["role"] == created["role"]
+
+
+def test_rename_audit_records_old_and_new_username(admin) -> None:
+    client, csrf, _ = admin
+    created = _create(client, csrf, "auditme@example.com").json()["user"]
+    client.patch(
+        f"/api/users/{created['id']}",
+        json={"username": "audited@example.com"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    entries = client.get("/api/audit?category=user").json()
+    rename_entry = next(
+        e for e in entries
+        if e["target_id"] == created["id"] and "username_old" in e["detail"]
+    )
+    assert "username_old=auditme@example.com" in rename_entry["detail"]
+    assert "username_new=audited@example.com" in rename_entry["detail"]
+
+
+def test_sso_matches_stored_mixed_case_username_case_insensitively(admin) -> None:
+    """A legacy or admin-created mixed-case username still matches an SSO
+    claim that a provider normalizes to a different case."""
+    client, csrf, _ = admin
+    from app.db import get_connection
+    from app import repository
+
+    with get_connection() as conn:
+        row = repository.get_user_by_username(conn, "someone@example.com")
+        assert row is None
+        # Simulate a legacy mixed-case stored username (bypassing the
+        # normalizing create_user() path, as an old row might predate it).
+        conn.execute(
+            "INSERT INTO users (username, derived_user_id, password_hash, role) "
+            "VALUES ('Someone@Example.com', 'someone', 'x', 'user')"
+        )
+        found = repository.get_user_by_username(conn, "someone@example.com")
+        assert found is not None
+        assert found["username"] == "Someone@Example.com"
+
+        found_upper = repository.get_user_by_username(conn, "SOMEONE@EXAMPLE.COM")
+        assert found_upper is not None
+        assert found_upper["id"] == found["id"]

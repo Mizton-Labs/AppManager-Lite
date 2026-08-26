@@ -465,6 +465,9 @@ export interface CreateUserInput {
 }
 
 export interface UpdateUserInput {
+  /** Sign-in email. Mutable; the immutable `user_id` (server names, SSH
+   * users, pools, jump accounts) never changes when this changes. */
+  username?: string;
   role?: Role;
   teams?: string[];
   is_active?: boolean;

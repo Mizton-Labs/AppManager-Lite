@@ -237,8 +237,8 @@
       { "method": "GET", "path": "/api/users/resolve", "auth": "user", "csrf": false, "summary": "Resolve one active share recipient by exact case-insensitive username or derived user ID." },
       { "method": "GET", "path": "/api/teams", "auth": "user", "csrf": false, "summary": "List teams (name, order, icon) for any signed-in user." },
       { "method": "GET", "path": "/api/users", "auth": "admin", "csrf": false, "summary": "List users." },
-      { "method": "POST", "path": "/api/users", "auth": "admin", "csrf": true, "summary": "Create a user (returns a generated password and per-template auto-provisioning results)." },
-      { "method": "PATCH", "path": "/api/users/{user_id}", "auth": "admin", "csrf": true, "summary": "Update a user's role, teams, active state, or flags." },
+      { "method": "POST", "path": "/api/users", "auth": "admin", "csrf": true, "summary": "Create a user (returns a generated password and per-template auto-provisioning results); provision_templates may be empty for an account-only user." },
+      { "method": "PATCH", "path": "/api/users/{user_id}", "auth": "admin", "csrf": true, "summary": "Update a user's sign-in email/username (case-insensitive uniqueness; the immutable derived user ID never changes), role, teams, active state, or flags." },
       { "method": "POST", "path": "/api/users/{user_id}/reset-password", "auth": "admin", "csrf": true, "summary": "Reset a user's password (returns a generated password)." },
       { "method": "DELETE", "path": "/api/users/{user_id}", "auth": "admin", "csrf": true, "summary": "Delete a user." },
       { "method": "GET", "path": "/api/applications", "auth": "user", "csrf": false, "summary": "List applications visible to the caller (optional team filter)." },
@@ -300,8 +300,8 @@
     "tables": [
       {
         "name": "users",
-        "description": "Accounts with role, status, self-service flag, per-user apps server/port, and a per-user Ed25519 SSH keypair (generated at creation, backfilled by migration; key material is served only to the owning user).",
-        "columns": ["id", "username", "password_hash", "role", "is_active", "must_change_password", "self_service", "apps_server", "apps_server_ip", "apps_port", "ssh_private_key", "ssh_public_key", "ssh_key_generated_at", "theme", "created_at", "updated_at"],
+        "description": "Accounts with role, status, self-service flag, per-user apps server/port, and a per-user Ed25519 SSH keypair (generated at creation, backfilled by migration; key material is served only to the owning user). username is the mutable sign-in email, normalized to lowercase and matched case-insensitively everywhere (local login, SSO, and a unique index on lower(username)); derived_user_id is the immutable resource identity (server names, OS/jump accounts, Proxmox pool, SSH bundle values) computed once at creation and never changed by a later username edit, backed by a unique index.",
+        "columns": ["id", "username", "derived_user_id", "password_hash", "role", "is_active", "must_change_password", "self_service", "apps_server", "apps_server_ip", "apps_port", "ssh_private_key", "ssh_public_key", "ssh_key_generated_at", "theme", "created_at", "updated_at"],
         "primaryKey": ["id"]
       },
       {

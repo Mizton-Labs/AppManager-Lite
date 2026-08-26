@@ -365,12 +365,25 @@ and SSH bundle, and managing servers, with clearly labeled administrator
 sections and simple flow diagrams.
 
 When an administrator creates a user, the username must be an **email address**;
-it is the user's sign-in name. Each user also gets a derived **user ID** — the
+it is the user's sign-in name. Usernames are trimmed and lowercased on
+save and matched **case-insensitively** everywhere (local login and SSO), so
+`User@Example.com` and `user@example.com` are the same account — this avoids
+sign-in failures when an identity provider (e.g. Microsoft Entra) reports a
+different case than what was originally stored. Each user also gets a derived
+**user ID** — the
 email's local part, lowercased, with dots and underscores replaced by dashes
 (restricted to letters, digits, and dashes; e.g. `john.doe@example.com` →
 `john-doe`) — shown beneath the email in User Management and on the Account
 page. Because the user ID names per-user resources, creating a user whose
-derived ID collides with an existing user's is rejected.
+derived ID collides with an existing user's is rejected. Unlike the sign-in
+email, the **user ID is immutable**: it is computed once when the account is
+created and stored separately, so an administrator can later edit a user's
+**sign-in email** (User Management → Edit) without changing their user ID,
+server names, SSH/OS accounts, Proxmox pool, or jump-server account — only how
+the account signs in and matches SSO claims changes. Creating a user also
+offers a **"Create servers for this user"** toggle (on by default, preserving
+prior behavior); turning it off skips server provisioning entirely regardless
+of which templates exist, for an account-only user.
 
 Every user account carries its own **Ed25519 SSH keypair**, generated at user
 creation (existing accounts are backfilled automatically on startup). From the

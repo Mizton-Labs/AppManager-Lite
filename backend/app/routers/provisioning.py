@@ -1413,12 +1413,12 @@ def servers_overview(
     expire_pending_server_deletions(conn)
     groups: dict[int, OwnerServersOut] = {}
 
-    def _group(uid: int, username: str) -> OwnerServersOut:
+    def _group(uid: int, username: str, derived_user_id: str = "") -> OwnerServersOut:
         if uid not in groups:
             groups[uid] = OwnerServersOut(
                 user_id=uid,
                 username=username,
-                derived_user_id=repository.derive_user_id(username or ""),
+                derived_user_id=derived_user_id or repository.derive_user_id(username or ""),
             )
         return groups[uid]
 
@@ -1427,11 +1427,15 @@ def servers_overview(
         # Resolve pools once for the whole overview (single provider call).
         _attach_server_pools(conn, rows)
         for srv in rows:
-            grp = _group(srv["user_id"], srv.get("owner_username", ""))
+            grp = _group(
+                srv["user_id"],
+                srv.get("owner_username", ""),
+                srv.get("owner_user_id", ""),
+            )
             grp.servers.append(_server_out(srv, include_error=True))
     else:
         username = actor.get("username", "")
-        grp = _group(actor["id"], username)
+        grp = _group(actor["id"], username, actor.get("user_id", ""))
         rows = repository.list_user_servers(conn, actor["id"])
         _attach_server_pools(conn, rows)
         for srv in rows:
@@ -2481,16 +2485,22 @@ def reset_user_server_access(
                 detail="Current bundle SSH key is inconsistent; regenerate the account key first",
             )
         owner_row = conn.execute(
-            "SELECT username FROM users WHERE id = ?", (user_id,)
+            "SELECT username, derived_user_id FROM users WHERE id = ?", (user_id,)
         ).fetchone()
         owner_marker = sshkeys.managed_marker(user_id)
-        legacy_marker = f"AppManager-managed:{repository.derive_user_id(owner_row['username'])}"
+        owner_derived_id = owner_row["derived_user_id"] or repository.derive_user_id(
+            owner_row["username"]
+        )
+        legacy_marker = f"AppManager-managed:{owner_derived_id}"
         # Only remove a legacy derived-name marker when it uniquely identifies
         # this user. Immutable user-ID markers prevent cross-user collisions.
         legacy_conflict = any(
-            repository.derive_user_id(row["username"])
-            == repository.derive_user_id(owner_row["username"])
-            for row in conn.execute("SELECT id, username FROM users WHERE id != ?", (user_id,))
+            (row["derived_user_id"] or repository.derive_user_id(row["username"]))
+            == owner_derived_id
+            for row in conn.execute(
+                "SELECT id, username, derived_user_id FROM users WHERE id != ?",
+                (user_id,),
+            )
         )
         remove_markers = [owner_marker] + ([] if legacy_conflict else [legacy_marker])
         # Reassert the current downloadable account key for every eligible
