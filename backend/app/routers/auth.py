@@ -676,7 +676,11 @@ def download_account_bundle(
         content = repository.render_builtin_ssh_config(
             user, servers, jump=jump_dict, key_name=key_name
         )
-    elif template["mappings"]:
+    else:
+        # Every custom (non-built-in) template renders its own saved content,
+        # even with zero mappings -- a template with no mappings is a valid,
+        # fully static definition and must be downloaded unchanged, not
+        # silently replaced by a generic fallback.
         content = repository.render_bundle_template(
             template,
             user,
@@ -684,11 +688,6 @@ def download_account_bundle(
             repository.list_server_templates(conn),
         )
         self_contained_scripts = True
-    else:
-        # No mappings and not builtin: generic per-server config fallback.
-        content = repository.render_generic_ssh_config(
-            user, servers, key_name=key_name
-        )
     safe_name = "".join(
         ch if ch.isalnum() or ch in ("-", "_") else "-" for ch in template["name"].lower()
     ).strip("-") or "bundle"

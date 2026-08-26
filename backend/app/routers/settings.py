@@ -69,7 +69,10 @@ def _branding_out(row: dict[str, Any]) -> BrandingSettingsOut:
 
 
 def _bundle_out(template: dict[str, Any]) -> BundleTemplateOut:
-    return BundleTemplateOut(**template)
+    definition = (
+        repository.BUILTIN_SSH_CONFIG_DEFINITION if template.get("is_builtin") else ""
+    )
+    return BundleTemplateOut(**{**template, "definition": definition})
 
 
 @router.get("/settings/reverse-proxy", response_model=ReverseProxySettingsOut)

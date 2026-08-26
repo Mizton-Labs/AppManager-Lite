@@ -270,6 +270,67 @@ def test_builtin_template_is_seeded_and_readonly(admin) -> None:
     assert dele.status_code == 409
 
 
+def test_custom_template_with_no_mappings_downloads_saved_content(admin) -> None:
+    # Regression: a custom (non-builtin) template with zero mappings is a
+    # valid, fully static definition and must be downloaded byte-for-byte,
+    # not silently replaced by a generic per-server fallback.
+    client, csrf, _ = admin
+    static_content = "Host example\n    HostName example.test\n    User git\n"
+    created = client.post(
+        "/api/settings/bundle-templates",
+        json={"name": "StaticOnly", "content": static_content, "mappings": []},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert created.status_code == 201, created.text
+    tid = created.json()["id"]
+    text = _config_text(client.get(f"/api/account/bundles/{tid}/download"))
+    assert text == static_content
+
+
+def test_builtin_definition_is_generic_placeholder(admin) -> None:
+    client, csrf, _ = admin
+    templates = client.get("/api/settings/bundle-templates").json()
+    builtin = next(t for t in templates if t["name"] == "SSH Config Default")
+    assert builtin["definition"]
+    assert "Host *" in builtin["definition"]
+    assert "jumpserver" in builtin["definition"]
+    # Never a live user's real topology or key material.
+    assert "IdentityFile ~/.ssh/id_ed25519" not in builtin["definition"]
+
+    # Custom templates have no separate definition; their content is already
+    # the real definition.
+    custom = client.post(
+        "/api/settings/bundle-templates",
+        json={"name": "NoDefinition", "content": "x", "mappings": []},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert custom.status_code == 201, custom.text
+    assert custom.json()["definition"] == ""
+
+
+def test_cloning_builtin_yields_editable_static_definition(admin) -> None:
+    client, csrf, _ = admin
+    templates = client.get("/api/settings/bundle-templates").json()
+    builtin = next(t for t in templates if t["name"] == "SSH Config Default")
+    clone = client.post(
+        f"/api/settings/bundle-templates/{builtin['id']}/clone",
+        json={"name": "Cloned Default"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert clone.status_code == 201, clone.text
+    cloned = clone.json()
+    assert cloned["is_builtin"] is False
+    # The clone's stored content is the canonical generic definition, not the
+    # builtin's internal marker comment, so it is immediately useful/editable.
+    assert "Host *" in cloned["content"]
+    assert "Generated dynamically" not in cloned["content"]
+    # Downloading the untouched clone returns that same static content.
+    text = _config_text(
+        client.get(f"/api/account/bundles/{cloned['id']}/download")
+    )
+    assert text == cloned["content"]
+
+
 def test_builtin_render_with_jump_server(admin, monkeypatch) -> None:
     client, csrf, _ = admin
     # Register a key + enable the jump server with a custom port.

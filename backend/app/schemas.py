@@ -454,6 +454,11 @@ class BundleTemplateOut(BaseModel):
     mappings: list[BundleTemplateMapping] = Field(default_factory=list)
     is_builtin: bool = False
     enabled: bool = True
+    # Response-only: a read-only, generic (no real topology/secrets) preview of
+    # what the built-in template actually downloads, since its stored
+    # ``content`` above is only a marker comment. Empty for custom templates,
+    # whose ``content`` is already the real definition.
+    definition: str = ""
 
 
 class CloneBundleTemplateRequest(BaseModel):

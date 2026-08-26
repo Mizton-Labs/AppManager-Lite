@@ -411,8 +411,10 @@ contains the private key the download is audited and never cached. The
 downloaded filename carries a UTC timestamp suffix
 (`<bundle>-YYYYMMDD-HHMMSS.zip`) so repeated downloads never collide in a
 browser's downloads folder; only the zip's own filename is suffixed, not the
-files inside it. Templates with
-field mappings are rendered from account details;
+files inside it. Every custom (non-built-in) template downloads its own saved
+**content** unchanged, byte-for-byte; **field mappings are optional** and only
+substitute additional values into that content when present — a template with
+no mappings is a valid, fully static definition. Available
 mapping sources include the username, the derived **user ID**, apps server
 host/IP, role, and **per-template variables** (`server_<slug>_name`,
 `server_<slug>_ip`, `server_<slug>_user`, where `<slug>` is the server
@@ -427,8 +429,13 @@ template variable after a rename. The predefined, read-only **"SSH Config Defaul
 **built-in** template that renders a full SSH config dynamically: a `Host *`
 keepalive stanza, a `Host jumpserver` block (with the configured port) when the
 jump server is enabled, and one `Host` block per server with `ProxyJump
-jumpserver` when the jump server is enabled. Built-in templates can be
-**cloned** into editable copies and **disabled** (hidden from downloads) but
+jumpserver` when the jump server is enabled. Because its stored content is only
+an internal marker, its card has a **View definition** control showing a
+generic, read-only placeholder of that structure (no real usernames, hosts, or
+key material). Built-in templates can be
+**cloned** into editable copies (the clone starts from that same generic
+placeholder, so it is immediately useful and editable) and **disabled** (hidden
+from downloads) but
 not edited or deleted. Administrators can also set the user's **apps server**
 (host/IP) — the host where that user runs their applications, used as the
 upstream for that user's reverse-proxy aliases. When one or more server

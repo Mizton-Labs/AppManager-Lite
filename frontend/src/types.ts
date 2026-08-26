@@ -92,6 +92,9 @@ export interface BundleTemplate {
   mappings: BundleTemplateMapping[];
   is_builtin: boolean;
   enabled: boolean;
+  /** Read-only generic preview of the built-in's actual download; empty for
+   * custom templates (whose `content` is already the real definition). */
+  definition: string;
 }
 
 export interface BundleOption {

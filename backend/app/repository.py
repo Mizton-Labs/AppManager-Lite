@@ -783,6 +783,34 @@ def _server_host_alias(server: dict[str, Any]) -> str:
     return re.sub(r"[^a-z0-9-]+", "-", raw.lower()).strip("-") or "server"
 
 
+# A canonical, read-only, generic preview of the shape of the built-in
+# default SSH bundle. The built-in template's stored ``content`` is only a
+# marker comment ("Generated dynamically..."); this constant is a placeholder
+# structure only, containing no real usernames, hosts, or key material, so it
+# can be safely displayed to any administrator and used as the starting point
+# for a clone of the built-in.
+BUILTIN_SSH_CONFIG_DEFINITION = (
+    "Host *\n"
+    "    ServerAliveInterval 60\n"
+    "    ServerAliveCountMax 3\n"
+    "    TCPKeepAlive yes\n"
+    "\n"
+    "# Present only when a jump server is enabled in Settings:\n"
+    "Host jumpserver\n"
+    "    Hostname <configured jump/bundle host>\n"
+    "    User <configured jump account>\n"
+    "    Port <configured jump/bundle port>\n"
+    "    IdentityFile ~/.ssh/<application key name>\n"
+    "\n"
+    "# Repeated for each of your servers that has an IP address:\n"
+    "Host <server hostname or name, slugified>\n"
+    "    Hostname <server IP address>\n"
+    "    User <template main OS user, or your derived user ID>\n"
+    "    ProxyJump jumpserver  # only when a jump server is enabled\n"
+    "    IdentityFile ~/.ssh/<application key name>\n"
+)
+
+
 def render_generic_ssh_config(
     user: dict[str, Any],
     user_servers: list[dict[str, Any]],
@@ -991,14 +1019,22 @@ def set_bundle_template_enabled(
 def clone_bundle_template(
     conn: sqlite3.Connection, template_id: int, *, new_name: str
 ) -> dict[str, Any] | None:
-    """Clone a template into a new editable (non-builtin) template."""
+    """Clone a template into a new editable (non-builtin) template.
+
+    Cloning the built-in copies the canonical, generic placeholder definition
+    (never real user/server topology) so the clone starts as a useful, static
+    editable template rather than the built-in's internal marker comment.
+    """
     source = get_bundle_template(conn, template_id)
     if source is None:
         return None
+    content = (
+        BUILTIN_SSH_CONFIG_DEFINITION if source.get("is_builtin") else source["content"]
+    )
     return create_bundle_template(
         conn,
         name=new_name,
-        content=source["content"],
+        content=content,
         description=source.get("description", ""),
         mappings=[
             {"field_name": m["field_name"], "source": m["source"]}
