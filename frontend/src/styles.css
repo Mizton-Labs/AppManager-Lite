@@ -1950,13 +1950,18 @@ textarea:focus-visible,
   border-radius: var(--radius);
   color: var(--text);
   transition: border-color 0.15s, transform 0.15s;
+  min-width: 0;
 }
 
 .app-card-star { position: absolute; top: .55rem; right: .55rem; display: grid; place-items: center; width: 2rem; height: 2rem; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--muted); cursor: pointer; transition: color .15s, transform .15s, filter .15s; }
 .app-card-star:hover { color: var(--accent); transform: scale(1.12); filter: drop-shadow(0 2px 5px color-mix(in srgb, var(--accent) 35%, transparent)); }
 .app-card-star:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .app-card-star.active { color: var(--accent); }
-.app-card-visits { position: absolute; right: .65rem; bottom: .55rem; font-size: .72rem; color: var(--muted); }
+/* Normal-flow footer for Edit + launch-count, kept out of the absolutely
+ * positioned favorite star's corner so long titles/descriptions/tags/counts
+ * can never overlap either control (issue_local_032). */
+.app-card-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem; margin-top: .35rem; min-width: 0; }
+.app-card-visits { font-size: .72rem; color: var(--muted); white-space: nowrap; }
 .stats-toggle { display: flex; align-items: center; gap: .45rem; font-size: .85rem; }
 .stats-period { display: flex; gap: .5rem; flex-wrap: wrap; }
 .stats-kpis { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 1rem; }
@@ -1976,6 +1981,10 @@ textarea:focus-visible,
   gap: 0.45rem;
   color: inherit;
   text-decoration: none;
+  min-width: 0;
+  /* Reserve room so the title/description text never runs under the
+   * absolutely positioned favorite star in the top-right corner. */
+  padding-right: 2.1rem;
 }
 
 .app-card:hover {
@@ -2009,6 +2018,7 @@ textarea:focus-visible,
   background: var(--bg);
   border: 1px solid var(--border-strong);
   color: var(--brand-primary);
+  flex-shrink: 0;
 }
 
 .app-card-monogram {
@@ -2024,11 +2034,13 @@ textarea:focus-visible,
 
 .app-card-title {
   font-weight: 600;
+  overflow-wrap: anywhere;
 }
 
 .app-card-desc {
   font-size: 0.85rem;
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 .app-card-teams {

@@ -56,6 +56,14 @@ export function SettingsView(props: {
       <nav className="tabs" aria-label="Settings sections">
         <button
           type="button"
+          className={tab === "general" ? "tab active" : "tab"}
+          aria-current={tab === "general"}
+          onClick={() => setTab("general")}
+        >
+          General Settings
+        </button>
+        <button
+          type="button"
           className={tab === "users" ? "tab active" : "tab"}
           aria-current={tab === "users"}
           onClick={() => setTab("users")}
@@ -85,14 +93,6 @@ export function SettingsView(props: {
           onClick={() => setTab("remote")}
         >
           Remote Access
-        </button>
-        <button
-          type="button"
-          className={tab === "general" ? "tab active" : "tab"}
-          aria-current={tab === "general"}
-          onClick={() => setTab("general")}
-        >
-          General Settings
         </button>
       </nav>
 

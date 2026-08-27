@@ -77,4 +77,22 @@ describe("AppCard", () => {
       "_blank",
     );
   });
+
+  it("puts Edit and the launch-count in a normal-flow footer, not absolutely positioned (issue_local_032)", () => {
+    const { container } = render(
+      <AppCard
+        app={makeApp({ show_statistics: true, visits_7d: 12 })}
+        editHref="/app-manager?editApp=1"
+      />,
+    );
+    const footer = container.querySelector(".app-card-actions");
+    expect(footer).not.toBeNull();
+    expect(footer!.querySelector(".app-card-edit")).not.toBeNull();
+    expect(footer!.querySelector(".app-card-visits")).not.toBeNull();
+  });
+
+  it("omits the footer entirely when there is nothing to show in it", () => {
+    const { container } = render(<AppCard app={makeApp({ show_statistics: false })} />);
+    expect(container.querySelector(".app-card-actions")).toBeNull();
+  });
 });

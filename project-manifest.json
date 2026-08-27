@@ -73,7 +73,7 @@
         { "path": "frontend/src/components/Sidebar.tsx", "role": "Primary navigation, including data-driven team buttons." },
         { "path": "frontend/src/components/HomeView.tsx", "role": "Home page: shared vs. owned applications." },
         { "path": "frontend/src/components/TeamView.tsx", "role": "Per-team application list resolved from the URL slug." },
-        { "path": "frontend/src/components/SettingsView.tsx", "role": "Settings tabs: Application Manager, User Management, Teams, General Settings." },
+        { "path": "frontend/src/components/SettingsView.tsx", "role": "Admin settings tabs, in order: General Settings (default), User Management, Teams, Server Provisioning, Remote Access." },
         { "path": "frontend/src/components/ApplicationManager.tsx", "role": "Create/edit applications, approval actions, reverse-proxy push. Create is collapsed behind a New application button; a filter searches name/description/url/teams/owner; admins see their own apps first (My applications) then others', with in-group reordering hidden while filtering. Each row exposes Edit/Disable/Delete (inline-confirm Delete in the action row; hidden while the editor is expanded so the footer owns it)." },
         { "path": "frontend/src/components/UserManagement.tsx", "role": "Admin user management and team assignment. Create is collapsed behind an Add user button; a filter searches username/user_id/role/teams." },
         { "path": "frontend/src/components/TeamManagement.tsx", "role": "Admin team management: create, rename, icon, reorder, delete." },
