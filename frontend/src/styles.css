@@ -1166,8 +1166,27 @@ textarea:focus-visible,
   color: var(--text);
 }
 
+/* issue_local_032 (follow-up): compact, square-ish internal cards for
+ * Team/Published by/launch-count inside the main app card -- deliberately
+ * NOT the pill-shaped `.tag` used elsewhere, and scoped to `.app-card` so
+ * other tag usages (Application Manager, Audit, etc.) are unaffected. All
+ * three share the same height/padding/font size; width follows content. The
+ * favorite star and Edit link are unchanged (icon control / existing pill). */
+.app-card-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.7rem;
+  line-height: 1.2;
+  padding: 0.16rem 0.4rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+}
+
 .publisher-row {
   margin-top: 0.35rem;
+  gap: 0.3rem;
 }
 
 .publisher-tag {
@@ -1515,6 +1534,21 @@ textarea:focus-visible,
 .manager-toolbar {
   display: flex;
   justify-content: flex-start;
+}
+
+/* issue_local_032 (follow-up): breathing room around the staged-reorder
+ * Save/Discard actions, without changing the shared `.manager-toolbar`
+ * (also reused by Servers and User Management). */
+.application-manager-actions {
+  gap: 1.25rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+.reorder-actions {
+  display: inline-flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
 }
 
 /* issue_024: a header row that pairs a card/section title with a control on
@@ -1961,7 +1995,7 @@ textarea:focus-visible,
  * positioned favorite star's corner so long titles/descriptions/tags/counts
  * can never overlap either control (issue_local_032). */
 .app-card-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem; margin-top: .35rem; min-width: 0; }
-.app-card-visits { font-size: .72rem; color: var(--muted); white-space: nowrap; }
+.app-card-visits { color: var(--muted); white-space: nowrap; }
 .stats-toggle { display: flex; align-items: center; gap: .45rem; font-size: .85rem; }
 .stats-period { display: flex; gap: .5rem; flex-wrap: wrap; }
 .stats-kpis { display: grid; grid-template-columns: repeat(6, minmax(0,1fr)); gap: 1rem; }
@@ -1977,6 +2011,7 @@ textarea:focus-visible,
 .stats-lines { width: 100%; min-height: 240px; overflow: visible; }.stats-grid-line { stroke: var(--border); stroke-width: 1; vector-effect: non-scaling-stroke; }.stats-axis-label { fill: var(--muted); font-size: 10px; }.stats-series-line { fill: none; stroke-width: 2; vector-effect: non-scaling-stroke; }.stats-series-point { stroke: var(--bg-card); stroke-width: 2; vector-effect: non-scaling-stroke; }
 .user-bars { display: grid; gap: .55rem; }.user-bars > div { display: grid; grid-template-columns: minmax(8rem, 15rem) 1fr auto; gap: .65rem; align-items: center; font-size: .8rem; }.user-bars > div > div { height: .6rem; border-radius: 99px; background: var(--bg); overflow: hidden; }.user-bars i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), var(--brand-primary)); }.user-bars b { font-weight: 500; color: var(--muted); white-space: nowrap; }
 .stats-detail { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; padding: .8rem 1rem; margin-bottom: .5rem; background: var(--bg); border-radius: .5rem; font-size: .8rem; }.stats-detail h3 { font-size: .8rem; margin-bottom: .4rem; }.stats-detail p { margin: .25rem 0; color: var(--muted); }.stats-detail code { color: var(--text); }
+.alias-user-apps { grid-template-columns: 1fr; }
 @media (max-width: 1100px) { .stats-kpis { grid-template-columns: repeat(3, minmax(0,1fr)); } }
 @media (max-width: 700px) { .stats-kpis { grid-template-columns: 1fr 1fr; }.stats-row { grid-template-columns: 1fr auto; }.stats-row span { text-align: right; } }
 
@@ -2316,8 +2351,22 @@ textarea:focus-visible,
 .overview-owners {
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
+  gap: 0.85rem;
   margin-top: 1rem;
+}
+
+/* issue_local_032 (follow-up): each server owner reads as its own card. */
+.overview-owner {
+  padding: 0.9rem 1.1rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: border-color 0.15s;
+}
+
+.overview-owner:hover,
+.overview-owner:focus-within {
+  border-color: var(--brand-primary);
 }
 
 /* issue_local_032: collapsed-by-default owner card toggle button. */
@@ -2348,6 +2397,14 @@ textarea:focus-visible,
 
 .servers-summary-kpis {
   margin-top: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+/* issue_local_032 (follow-up): breathing room between the summary count
+ * cards above and the Add server button/create form below. */
+.servers-create-toolbar {
+  margin-top: 0.5rem;
+  margin-bottom: 1.25rem;
 }
 
 .pagination {
@@ -2359,10 +2416,8 @@ textarea:focus-visible,
 }
 
 .overview-owner-head {
-  margin: 0 0 0.6rem;
+  margin: 0;
   font-size: 0.95rem;
-  border-bottom: 1px solid var(--border);
-  padding-bottom: 0.3rem;
 }
 
 .overview-owner-count {
@@ -2374,7 +2429,9 @@ textarea:focus-visible,
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
-  margin-top: 0.6rem;
+  margin-top: 0.75rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--border);
 }
 
 /* The four compact charts, side by side; wraps on narrow screens. */

@@ -61,10 +61,10 @@ export function AppCard({ app, editHref }: { app: Application; editHref?: string
         {(app.publisher_team || app.created_by) && (
           <span className="app-card-teams publisher-row">
             {app.publisher_team && (
-              <span className="tag publisher-team-tag">Team: {app.publisher_team}</span>
+              <span className="app-card-chip publisher-team-tag">Team: {app.publisher_team}</span>
             )}
             {app.created_by && (
-              <span className="tag publisher-tag">
+              <span className="app-card-chip publisher-tag">
                 Published by: {publisherLabel(app.created_by)}
               </span>
             )}
@@ -84,7 +84,7 @@ export function AppCard({ app, editHref }: { app: Application; editHref?: string
             <span />
           )}
           {app.show_statistics && app.visits_7d !== null && app.visits_7d !== undefined && (
-            <span className="app-card-visits">{app.visits_7d} launches · 7 days</span>
+            <span className="app-card-chip app-card-visits">{app.visits_7d} launches · 7 days</span>
           )}
         </div>
       )}

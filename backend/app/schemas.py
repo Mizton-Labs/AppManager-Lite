@@ -671,6 +671,15 @@ class FavoriteEntryRow(BaseModel):
     starred_at: str
 
 
+class AliasUserApplicationRow(BaseModel):
+    """issue_local_032 (follow-up): one application's contribution to an
+    authenticated alias user's total, for the expandable per-user breakdown."""
+
+    application_id: int
+    application_name: str
+    alias_visits: int
+
+
 class AliasUserRow(BaseModel):
     """issue_local_032: one row of the complete "Alias visits" drill-down for
     authenticated visitors (anonymous traffic is never attributable to a
@@ -681,6 +690,9 @@ class AliasUserRow(BaseModel):
     applications_visited: int
     active_days: int
     last_visit: str
+    # issue_local_032 (follow-up): per-application breakdown behind an
+    # expandable row, ordered by visits descending then name/id.
+    applications: list[AliasUserApplicationRow] = Field(default_factory=list)
 
 
 class ApplicationStatisticsOut(BaseModel):
@@ -1000,6 +1012,20 @@ class NavigationActivityOut(BaseModel):
     first_seen_at: str
     last_seen_at: str
     visit_count: int
+
+
+class NavigationActivityPageOut(BaseModel):
+    """issue_local_032 (follow-up): a bounded page of navigation activity.
+
+    ``total`` is capped at the newest ``NAVIGATION_ACTIVITY_MAX_EVENTS`` stored
+    rows (each row is one deduplicated 5-minute bucket, not a raw visit
+    count), even if retention has not yet swept older rows.
+    """
+
+    items: list[NavigationActivityOut]
+    total: int
+    offset: int
+    limit: int
 
 
 # Reject shell metacharacters / whitespace tricks in path-like settings so a

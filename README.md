@@ -356,7 +356,11 @@ launches; it is always launch-only, never mixed with alias-visit data). Below
 the chart, a **tab bar** (Applications / Launch users / Favorites / Alias
 visits) shows the complete drill-down list behind the clicked KPI; clicking a
 KPI switches to its tab. Every list is keyed by the user's immutable derived
-user ID, not their (possibly since-renamed) sign-in email. **Current
+user ID, not their (possibly since-renamed) sign-in email. On the **Alias
+visits** tab, each user row is **expandable** — clicking it shows that user's
+per-application breakdown (application name and visit count, only one user
+expanded at a time) — and the user list is **paginated at 10 per page**.
+**Current
 favorites** is always a live snapshot, unaffected by the selected period —
 unlike launches and alias visits, a favorite has no "when it was active"
 concept. Expanding an application row on the Applications tab additionally
@@ -1064,10 +1068,14 @@ collapses it. Administrators additionally see top summary cards for **Total
 users** (every active account, including users with no servers yet) and
 **Total servers** (every server visible in the list); a regular user sees only
 **Total servers**, for their own visible records. Servers are grouped by
-owner, and **each owner's card is collapsed by default** — showing only their
+owner, **each owner rendered as its own distinct card** (bordered, with its
+own background), and **each owner's card is collapsed by default** — showing only their
 identity and server count — so opening the section never fetches every
 server's usage charts at once; expanding a card is what loads its servers and
-their charts for the first time. Administrators see and manage every
+their charts for the first time. **Every active account gets a card**,
+administrators included, even one with zero servers, so a newly created
+account is visible in Servers immediately rather than only appearing once it
+provisions something. Administrators see and manage every
 user's servers, with **their own servers shown first under "My servers"** and
 everyone else's under **"Users' servers"** for quick access; a regular user sees
 and manages only their own. Owner cards are **paginated at up to 10 per page**
@@ -1168,13 +1176,18 @@ that records actions performed in the portal, grouped into four tabs:
   ever recorded — never a raw URL, query string, fragment, referrer, IP
   address, or user agent. Events within the same 5-minute window for the
   same user and destination collapse into one row with a running visit
-  count, rather than one row per navigation. Stored separately from the
-  security/administrative `audit_log` above, in its own `navigation_activity`
-  table (90-day retention, swept at most once per day); the auth-disabled
-  synthetic identity is never recorded. Recording is best-effort and
-  debounced client-side (~750ms after a route settles), so it never affects
-  the page the user is actually navigating to, and a quick sequence of
-  redirects (e.g. first-run) only records the final destination.
+count, rather than one row per navigation. Stored separately from the
+security/administrative `audit_log` above, in its own `navigation_activity`
+table (90-day retention, swept at most once per day); the auth-disabled
+synthetic identity is never recorded. Recording is best-effort and
+debounced client-side (~750ms after a route settles), so it never affects
+the page the user is actually navigating to, and a quick sequence of
+redirects (e.g. first-run) only records the final destination. The
+Navigation activity tab is **paginated at 50 events per page**, over only the
+newest **500** stored events (each "event" is one deduplicated 5-minute
+bucket, not a raw visit count) — older activity beyond that window is not
+retrievable through the API even before the 90-day retention sweep runs.
+
 
 Events are stored in the `audit_log` table (created automatically on startup),
 so they survive restarts; the view shows the most recent entries per category.

@@ -14,6 +14,9 @@ const TABS: { id: StatsTab; label: string }[] = [
   { id: "alias_visits", label: "Alias visits" },
 ];
 
+/** issue_local_032 (follow-up): alias-user rows are paginated at this size. */
+const ALIAS_USERS_PER_PAGE = 10;
+
 export function AppStatisticsView() {
   const [days, setDays] = useState(30);
   const [data, setData] = useState<ApplicationStatistics | null>(null);
@@ -23,8 +26,10 @@ export function AppStatisticsView() {
   const [details, setDetails] = useState<Record<number, ApplicationStatisticsDetail>>({});
   const [detailErrors, setDetailErrors] = useState<Record<number, string>>({});
   const [tab, setTab] = useState<StatsTab>("applications");
+  const [aliasPage, setAliasPage] = useState(0);
+  const [expandedAliasUser, setExpandedAliasUser] = useState<string | null>(null);
   useEffect(() => { void load(); }, [days]);
-  async function load() { setError(null); try { const [stats, settings] = await Promise.all([api.getApplicationStatistics(days), api.getApplicationStatisticsSettings()]); setData(stats); setShowCards(settings.show_app_statistics); setExpanded(null); setDetails({}); setDetailErrors({}); } catch (err) { setError(err instanceof ApiError ? err.message : "Unable to load application statistics."); } }
+  async function load() { setError(null); try { const [stats, settings] = await Promise.all([api.getApplicationStatistics(days), api.getApplicationStatisticsSettings()]); setData(stats); setShowCards(settings.show_app_statistics); setExpanded(null); setDetails({}); setDetailErrors({}); setAliasPage(0); setExpandedAliasUser(null); } catch (err) { setError(err instanceof ApiError ? err.message : "Unable to load application statistics."); } }
   async function toggle() { const next = !showCards; setShowCards(next); try { await api.updateApplicationStatisticsSettings(next); } catch (err) { setShowCards(!next); setError(err instanceof ApiError ? err.message : "Unable to save statistics setting."); } }
   async function expand(id: number) { if (expanded === id) return setExpanded(null); setExpanded(id); if (!details[id]) { setDetailErrors(prev => ({...prev, [id]: ""})); try { const detail = await api.getApplicationStatisticsUsers(id, days); setDetails(prev => ({...prev, [id]: detail})); } catch (err) { setDetailErrors(prev => ({...prev, [id]: err instanceof ApiError ? err.message : "Unable to load user activity."})); } } }
 
@@ -91,18 +96,74 @@ export function AppStatisticsView() {
             aliases, or auth disabled) counted toward the total above but never
             attributable to an individual user.
           </p>
-          {data.alias_users.length === 0 ? <p className="muted">No authenticated alias visits in this period.</p> : (
-            <div className="stats-table">
-              {data.alias_users.map(u => (
-                <div className="stats-row" key={u.user_id}>
-                  <strong><code>{u.user_id}</code></strong>
-                  <span>{u.alias_visits} visits</span>
-                  <span>{u.applications_visited} apps</span>
-                  <span>{u.active_days} active days</span>
+          {data.alias_users.length === 0 ? <p className="muted">No authenticated alias visits in this period.</p> : (() => {
+            const aliasPageCount = Math.max(1, Math.ceil(data.alias_users.length / ALIAS_USERS_PER_PAGE));
+            const clampedAliasPage = Math.min(aliasPage, aliasPageCount - 1);
+            const pageUsers = data.alias_users.slice(
+              clampedAliasPage * ALIAS_USERS_PER_PAGE,
+              clampedAliasPage * ALIAS_USERS_PER_PAGE + ALIAS_USERS_PER_PAGE,
+            );
+            return (
+              <>
+                <div className="stats-table">
+                  {pageUsers.map(u => {
+                    const isOpen = expandedAliasUser === u.user_id;
+                    const contentId = `alias-user-apps-${u.user_id}`;
+                    return (
+                      <div key={u.user_id}>
+                        <button
+                          type="button"
+                          className="stats-row stats-expand"
+                          aria-expanded={isOpen}
+                          aria-controls={contentId}
+                          onClick={() => setExpandedAliasUser(isOpen ? null : u.user_id)}
+                        >
+                          <strong><code>{u.user_id}</code></strong>
+                          <span>{u.alias_visits} visits</span>
+                          <span>{u.applications_visited} apps</span>
+                          <span>{u.active_days} active days</span>
+                        </button>
+                        {isOpen && (
+                          <div id={contentId} className="stats-detail alias-user-apps">
+                            {u.applications.length === 0 ? (
+                              <p className="muted">No per-application detail available.</p>
+                            ) : (
+                              u.applications.map(a => (
+                                <p key={a.application_id}>
+                                  {a.application_name} · {a.alias_visits} visits
+                                </p>
+                              ))
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-              ))}
-            </div>
-          )}
+                {aliasPageCount > 1 && (
+                  <nav className="pagination" aria-label="Alias users pagination">
+                    <button
+                      type="button"
+                      className="btn ghost"
+                      onClick={() => setAliasPage(p => Math.max(0, p - 1))}
+                      disabled={clampedAliasPage === 0}
+                    >
+                      Previous
+                    </button>
+                    <span className="muted">Page {clampedAliasPage + 1} of {aliasPageCount}</span>
+                    <button
+                      type="button"
+                      className="btn ghost"
+                      onClick={() => setAliasPage(p => Math.min(aliasPageCount - 1, p + 1))}
+                      disabled={clampedAliasPage >= aliasPageCount - 1}
+                    >
+                      Next
+                    </button>
+                  </nav>
+                )}
+              </>
+            );
+          })()}
         </section>
       )}
     </>}

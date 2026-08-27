@@ -1468,6 +1468,12 @@ def servers_overview(
         return groups[uid]
 
     if is_admin:
+        # issue_local_032 (follow-up): seed a group for every active account
+        # first, so a user with zero servers still gets a (collapsed, empty)
+        # card in the admin overview instead of being invisible.
+        for user in repository.list_users(conn):
+            if user.get("is_active"):
+                _group(user["id"], user["username"], user.get("user_id", ""))
         rows = repository.list_all_servers(conn)
         # Resolve pools once for the whole overview (single provider call).
         _attach_server_pools(conn, rows)

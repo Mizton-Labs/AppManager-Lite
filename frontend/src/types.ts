@@ -615,9 +615,13 @@ export interface LaunchUserRow {
 export interface FavoriteEntryRow {
   application_id: number; application_name: string; user_id: string; starred_at: string;
 }
+export interface AliasUserApplicationRow {
+  application_id: number; application_name: string; alias_visits: number;
+}
 export interface AliasUserRow {
   user_id: string; alias_visits: number; applications_visited: number;
   active_days: number; last_visit: string;
+  applications: AliasUserApplicationRow[];
 }
 export interface ApplicationTrendSeries { application_id: number; name: string; launches: number; points: ApplicationTrendPoint[]; }
 export interface UserActivityRow { user_id: string; launches: number; applications_used: number; }
@@ -705,4 +709,13 @@ export interface NavigationActivityEntry {
   first_seen_at: string;
   last_seen_at: string;
   visit_count: number;
+}
+
+/** issue_local_032 (follow-up): a bounded page of navigation activity;
+ * `total` is capped at the newest 500 stored rows. */
+export interface NavigationActivityPage {
+  items: NavigationActivityEntry[];
+  total: number;
+  offset: number;
+  limit: number;
 }

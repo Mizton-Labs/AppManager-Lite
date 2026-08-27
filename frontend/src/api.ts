@@ -231,9 +231,12 @@ export const api = {
   recordNavigation: (destination: string) =>
     request<void>("audit/navigation", { method: "POST", body: { destination } }),
 
-  /** Recent navigation activity (administrators only). */
-  listNavigationActivity: () =>
-    request<import("./types").NavigationActivityEntry[]>("audit/navigation"),
+  /** A bounded page of navigation activity (administrators only): at most 50
+   * rows per page, over only the newest 500 stored rows. */
+  listNavigationActivity: (offset = 0, limit = 50) =>
+    request<import("./types").NavigationActivityPage>(
+      `audit/navigation?offset=${offset}&limit=${limit}`,
+    ),
 
   createApplication: (input: CreateApplicationInput) =>
     request<Application>("applications", { method: "POST", body: input }),

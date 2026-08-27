@@ -125,6 +125,73 @@ def test_statistics_includes_authorized_alias_visits(admin) -> None:
     assert rows["Alias Unvisited"]["unique_alias_users"] == 0
 
 
+def test_alias_users_include_per_application_breakdown(admin) -> None:
+    """issue_local_032 (follow-up): each authenticated alias user's row
+    carries a per-application breakdown for the expandable UI row."""
+    client, csrf, _ = admin
+    app_a = _seed_app(client, csrf, "BreakdownA", "https://example.com/bda", ["Red Team"])
+    app_b = _seed_app(client, csrf, "BreakdownB", "https://example.com/bdb", ["Red Team"])
+    from app.db import get_connection
+
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO application_alias_usage_daily "
+            "(application_id, usage_date, visitor_key, request_count) "
+            "VALUES (?, date('now'), 'user:1', 20)",
+            (app_a["id"],),
+        )
+        conn.execute(
+            "INSERT INTO application_alias_usage_daily "
+            "(application_id, usage_date, visitor_key, request_count) "
+            "VALUES (?, date('now'), 'user:1', 10)",
+            (app_b["id"],),
+        )
+
+    body = client.get("/api/application-statistics", params={"days": 7}).json()
+    admin_row = next(u for u in body["alias_users"] if u["user_id"] == "admin")
+    assert admin_row["alias_visits"] == 30
+    assert admin_row["applications_visited"] == 2
+    apps = admin_row["applications"]
+    assert len(apps) == 2
+    # Ordered by visits descending.
+    assert apps[0]["application_name"] == "BreakdownA"
+    assert apps[0]["alias_visits"] == 20
+    assert apps[1]["application_name"] == "BreakdownB"
+    assert apps[1]["alias_visits"] == 10
+
+
+def test_alias_user_breakdowns_do_not_leak_between_users(admin) -> None:
+    client, csrf, _ = admin
+    app = _seed_app(client, csrf, "IsolatedApp", "https://example.com/iso", ["Red Team"])
+    password = _create_member(client, csrf, "isolateduser@example.com", ["Red Team"])
+    user_id = next(
+        u["id"] for u in client.get("/api/users").json()
+        if u["username"] == "isolateduser@example.com"
+    )
+    from app.db import get_connection
+
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO application_alias_usage_daily "
+            "(application_id, usage_date, visitor_key, request_count) "
+            "VALUES (?, date('now'), ?, 15)",
+            (app["id"], f"user:{user_id}"),
+        )
+        conn.execute(
+            "INSERT INTO application_alias_usage_daily "
+            "(application_id, usage_date, visitor_key, request_count) "
+            "VALUES (?, date('now'), 'user:1', 5)",
+            (app["id"],),
+        )
+
+    body = client.get("/api/application-statistics", params={"days": 7}).json()
+    other_row = next(u for u in body["alias_users"] if u["user_id"] == "isolateduser")
+    admin_row = next(u for u in body["alias_users"] if u["user_id"] == "admin")
+    assert other_row["applications"][0]["alias_visits"] == 15
+    assert admin_row["applications"][0]["alias_visits"] == 5
+    assert other_row["alias_visits"] == 15
+
+
 def test_statistics_drill_down_lists_are_complete_and_use_derived_user_id(
     admin,
 ) -> None:

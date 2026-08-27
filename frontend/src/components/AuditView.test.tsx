@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AuditView } from "./AuditView";
 import type { AuditEntry, NavigationActivityEntry } from "../types";
@@ -93,7 +93,11 @@ describe("AuditView", () => {
     const fetchMock = vi.fn(async (input: string) => {
       const url = String(input);
       if (url.includes("/api/audit/navigation")) {
-        return { ok: true, status: 200, json: async () => [navEntry] } as Response;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ items: [navEntry], total: 1, offset: 0, limit: 50 }),
+        } as Response;
       }
       return { ok: true, status: 200, json: async () => [] } as Response;
     });
@@ -105,5 +109,46 @@ describe("AuditView", () => {
     expect(await screen.findByText("servers")).toBeInTheDocument();
     expect(screen.getByText("3")).toBeInTheDocument();
     expect(screen.getByText("admin")).toBeInTheDocument();
+  });
+
+  it("paginates navigation activity at 50 per page", async () => {
+    const fetchMock = vi.fn(async (input: string) => {
+      const url = String(input);
+      if (url.includes("/api/audit/navigation")) {
+        const parsed = new URL(url, "http://localhost");
+        const offset = Number(parsed.searchParams.get("offset") ?? "0");
+        const item = (n: number) => ({
+          id: n,
+          actor_username: "admin",
+          destination: "home",
+          first_seen_at: "2026-06-05T10:00:00Z",
+          last_seen_at: "2026-06-05T10:00:00Z",
+          visit_count: 1,
+        });
+        const items =
+          offset === 0
+            ? Array.from({ length: 50 }, (_, i) => item(i))
+            : [item(50)];
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ items, total: 51, offset, limit: 50 }),
+        } as Response;
+      }
+      return { ok: true, status: 200, json: async () => [] } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<AuditView />);
+    await userEvent.click(
+      screen.getByRole("button", { name: /navigation activity/i }),
+    );
+    expect(await screen.findByText("Page 1 of 2")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
+    await waitFor(() => {
+      const navCall = fetchMock.mock.calls.find(([u]) => String(u).includes("offset=50"));
+      expect(navCall).toBeDefined();
+    });
+    expect(await screen.findByText("Page 2 of 2")).toBeInTheDocument();
   });
 });

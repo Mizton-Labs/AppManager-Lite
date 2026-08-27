@@ -2542,6 +2542,60 @@ def test_servers_overview_admin_totals_include_zero_server_users(
     assert body["total_servers"] == 1
 
 
+def test_servers_overview_admin_sees_a_card_for_zero_server_users(
+    admin, monkeypatch
+) -> None:
+    """issue_local_032 (follow-up): every active account gets an owner group
+    (a card in the UI) even with zero servers, not just server owners."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    u1 = _create_member(client, csrf, username="hasserver2@example.com")
+    _create_member(client, csrf, username="zeroserver@example.com")
+    _create_server_for(client, csrf, u1["user"]["id"], template["id"], name="a")
+
+    resp = client.get("/api/servers/overview")
+    body = resp.json()
+    owners = {o["username"]: o for o in body["owners"]}
+    assert "zeroserver@example.com" in owners
+    assert owners["zeroserver@example.com"]["servers"] == []
+    assert owners["hasserver2@example.com"]["servers"] != []
+    # admin itself also has a card, even with no servers of its own.
+    assert "admin" in owners
+
+
+def test_servers_overview_excludes_inactive_users(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    created = _create_member(client, csrf, username="inactiveuser@example.com")
+    client.patch(
+        f"/api/users/{created['user']['id']}",
+        json={"is_active": False},
+        headers={"X-CSRF-Token": csrf},
+    )
+    resp = client.get("/api/servers/overview")
+    owners = {o["username"] for o in resp.json()["owners"]}
+    assert "inactiveuser@example.com" not in owners
+
+
+def test_servers_overview_nonadmin_cannot_see_other_zero_server_users(
+    admin, monkeypatch
+) -> None:
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    created = _create_member(client, csrf, username="othernoserver@example.com")
+    member, _ = _login(client.app, "othernoserver@example.com", created["password"])
+    resp = member.get("/api/servers/overview")
+    owners = {o["username"] for o in resp.json()["owners"]}
+    assert owners == {"othernoserver@example.com"}
+
+
 def test_servers_overview_nonadmin_gets_zero_totals(admin, monkeypatch) -> None:
     client, csrf, _ = admin
     _FakeProxmox(monkeypatch)

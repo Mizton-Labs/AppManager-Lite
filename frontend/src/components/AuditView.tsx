@@ -4,6 +4,9 @@ import type { AuditCategory, AuditEntry, NavigationActivityEntry } from "../type
 
 type ViewTab = AuditCategory | "navigation";
 
+/** issue_local_032 (follow-up): navigation activity page size. */
+const NAVIGATION_PAGE_SIZE = 50;
+
 const TABS: { id: ViewTab; label: string }[] = [
   { id: "application", label: "Application Management" },
   { id: "user", label: "User activity" },
@@ -38,6 +41,8 @@ export function AuditView() {
   const [tab, setTab] = useState<ViewTab>("application");
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [navEntries, setNavEntries] = useState<NavigationActivityEntry[]>([]);
+  const [navPage, setNavPage] = useState(0);
+  const [navTotal, setNavTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -47,8 +52,11 @@ export function AuditView() {
     setError(null);
     const request =
       tab === "navigation"
-        ? api.listNavigationActivity().then((result) => {
-            if (active) setNavEntries(result);
+        ? api.listNavigationActivity(navPage * NAVIGATION_PAGE_SIZE, NAVIGATION_PAGE_SIZE).then((result) => {
+            if (active) {
+              setNavEntries(result.items);
+              setNavTotal(result.total);
+            }
           })
         : api.listAuditLog(tab).then((result) => {
             if (active) setEntries(result);
@@ -67,14 +75,17 @@ export function AuditView() {
     return () => {
       active = false;
     };
-  }, [tab]);
+  }, [tab, navPage]);
 
   function selectTab(next: ViewTab) {
     setTab(next);
+    if (next === "navigation") setNavPage(0);
     if (TAB_DESTINATION[next]) {
       void api.recordNavigation(TAB_DESTINATION[next]).catch(() => undefined);
     }
   }
+
+  const navPageCount = Math.max(1, Math.ceil(navTotal / NAVIGATION_PAGE_SIZE));
 
   return (
     <div className="stack wide">
@@ -112,28 +123,51 @@ export function AuditView() {
           navEntries.length === 0 ? (
             <p className="muted">No navigation activity recorded yet.</p>
           ) : (
-            <table className="audit-table">
-              <thead>
-                <tr>
-                  <th>Last seen</th>
-                  <th>User</th>
-                  <th>Section</th>
-                  <th>Visits</th>
-                </tr>
-              </thead>
-              <tbody>
-                {navEntries.map((entry) => (
-                  <tr key={entry.id}>
-                    <td className="audit-time">{formatTime(entry.last_seen_at)}</td>
-                    <td>{entry.actor_username}</td>
-                    <td>
-                      <span className="tag">{entry.destination}</span>
-                    </td>
-                    <td>{entry.visit_count}</td>
+            <>
+              <table className="audit-table">
+                <thead>
+                  <tr>
+                    <th>Last seen</th>
+                    <th>User</th>
+                    <th>Section</th>
+                    <th>Visits</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {navEntries.map((entry) => (
+                    <tr key={entry.id}>
+                      <td className="audit-time">{formatTime(entry.last_seen_at)}</td>
+                      <td>{entry.actor_username}</td>
+                      <td>
+                        <span className="tag">{entry.destination}</span>
+                      </td>
+                      <td>{entry.visit_count}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {navPageCount > 1 && (
+                <nav className="pagination" aria-label="Navigation activity pagination">
+                  <button
+                    type="button"
+                    className="btn ghost"
+                    onClick={() => setNavPage((p) => Math.max(0, p - 1))}
+                    disabled={navPage === 0}
+                  >
+                    Previous
+                  </button>
+                  <span className="muted">Page {navPage + 1} of {navPageCount}</span>
+                  <button
+                    type="button"
+                    className="btn ghost"
+                    onClick={() => setNavPage((p) => Math.min(navPageCount - 1, p + 1))}
+                    disabled={navPage >= navPageCount - 1}
+                  >
+                    Next
+                  </button>
+                </nav>
+              )}
+            </>
           )
         ) : entries.length === 0 ? (
           <p className="muted">No activity recorded in this category yet.</p>

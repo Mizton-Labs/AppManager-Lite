@@ -45,6 +45,7 @@ from ..schemas import (
     LaunchUserRow,
     FavoriteEntryRow,
     AliasUserRow,
+AliasUserApplicationRow,
 )
 
 router = APIRouter(tags=["applications"])
@@ -661,13 +662,35 @@ def application_statistics(
         "ORDER BY f.created_at DESC",
     ).fetchall()
     alias_user_rows = conn.execute(
-        "SELECT u.username, u.derived_user_id, SUM(d.request_count) alias_visits, "
+        "SELECT u.id AS user_pk, u.username, u.derived_user_id, SUM(d.request_count) alias_visits, "
         "COUNT(DISTINCT d.application_id) applications_visited, "
         "COUNT(DISTINCT d.usage_date) active_days, MAX(d.usage_date) last_visit "
         "FROM application_alias_usage_daily d JOIN users u ON d.visitor_key = ('user:' || u.id) "
         "WHERE d.usage_date >= date('now', ?) GROUP BY u.id ORDER BY alias_visits DESC, u.id",
         (f"-{days - 1} days",),
     ).fetchall()
+    # issue_local_032 (follow-up): per-application breakdown behind each
+    # authenticated alias user's expandable row. One set-based query for every
+    # user/application pair (not one query per user) to avoid N+1 queries.
+    alias_user_app_rows = conn.execute(
+        "SELECT u.id AS user_pk, a.id AS application_id, a.name AS application_name, "
+        "SUM(d.request_count) alias_visits "
+        "FROM application_alias_usage_daily d "
+        "JOIN users u ON d.visitor_key = ('user:' || u.id) "
+        "JOIN applications a ON a.id = d.application_id "
+        "WHERE d.usage_date >= date('now', ?) "
+        "GROUP BY u.id, a.id ORDER BY u.id, alias_visits DESC, a.name, a.id",
+        (f"-{days - 1} days",),
+    ).fetchall()
+    alias_apps_by_user: dict[int, list[AliasUserApplicationRow]] = {}
+    for row in alias_user_app_rows:
+        alias_apps_by_user.setdefault(row["user_pk"], []).append(
+            AliasUserApplicationRow(
+                application_id=row["application_id"],
+                application_name=row["application_name"],
+                alias_visits=row["alias_visits"],
+            )
+        )
 
     def _uid(row: sqlite3.Row) -> str:
         return row["derived_user_id"] or repository.derive_user_id(row["username"])
@@ -710,6 +733,7 @@ def application_statistics(
                 user_id=_uid(row), alias_visits=row["alias_visits"],
                 applications_visited=row["applications_visited"],
                 active_days=row["active_days"], last_visit=row["last_visit"],
+                applications=alias_apps_by_user.get(row["user_pk"], []),
             )
             for row in alias_user_rows
         ],

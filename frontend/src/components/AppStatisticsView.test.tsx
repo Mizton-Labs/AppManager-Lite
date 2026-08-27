@@ -96,7 +96,13 @@ describe("AppStatisticsView", () => {
             { application_id: 1, application_name: "Grafana", user_id: "nadia", starred_at: "2026-01-05" },
           ],
           alias_users: [
-            { user_id: "morris", alias_visits: 30, applications_visited: 1, active_days: 4, last_visit: "2026-07-21" },
+            {
+              user_id: "morris", alias_visits: 30, applications_visited: 1,
+              active_days: 4, last_visit: "2026-07-21",
+              applications: [
+                { application_id: 1, application_name: "Grafana", alias_visits: 30 },
+              ],
+            },
           ],
         });
       }
@@ -161,5 +167,71 @@ describe("AppStatisticsView", () => {
     expect(screen.getByText("morris")).toBeInTheDocument();
     expect(screen.getByText("30 visits")).toBeInTheDocument();
     expect(screen.getByText(/10 anonymous visits/i)).toBeInTheDocument();
+  });
+
+  it("expands an alias-user row to show its per-application breakdown, and collapses on a second click", async () => {
+    stubFullStats();
+    render(<AppStatisticsView />);
+    await screen.findByText("Authorized alias visits");
+    await userEvent.click(screen.getByRole("button", { name: "Alias visits" }));
+    const row = screen.getByRole("button", { name: /morris/ });
+    expect(row).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText(/Grafana · 30 visits/)).toBeNull();
+
+    await userEvent.click(row);
+    expect(row).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText(/Grafana · 30 visits/)).toBeInTheDocument();
+
+    await userEvent.click(row);
+    expect(row).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText(/Grafana · 30 visits/)).toBeNull();
+  });
+
+  function stubManyAliasUsers(count: number) {
+    const fetchMock = vi.fn(async (input: string) => {
+      const url = String(input);
+      const json = (payload: unknown) =>
+        ({ ok: true, status: 200, json: async () => payload }) as Response;
+      if (url.endsWith("/api/application-statistics-settings")) {
+        return json({ show_app_statistics: false });
+      }
+      if (url.includes("/api/application-statistics")) {
+        return json({
+          days: 30, launches: 0, unique_users: 0, favorites: 0,
+          trend: [], applications: [], app_trends: [], user_activity: [],
+          alias_visits: 0, unique_alias_users: count, anonymous_alias_visits: 0,
+          launch_users: [], favorite_entries: [],
+          alias_users: Array.from({ length: count }, (_, i) => ({
+            user_id: `user${i}`, alias_visits: count - i, applications_visited: 1,
+            active_days: 1, last_visit: "2026-07-21", applications: [],
+          })),
+        });
+      }
+      return { ok: false, status: 500, json: async () => ({}) } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+  }
+
+  it("paginates alias users at 10 per page", async () => {
+    stubManyAliasUsers(11);
+    render(<AppStatisticsView />);
+    await screen.findByText("Authorized alias visits");
+    await userEvent.click(screen.getByRole("button", { name: "Alias visits" }));
+    expect(screen.getByText("user0")).toBeInTheDocument();
+    expect(screen.queryByText("user10")).toBeNull();
+    expect(screen.getByText("Page 1 of 2")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
+    expect(await screen.findByText("user10")).toBeInTheDocument();
+    expect(screen.queryByText("user0")).toBeNull();
+  });
+
+  it("omits alias-user pagination at 10 or fewer users", async () => {
+    stubManyAliasUsers(10);
+    render(<AppStatisticsView />);
+    await screen.findByText("Authorized alias visits");
+    await userEvent.click(screen.getByRole("button", { name: "Alias visits" }));
+    expect(screen.getByText("user0")).toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: /alias users pagination/i })).toBeNull();
   });
 });

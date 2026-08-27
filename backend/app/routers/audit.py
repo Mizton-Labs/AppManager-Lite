@@ -18,7 +18,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from .. import audit, repository
 from ..deps import get_current_user, get_db, require_admin, verify_csrf
-from ..schemas import AuditEntryOut, NavigationActivityOut, RecordNavigationRequest
+from ..schemas import (
+    AuditEntryOut,
+    NavigationActivityOut,
+    NavigationActivityPageOut,
+    RecordNavigationRequest,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["audit"])
@@ -84,10 +89,19 @@ def record_navigation(
         )
 
 
-@router.get("/audit/navigation", response_model=list[NavigationActivityOut])
+@router.get("/audit/navigation", response_model=NavigationActivityPageOut)
 def list_navigation(
+    offset: int = Query(default=0, ge=0, le=450),
+    limit: int = Query(default=50, ge=1, le=50),
     _actor: dict[str, Any] = Depends(require_admin),
     conn: sqlite3.Connection = Depends(get_db),
-) -> list[NavigationActivityOut]:
-    rows = repository.list_navigation_activity(conn, limit=_DEFAULT_LIMIT)
-    return [NavigationActivityOut(**row) for row in rows]
+) -> NavigationActivityPageOut:
+    """A bounded page of navigation activity: at most 50 rows per page, over
+    only the newest 500 stored rows (see repository.NAVIGATION_ACTIVITY_MAX_EVENTS)."""
+    rows, total = repository.list_navigation_activity(conn, offset=offset, limit=limit)
+    return NavigationActivityPageOut(
+        items=[NavigationActivityOut(**row) for row in rows],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )

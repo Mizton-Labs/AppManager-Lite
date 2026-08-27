@@ -353,7 +353,7 @@ export function ApplicationManager(props: {
           onError={setError}
         />
       ) : (
-        <div className="manager-toolbar">
+        <div className="manager-toolbar application-manager-actions">
           <button
             type="button"
             className="btn accent"
@@ -366,7 +366,7 @@ export function ApplicationManager(props: {
             <span className="btn-label">New application</span>
           </button>
           {orderDirty && (
-            <>
+            <span className="reorder-actions">
               <button
                 type="button"
                 className="btn accent"
@@ -383,7 +383,7 @@ export function ApplicationManager(props: {
               >
                 Discard changes
               </button>
-            </>
+            </span>
           )}
         </div>
       )}

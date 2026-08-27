@@ -334,7 +334,6 @@ export function ServersView(props: { currentUser: ApiUser; isAdmin: boolean }) {
   }, [loadOverview]);
 
   const owners = overview?.owners ?? [];
-  const hasServers = owners.some((o) => o.servers.length > 0);
   const canCreate = access?.can_create ?? false;
   // How many servers survive the active filter (for a no-match message).
   const visibleCount = owners.reduce(
@@ -440,20 +439,22 @@ export function ServersView(props: { currentUser: ApiUser; isAdmin: boolean }) {
       )}
       {canCreate &&
         (creating ? (
-          <CreateServerCard
-            userId={props.currentUser.id}
-            isAdmin={props.isAdmin}
-            userDerivedId={props.currentUser.user_id}
-            defaultPubkeyUser={props.currentUser.user_id}
-            /* Keep the card open after a create so its success/warning notice
-               (incl. VM "enter its IP" guidance) stays readable; the refreshed
-               server appears in the list below. The user collapses via Cancel
-               (labeled Close once something has been created). */
-            onCreated={loadOverview}
-            onCancel={() => setCreating(false)}
-          />
+          <div className="servers-create-toolbar">
+            <CreateServerCard
+              userId={props.currentUser.id}
+              isAdmin={props.isAdmin}
+              userDerivedId={props.currentUser.user_id}
+              defaultPubkeyUser={props.currentUser.user_id}
+              /* Keep the card open after a create so its success/warning notice
+                 (incl. VM "enter its IP" guidance) stays readable; the refreshed
+                 server appears in the list below. The user collapses via Cancel
+                 (labeled Close once something has been created). */
+              onCreated={loadOverview}
+              onCancel={() => setCreating(false)}
+            />
+          </div>
         ) : (
-          <div className="manager-toolbar">
+          <div className="manager-toolbar servers-create-toolbar">
             <button
               type="button"
               className="btn accent"
@@ -472,7 +473,7 @@ export function ServersView(props: { currentUser: ApiUser; isAdmin: boolean }) {
       )}
       {loading ? (
         <p role="status">Loading servers...</p>
-      ) : !hasServers ? (
+      ) : owners.length === 0 ? (
         <p className="muted">No servers to show.</p>
       ) : filtering && visibleCount === 0 ? (
         <p className="muted">No servers match the filter.</p>

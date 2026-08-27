@@ -1371,15 +1371,36 @@ def record_navigation_activity(
         _navigation_retention_lock.release()
 
 
+# issue_local_032 (follow-up): the navigation-activity API only ever exposes
+# the newest this-many deduplicated rows, regardless of how many are stored
+# (bounded independently of the 90-day retention sweep).
+NAVIGATION_ACTIVITY_MAX_EVENTS = 500
+
+
 def list_navigation_activity(
-    conn: sqlite3.Connection, *, limit: int = 200
-) -> list[dict[str, Any]]:
-    """Most recent navigation activity rows, newest first (admin-only read)."""
+    conn: sqlite3.Connection, *, offset: int = 0, limit: int = 50
+) -> tuple[list[dict[str, Any]], int]:
+    """A page of the newest ``NAVIGATION_ACTIVITY_MAX_EVENTS`` navigation
+    activity rows (admin-only read), newest first.
+
+    Returns ``(items, total)`` where ``total`` is the size of that bounded
+    newest-N window (never the full, unbounded stored row count).
+    """
+    total = conn.execute(
+        "SELECT COUNT(*) AS c FROM ("
+        "SELECT id FROM navigation_activity "
+        "ORDER BY last_seen_at DESC, id DESC LIMIT ?"
+        ")",
+        (NAVIGATION_ACTIVITY_MAX_EVENTS,),
+    ).fetchone()["c"]
     rows = conn.execute(
-        "SELECT * FROM navigation_activity ORDER BY last_seen_at DESC, id DESC LIMIT ?",
-        (limit,),
+        "SELECT * FROM ("
+        "SELECT * FROM navigation_activity "
+        "ORDER BY last_seen_at DESC, id DESC LIMIT ?"
+        ") ORDER BY last_seen_at DESC, id DESC LIMIT ? OFFSET ?",
+        (NAVIGATION_ACTIVITY_MAX_EVENTS, limit, offset),
     ).fetchall()
-    return [dict(row) for row in rows]
+    return [dict(row) for row in rows], total
 
 
 

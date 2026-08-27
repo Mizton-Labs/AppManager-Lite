@@ -223,7 +223,7 @@ describe("ServersView", () => {
     expect(screen.queryByRole("group", { name: "CPU" })).toBeNull();
   });
 
-  it("shows an empty state when there are no servers", async () => {
+  it("shows a card for the caller even with zero servers (issue_local_032 follow-up), instead of a blank empty state", async () => {
     stubServersView({
       is_admin: false,
       owners: [
@@ -235,6 +235,14 @@ describe("ServersView", () => {
         },
       ],
     });
+    render(<ServersView currentUser={SELF} isAdmin={false} />);
+    const toggle = await screen.findByRole("button", { name: /morris@example.com/ });
+    expect(toggle.textContent).toContain("0 servers");
+    expect(screen.queryByText(/no servers to show/i)).toBeNull();
+  });
+
+  it("shows the empty state only when there are truly no owner groups at all", async () => {
+    stubServersView({ is_admin: false, owners: [] });
     render(<ServersView currentUser={SELF} isAdmin={false} />);
     expect(await screen.findByText(/no servers to show/i)).toBeInTheDocument();
   });
@@ -652,6 +660,30 @@ describe("ServersView", () => {
     expect(await screen.findByText(/user11@example.com/)).toBeInTheDocument();
     expect(screen.queryByText(/user0@example.com/)).toBeNull();
     expect(screen.getByText("Page 2 of 2")).toBeInTheDocument();
+  });
+
+  it("shows an admin a card for a user with zero servers, styled as a distinct card", async () => {
+    stubServersView({
+      is_admin: true,
+      owners: [
+        {
+          user_id: 50,
+          username: "empty@example.com",
+          derived_user_id: "empty",
+          servers: [],
+        },
+        {
+          user_id: 8,
+          username: "nadia@example.com",
+          derived_user_id: "nadia",
+          servers: [server({ id: 2, user_id: 8 })],
+        },
+      ],
+    });
+    render(<ServersView currentUser={ADMIN} isAdmin />);
+    const toggle = await screen.findByRole("button", { name: /empty@example.com/ });
+    expect(toggle.textContent).toContain("0 servers");
+    expect(toggle.closest(".overview-owner")).not.toBeNull();
   });
 });
 
