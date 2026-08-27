@@ -651,6 +651,38 @@ class UserActivityRow(BaseModel):
     applications_used: int
 
 
+class LaunchUserRow(BaseModel):
+    """issue_local_032: one row of the complete (uncapped) "Launch users" drill-down."""
+
+    user_id: str
+    launches: int
+    applications_used: int
+    active_days: int
+    last_activity: str
+
+
+class FavoriteEntryRow(BaseModel):
+    """issue_local_032: one row of the complete "Favorites" drill-down: a
+    single user's favorite of a single application."""
+
+    application_id: int
+    application_name: str
+    user_id: str
+    starred_at: str
+
+
+class AliasUserRow(BaseModel):
+    """issue_local_032: one row of the complete "Alias visits" drill-down for
+    authenticated visitors (anonymous traffic is never attributable to a
+    user, so it never appears here -- see anonymous_alias_visits instead)."""
+
+    user_id: str
+    alias_visits: int
+    applications_visited: int
+    active_days: int
+    last_visit: str
+
+
 class ApplicationStatisticsOut(BaseModel):
     days: int
     launches: int
@@ -666,6 +698,13 @@ class ApplicationStatisticsOut(BaseModel):
     alias_visits: int = 0
     unique_alias_users: int = 0
     anonymous_alias_visits: int = 0
+    # issue_local_032: complete (uncapped) drill-down lists for the
+    # corresponding clickable KPI card, over the same date range as the rest
+    # of this response (except favorite_entries, which is always a current
+    # snapshot -- see FavoriteEntryRow).
+    launch_users: list[LaunchUserRow] = Field(default_factory=list)
+    favorite_entries: list[FavoriteEntryRow] = Field(default_factory=list)
+    alias_users: list[AliasUserRow] = Field(default_factory=list)
 
 
 class AliasConfigOut(BaseModel):

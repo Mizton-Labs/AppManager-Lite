@@ -348,17 +348,26 @@ restricts deletion to the app's owner or an administrator. The **User
 
 ### Application statistics
 
-Administrators have an **App Statistics** sidebar view with portal-launch,
-unique-user, and favorite summaries plus daily trends and per-application
-rankings. The dashboard plots the top 10 application launch series and the top
-10 active derived account IDs; expanding an application row loads derived-ID
-activity and favorite detail for administrators. A launch records an authenticated application-card activation; it is
-not a destination HTTP-request counter, so it works consistently for external
-URLs and reverse-proxy aliases. The dashboard toggle controls whether Home and
+Administrators have an **App Statistics** sidebar view. Six clickable **KPI
+cards** — Launches, Unique launch users, Current favorites, Authorized alias
+visits, Unique alias users, and Anonymous alias visits — sit in one row above
+the main **launch trend chart** (which plots the top 10 applications' daily
+launches; it is always launch-only, never mixed with alias-visit data). Below
+the chart, a **tab bar** (Applications / Launch users / Favorites / Alias
+visits) shows the complete drill-down list behind the clicked KPI; clicking a
+KPI switches to its tab. Every list is keyed by the user's immutable derived
+user ID, not their (possibly since-renamed) sign-in email. **Current
+favorites** is always a live snapshot, unaffected by the selected period —
+unlike launches and alias visits, a favorite has no "when it was active"
+concept. Expanding an application row on the Applications tab additionally
+loads per-application activity/favorite detail. A launch records an
+authenticated application-card activation; it is not a destination
+HTTP-request counter, so it works consistently for external URLs and
+reverse-proxy aliases. The dashboard toggle controls whether Home and
 team cards show their seven-day launch count. Users can always star/unstar
 visible applications; stars remain available when card statistics are hidden.
 Analytics store daily aggregate launch counts and do not expose named-user
-activity in the dashboard. Per-user daily rows are retained for 90 days to
+activity outside the admin-only dashboard. Per-user daily rows are retained for 90 days to
 calculate unique-user trends, then purged during launch recording.
 
 The dashboard also shows **authorized alias visits** as a separate metric from
@@ -373,7 +382,9 @@ counted, and a count only proves the request was *authorized*, not that the
 upstream application responded successfully. A protected alias attributes its
 visits to the signed-in account; a public alias, or any alias reached while
 authentication is disabled deployment-wide, always counts as **anonymous** —
-anonymous visits add to the total but never to the unique-alias-user count.
+anonymous visits add to the total (and the "Anonymous alias visits" KPI/note),
+but never to the unique-alias-user count or list, since an anonymous visit is
+never attributable to an individual.
 This is stored in its own table (`application_alias_usage_daily`, 90-day
 retention, swept at most once per day) and is never mixed with the
 card-launch metric above, since the two measure different things. Existing

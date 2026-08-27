@@ -602,6 +602,22 @@ export interface ApplicationStatistics {
   alias_visits: number;
   unique_alias_users: number;
   anonymous_alias_visits: number;
+  /** issue_local_032: complete (uncapped) drill-down lists for the
+   * corresponding clickable KPI card. */
+  launch_users: LaunchUserRow[];
+  favorite_entries: FavoriteEntryRow[];
+  alias_users: AliasUserRow[];
+}
+export interface LaunchUserRow {
+  user_id: string; launches: number; applications_used: number;
+  active_days: number; last_activity: string;
+}
+export interface FavoriteEntryRow {
+  application_id: number; application_name: string; user_id: string; starred_at: string;
+}
+export interface AliasUserRow {
+  user_id: string; alias_visits: number; applications_visited: number;
+  active_days: number; last_visit: string;
 }
 export interface ApplicationTrendSeries { application_id: number; name: string; launches: number; points: ApplicationTrendPoint[]; }
 export interface UserActivityRow { user_id: string; launches: number; applications_used: number; }

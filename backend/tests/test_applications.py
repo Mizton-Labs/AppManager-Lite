@@ -125,6 +125,96 @@ def test_statistics_includes_authorized_alias_visits(admin) -> None:
     assert rows["Alias Unvisited"]["unique_alias_users"] == 0
 
 
+def test_statistics_drill_down_lists_are_complete_and_use_derived_user_id(
+    admin,
+) -> None:
+    """issue_local_032: launch_users/favorite_entries/alias_users are
+    complete (not top-10-capped) and keyed by the immutable derived_user_id,
+    not re-derived from the (possibly renamed) current username."""
+    client, csrf, _ = admin
+    app = _seed_app(client, csrf, "DrillApp", "https://example.com/drill", ["Red Team"])
+    password = _create_member(client, csrf, "drilluser@example.com", ["Red Team"])
+    user_id = next(
+        u["id"] for u in client.get("/api/users").json()
+        if u["username"] == "drilluser@example.com"
+    )
+
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login",
+            json={"username": "drilluser@example.com", "password": password},
+        )
+        member.post(
+            f"/api/applications/{app['id']}/favorite",
+            headers={"X-CSRF-Token": login.json()["csrf_token"]},
+        )
+
+    # Rename the user; the drill-downs must still show the original derived id.
+    client.patch(
+        f"/api/users/{user_id}",
+        json={"username": "renamed@example.com"},
+        headers={"X-CSRF-Token": csrf},
+    )
+
+    from app.db import get_connection
+
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO application_usage_daily "
+            "(application_id, usage_date, visitor_key, launch_count) "
+            "VALUES (?, date('now'), ?, 3)",
+            (app["id"], f"user:{user_id}"),
+        )
+        conn.execute(
+            "INSERT INTO application_alias_usage_daily "
+            "(application_id, usage_date, visitor_key, request_count) "
+            "VALUES (?, date('now'), ?, 5)",
+            (app["id"], f"user:{user_id}"),
+        )
+
+    body = client.get("/api/application-statistics", params={"days": 7}).json()
+
+    launch_user = next(
+        u for u in body["launch_users"] if u["user_id"] == "drilluser"
+    )
+    assert launch_user["launches"] == 3
+    assert launch_user["applications_used"] == 1
+
+    fav = next(
+        f for f in body["favorite_entries"] if f["application_id"] == app["id"]
+    )
+    assert fav["user_id"] == "drilluser"
+    assert fav["application_name"] == "DrillApp"
+
+    alias_user = next(
+        u for u in body["alias_users"] if u["user_id"] == "drilluser"
+    )
+    assert alias_user["alias_visits"] == 5
+    assert alias_user["applications_visited"] == 1
+
+
+def test_statistics_favorite_entries_are_not_bounded_by_days(admin) -> None:
+    """Favorites are a current-state snapshot, unaffected by the selected
+    date range (unlike launches/alias visits)."""
+    client, csrf, _ = admin
+    app = _seed_app(client, csrf, "OldFavorite", "https://example.com/oldfav", ["Red Team"])
+    password = _create_member(client, csrf, "oldfan@example.com", ["Red Team"])
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login",
+            json={"username": "oldfan@example.com", "password": password},
+        )
+        member.post(
+            f"/api/applications/{app['id']}/favorite",
+            headers={"X-CSRF-Token": login.json()["csrf_token"]},
+        )
+
+    body = client.get("/api/application-statistics", params={"days": 7}).json()
+    assert any(
+        f["application_id"] == app["id"] for f in body["favorite_entries"]
+    )
+
+
 def test_clean_install_has_no_applications(admin) -> None:
     # A fresh database starts with no applications (no placeholder seed).
     client, _csrf, _ = admin

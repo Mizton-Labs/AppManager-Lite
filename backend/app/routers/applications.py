@@ -42,6 +42,9 @@ from ..schemas import (
     ApplicationUserActivityOut,
     ApplicationFavoriteUserOut,
     UserActivityRow,
+    LaunchUserRow,
+    FavoriteEntryRow,
+    AliasUserRow,
 )
 
 router = APIRouter(tags=["applications"])
@@ -613,7 +616,8 @@ def application_statistics(
         ) for row in top_apps
     ]
     user_rows = conn.execute(
-        "SELECT u.username, SUM(d.launch_count) launches, COUNT(DISTINCT d.application_id) applications_used "
+        "SELECT u.username, u.derived_user_id, SUM(d.launch_count) launches, "
+        "COUNT(DISTINCT d.application_id) applications_used "
         "FROM application_usage_daily d JOIN users u ON d.visitor_key = ('user:' || u.id) "
         "WHERE d.usage_date >= date('now', ?) GROUP BY u.id ORDER BY launches DESC, u.id LIMIT 10",
         (f"-{days - 1} days",),
@@ -631,6 +635,43 @@ def application_statistics(
         "FROM application_alias_usage_daily WHERE usage_date >= date('now', ?)",
         (f"-{days - 1} days",),
     ).fetchone()
+    # issue_local_032: complete (uncapped) drill-down lists for the clickable
+    # KPI cards. Kept in this same admin-only, date-ranged endpoint rather
+    # than a separate paginated one, matching the current deployment scale
+    # (90-day retention on the underlying daily tables). All three use the
+    # persisted immutable users.derived_user_id, never re-derived from the
+    # mutable username, so a display id stays correct across an email rename.
+    launch_user_rows = conn.execute(
+        "SELECT u.username, u.derived_user_id, SUM(d.launch_count) launches, "
+        "COUNT(DISTINCT d.application_id) applications_used, "
+        "COUNT(DISTINCT d.usage_date) active_days, MAX(d.usage_date) last_activity "
+        "FROM application_usage_daily d JOIN users u ON d.visitor_key = ('user:' || u.id) "
+        "WHERE d.usage_date >= date('now', ?) GROUP BY u.id ORDER BY launches DESC, u.id",
+        (f"-{days - 1} days",),
+    ).fetchall()
+    # Favorites are a current-state snapshot (not bounded by `days`): a
+    # favorite has no "when it was active" concept the way a launch or an
+    # alias visit does.
+    favorite_entry_rows = conn.execute(
+        "SELECT f.application_id, a.name AS application_name, "
+        "u.username, u.derived_user_id, f.created_at "
+        "FROM application_favorites f "
+        "JOIN applications a ON a.id = f.application_id "
+        "JOIN users u ON u.id = f.user_id "
+        "ORDER BY f.created_at DESC",
+    ).fetchall()
+    alias_user_rows = conn.execute(
+        "SELECT u.username, u.derived_user_id, SUM(d.request_count) alias_visits, "
+        "COUNT(DISTINCT d.application_id) applications_visited, "
+        "COUNT(DISTINCT d.usage_date) active_days, MAX(d.usage_date) last_visit "
+        "FROM application_alias_usage_daily d JOIN users u ON d.visitor_key = ('user:' || u.id) "
+        "WHERE d.usage_date >= date('now', ?) GROUP BY u.id ORDER BY alias_visits DESC, u.id",
+        (f"-{days - 1} days",),
+    ).fetchall()
+
+    def _uid(row: sqlite3.Row) -> str:
+        return row["derived_user_id"] or repository.derive_user_id(row["username"])
+
     return ApplicationStatisticsOut(
         days=days, launches=total_launches, unique_users=unique_users, favorites=favorites,
         trend=trend,
@@ -645,10 +686,33 @@ def application_statistics(
             for row in apps
         ],
         app_trends=app_trends,
-        user_activity=[UserActivityRow(user_id=repository.derive_user_id(row["username"]), launches=row["launches"], applications_used=row["applications_used"]) for row in user_rows],
+        user_activity=[UserActivityRow(user_id=_uid(row), launches=row["launches"], applications_used=row["applications_used"]) for row in user_rows],
         alias_visits=alias_totals["alias_visits"],
         unique_alias_users=alias_totals["unique_alias_users"],
         anonymous_alias_visits=alias_totals["anonymous_alias_visits"],
+        launch_users=[
+            LaunchUserRow(
+                user_id=_uid(row), launches=row["launches"],
+                applications_used=row["applications_used"],
+                active_days=row["active_days"], last_activity=row["last_activity"],
+            )
+            for row in launch_user_rows
+        ],
+        favorite_entries=[
+            FavoriteEntryRow(
+                application_id=row["application_id"], application_name=row["application_name"],
+                user_id=_uid(row), starred_at=row["created_at"],
+            )
+            for row in favorite_entry_rows
+        ],
+        alias_users=[
+            AliasUserRow(
+                user_id=_uid(row), alias_visits=row["alias_visits"],
+                applications_visited=row["applications_visited"],
+                active_days=row["active_days"], last_visit=row["last_visit"],
+            )
+            for row in alias_user_rows
+        ],
     )
 
 
@@ -662,21 +726,23 @@ def application_statistics_users(
     if repository.get_application(conn, application_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
     activity = conn.execute(
-        "SELECT u.username, SUM(d.launch_count) launches, COUNT(DISTINCT d.usage_date) active_days, MAX(d.usage_date) last_activity "
+        "SELECT u.username, u.derived_user_id, SUM(d.launch_count) launches, COUNT(DISTINCT d.usage_date) active_days, MAX(d.usage_date) last_activity "
         "FROM application_usage_daily d JOIN users u ON d.visitor_key = ('user:' || u.id) "
         "WHERE d.application_id = ? AND d.usage_date >= date('now', ?) "
         "GROUP BY u.id ORDER BY launches DESC, last_activity DESC",
         (application_id, f"-{days - 1} days"),
     ).fetchall()
     favorites = conn.execute(
-        "SELECT u.username, f.created_at FROM application_favorites f JOIN users u ON u.id = f.user_id "
+        "SELECT u.username, u.derived_user_id, f.created_at FROM application_favorites f JOIN users u ON u.id = f.user_id "
         "WHERE f.application_id = ? ORDER BY f.created_at DESC",
         (application_id,),
     ).fetchall()
+    def _uid(row: sqlite3.Row) -> str:
+        return row["derived_user_id"] or repository.derive_user_id(row["username"])
     return ApplicationStatisticsDetailOut(
         application_id=application_id,
-        activity_users=[ApplicationUserActivityOut(user_id=repository.derive_user_id(row["username"]), launches=row["launches"], active_days=row["active_days"], last_activity=row["last_activity"]) for row in activity],
-        favorite_users=[ApplicationFavoriteUserOut(user_id=repository.derive_user_id(row["username"]), starred_at=row["created_at"]) for row in favorites],
+        activity_users=[ApplicationUserActivityOut(user_id=_uid(row), launches=row["launches"], active_days=row["active_days"], last_activity=row["last_activity"]) for row in activity],
+        favorite_users=[ApplicationFavoriteUserOut(user_id=_uid(row), starred_at=row["created_at"]) for row in favorites],
     )
 
 
