@@ -256,11 +256,30 @@ export const api = {
   resetPassword: (id: number) =>
     request<GeneratedPassword>(`users/${id}/reset-password`, { method: "POST" }),
 
-  deleteUser: (id: number, options: { delete_apps?: boolean } = {}) =>
-    request<{ detail: string }>(
-      `users/${id}?delete_apps=${options.delete_apps ? "true" : "false"}`,
-      { method: "DELETE" },
-    ),
+  deleteUser: (
+    id: number,
+    options: {
+      delete_apps?: boolean;
+      server_disposition?: "transfer" | "delete";
+      transfer_servers_to_user_id?: number;
+    } = {},
+  ) => {
+    const params = new URLSearchParams({
+      delete_apps: options.delete_apps ? "true" : "false",
+    });
+    if (options.server_disposition) {
+      params.set("server_disposition", options.server_disposition);
+    }
+    if (options.transfer_servers_to_user_id != null) {
+      params.set(
+        "transfer_servers_to_user_id",
+        String(options.transfer_servers_to_user_id),
+      );
+    }
+    return request<{ detail: string }>(`users/${id}?${params.toString()}`, {
+      method: "DELETE",
+    });
+  },
 
   /** Reverse-proxy configuration (administrators only). */
   getReverseProxySettings: () =>

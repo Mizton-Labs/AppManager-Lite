@@ -1306,6 +1306,50 @@ def _attach_server_pools(
             server["poolid"] = poolid
 
 
+def _attach_server_presence(
+    conn: sqlite3.Connection,
+    rows: list[dict[str, Any]],
+) -> None:
+    """Annotate rows with their live Proxmox presence (response-only).
+
+    Never deletes or otherwise mutates any stored record: a record confirmed
+    absent from a successful, authoritative inventory read is marked
+    ``"missing"`` for the caller to surface (e.g. an admin "needs attention"
+    section); it is *not* removed here or anywhere in this read path. When the
+    provider is unconfigured, unreachable, or the read fails for any reason,
+    every candidate is marked ``"unverified"`` and the existing DB record is
+    left exactly as-is -- absence is only ever inferred from a successful read.
+    """
+    candidates = [
+        r for r in rows if r.get("vmid") and r.get("status") != "failed"
+    ]
+    if not candidates:
+        return
+    try:
+        settings_row = repository.get_settings_row(conn)
+        if not _provider_configured(settings_row):
+            for server in candidates:
+                server["presence"] = "unverified"
+            return
+        result = proxmox.ProxmoxResult()
+        inventory = proxmox.list_cluster_guest_inventory(
+            _provider_config(settings_row), result=result
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("Presence annotation: could not resolve guest inventory")
+        for server in candidates:
+            server["presence"] = "unverified"
+        return
+    if result.status != "ok":
+        for server in candidates:
+            server["presence"] = "unverified"
+        return
+    for server in candidates:
+        server["presence"] = (
+            "live" if int(server["vmid"]) in inventory else "missing"
+        )
+
+
 @router.get("/users/{user_id}/servers", response_model=list[UserServerOut])
 def list_user_servers(
     user_id: int,
@@ -1333,6 +1377,7 @@ def list_user_servers(
     # Annotate each guest with its live Proxmox pool (response-only). One
     # provider call for the whole list; best-effort.
     _attach_server_pools(conn, rows)
+    _attach_server_presence(conn, rows)
     if is_admin:
         # Admins see everything, including servers whose destroy failed, with
         # the failure detail for recovery.
@@ -1413,12 +1458,12 @@ def servers_overview(
     expire_pending_server_deletions(conn)
     groups: dict[int, OwnerServersOut] = {}
 
-    def _group(uid: int, username: str) -> OwnerServersOut:
+    def _group(uid: int, username: str, derived_user_id: str = "") -> OwnerServersOut:
         if uid not in groups:
             groups[uid] = OwnerServersOut(
                 user_id=uid,
                 username=username,
-                derived_user_id=repository.derive_user_id(username or ""),
+                derived_user_id=derived_user_id or repository.derive_user_id(username or ""),
             )
         return groups[uid]
 
@@ -1426,14 +1471,20 @@ def servers_overview(
         rows = repository.list_all_servers(conn)
         # Resolve pools once for the whole overview (single provider call).
         _attach_server_pools(conn, rows)
+        _attach_server_presence(conn, rows)
         for srv in rows:
-            grp = _group(srv["user_id"], srv.get("owner_username", ""))
+            grp = _group(
+                srv["user_id"],
+                srv.get("owner_username", ""),
+                srv.get("owner_user_id", ""),
+            )
             grp.servers.append(_server_out(srv, include_error=True))
     else:
         username = actor.get("username", "")
-        grp = _group(actor["id"], username)
+        grp = _group(actor["id"], username, actor.get("user_id", ""))
         rows = repository.list_user_servers(conn, actor["id"])
         _attach_server_pools(conn, rows)
+        _attach_server_presence(conn, rows)
         for srv in rows:
             grp.servers.append(_server_out(srv))
     owners = sorted(groups.values(), key=lambda g: g.username.lower())
@@ -2481,16 +2532,22 @@ def reset_user_server_access(
                 detail="Current bundle SSH key is inconsistent; regenerate the account key first",
             )
         owner_row = conn.execute(
-            "SELECT username FROM users WHERE id = ?", (user_id,)
+            "SELECT username, derived_user_id FROM users WHERE id = ?", (user_id,)
         ).fetchone()
         owner_marker = sshkeys.managed_marker(user_id)
-        legacy_marker = f"AppManager-managed:{repository.derive_user_id(owner_row['username'])}"
+        owner_derived_id = owner_row["derived_user_id"] or repository.derive_user_id(
+            owner_row["username"]
+        )
+        legacy_marker = f"AppManager-managed:{owner_derived_id}"
         # Only remove a legacy derived-name marker when it uniquely identifies
         # this user. Immutable user-ID markers prevent cross-user collisions.
         legacy_conflict = any(
-            repository.derive_user_id(row["username"])
-            == repository.derive_user_id(owner_row["username"])
-            for row in conn.execute("SELECT id, username FROM users WHERE id != ?", (user_id,))
+            (row["derived_user_id"] or repository.derive_user_id(row["username"]))
+            == owner_derived_id
+            for row in conn.execute(
+                "SELECT id, username, derived_user_id FROM users WHERE id != ?",
+                (user_id,),
+            )
         )
         remove_markers = [owner_marker] + ([] if legacy_conflict else [legacy_marker])
         # Reassert the current downloadable account key for every eligible

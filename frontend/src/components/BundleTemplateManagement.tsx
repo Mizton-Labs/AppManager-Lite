@@ -71,6 +71,9 @@ export function BundleTemplateManagement() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [viewingDefinitionId, setViewingDefinitionId] = useState<number | null>(
+    null,
+  );
 
   const mappingOptions = useMemo(
     () => buildMappingOptions(serverTemplates),
@@ -334,6 +337,21 @@ export function BundleTemplateManagement() {
                       <button
                         type="button"
                         className="btn ghost"
+                        onClick={() =>
+                          setViewingDefinitionId(
+                            viewingDefinitionId === template.id
+                              ? null
+                              : template.id,
+                          )
+                        }
+                      >
+                        {viewingDefinitionId === template.id
+                          ? "Hide definition"
+                          : "View definition"}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn ghost"
                         onClick={() => cloneTemplate(template)}
                         disabled={busy}
                       >
@@ -376,6 +394,22 @@ export function BundleTemplateManagement() {
                   )}
                 </div>
               </div>
+              {template.is_builtin && viewingDefinitionId === template.id && (
+                <div className="field">
+                  <span className="muted logo-hint">
+                    Generic preview of what this built-in template downloads
+                    (no real usernames, hosts, or key material). It is rendered
+                    dynamically per download from your actual servers and jump
+                    server settings.
+                  </span>
+                  <textarea
+                    className="bundle-definition-preview"
+                    readOnly
+                    rows={12}
+                    value={template.definition}
+                  />
+                </div>
+              )}
             </article>
           ))}
         </div>

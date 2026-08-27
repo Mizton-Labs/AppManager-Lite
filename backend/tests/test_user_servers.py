@@ -2521,6 +2521,109 @@ def test_servers_overview_admin_sees_all_grouped_by_owner(admin, monkeypatch) ->
     assert len(owners["nadia@example.com"]["servers"]) == 1
 
 
+def test_servers_overview_derived_user_id_survives_rename(admin, monkeypatch) -> None:
+    """issue_local_031: the overview's derived_user_id must reflect the
+    immutable resource identity, not be re-derived from the (now renamed)
+    current username."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    u1 = _create_member(client, csrf, username="oldname@example.com")
+    _create_server_for(client, csrf, u1["user"]["id"], template["id"], name="a")
+
+    client.patch(
+        f"/api/users/{u1['user']['id']}",
+        json={"username": "newname@example.com"},
+        headers={"X-CSRF-Token": csrf},
+    )
+
+    resp = client.get("/api/servers/overview")
+    assert resp.status_code == 200, resp.text
+    owners = {o["username"]: o for o in resp.json()["owners"]}
+    assert "newname@example.com" in owners
+    assert owners["newname@example.com"]["derived_user_id"] == "oldname"
+
+
+def test_server_presence_live_when_confirmed_in_inventory(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    fake = _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    member = _create_member(client, csrf)
+    created = _create_server_for(
+        client, csrf, member["user"]["id"], template["id"], name="a"
+    )
+    # The fake provider reports this vmid as live inventory.
+    fake.live_vmids.add(created["vmid"])
+
+    resp = client.get(f"/api/users/{member['user']['id']}/servers")
+    assert resp.status_code == 200, resp.text
+    server = next(s for s in resp.json() if s["id"] == created["id"])
+    assert server["presence"] == "live"
+
+
+def test_server_presence_missing_when_confirmed_absent(admin, monkeypatch) -> None:
+    """A guest removed directly in Proxmox is never silently deleted from
+    AppManager's own list; it is only classified as 'missing' so an admin can
+    investigate."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)  # live_vmids empty: nothing is in inventory.
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    member = _create_member(client, csrf)
+    created = _create_server_for(
+        client, csrf, member["user"]["id"], template["id"], name="a"
+    )
+
+    resp = client.get(f"/api/users/{member['user']['id']}/servers")
+    assert resp.status_code == 200, resp.text
+    server = next(s for s in resp.json() if s["id"] == created["id"])
+    assert server["presence"] == "missing"
+    # The record itself is untouched -- still present in the response/DB.
+    assert server["id"] == created["id"]
+
+
+def test_server_presence_unverified_when_provider_unconfigured(admin) -> None:
+    client, csrf, _ = admin
+    # No provider configured at all: nothing to annotate against, but any
+    # existing servers (e.g. reference rows) must never be treated as absent.
+    resp = client.get("/api/servers/overview")
+    assert resp.status_code == 200, resp.text
+
+
+def test_server_presence_unverified_on_provider_failure(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    fake = _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    member = _create_member(client, csrf)
+    created = _create_server_for(
+        client, csrf, member["user"]["id"], template["id"], name="a"
+    )
+
+    # Simulate an outage/permission failure on the inventory call specifically
+    # (distinct from "confirmed absent"): the record must be marked
+    # unverified, never missing.
+    real_call = fake.__call__
+
+    def _fail_resources(method, url, *, headers, verify, json_body=None):
+        if "/cluster/resources" in url:
+            return (403, "Forbidden")
+        return real_call(method, url, headers=headers, verify=verify, json_body=json_body)
+
+    monkeypatch.setattr(proxmox, "_http_request", _fail_resources)
+
+    resp = client.get(f"/api/users/{member['user']['id']}/servers")
+    assert resp.status_code == 200, resp.text
+    server = next(s for s in resp.json() if s["id"] == created["id"])
+    assert server["presence"] == "unverified"
+
+
 def test_servers_overview_user_sees_only_their_own(admin, monkeypatch) -> None:
     client, csrf, _ = admin
     _FakeProxmox(monkeypatch)
@@ -2818,3 +2921,221 @@ def test_overview_never_leaks_admin_key_fields(admin, monkeypatch) -> None:
     assert "admin_ssh_key_path" not in text
     assert "admin_ssh_key_id" not in text
     assert "/home/svc/.ssh/id_ed25519" not in text
+
+
+# ---------------------------------------------------------------------------
+# issue_local_031: user deletion with owned servers (transfer/delete,
+# blocked on protected/unverified guests).
+# ---------------------------------------------------------------------------
+
+
+def test_delete_user_with_servers_requires_disposition(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    member = _create_member(client, csrf)
+    _create_server_for(client, csrf, member["user"]["id"], template["id"])
+
+    resp = client.request(
+        "DELETE",
+        f"/api/users/{member['user']['id']}",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 409, resp.text
+    # The account is untouched.
+    usernames = {u["username"] for u in client.get("/api/users").json()}
+    assert member["user"]["username"] in usernames
+
+
+def test_delete_user_transfer_preserves_server_records(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    member = _create_member(client, csrf)
+    recipient = _create_member(client, csrf, username="recipient@example.com")
+    created = _create_server_for(
+        client, csrf, member["user"]["id"], template["id"], name="kept"
+    )
+
+    resp = client.request(
+        "DELETE",
+        f"/api/users/{member['user']['id']}"
+        f"?server_disposition=transfer&transfer_servers_to_user_id={recipient['user']['id']}",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 200, resp.text
+
+    servers_after = client.get(
+        f"/api/users/{recipient['user']['id']}/servers"
+    ).json()
+    assert any(s["id"] == created["id"] for s in servers_after)
+
+
+def test_delete_user_transfer_requires_active_recipient(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    member = _create_member(client, csrf)
+    _create_server_for(client, csrf, member["user"]["id"], template["id"])
+
+    resp = client.request(
+        "DELETE",
+        f"/api/users/{member['user']['id']}"
+        "?server_disposition=transfer&transfer_servers_to_user_id=999999",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 400, resp.text
+
+
+def test_delete_user_delete_blocked_by_protected_failed_status_guest(
+    admin, monkeypatch
+) -> None:
+    """A "failed" provisioning record can still carry a real, live guest (the
+    clone succeeded but a later step errored) -- it must be verified exactly
+    like a "created" row, not silently skipped, before deleting its owner."""
+    client, csrf, _ = admin
+    from app import repository
+    from app.db import get_connection
+
+    fake = _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    member = _create_member(client, csrf)
+    vmid = 555
+    with get_connection() as conn:
+        repository.create_user_server(
+            conn, user_id=member["user"]["id"], name="failed-but-live",
+            kind="lxc", vmid=vmid, node="pve1", status="failed",
+        )
+    fake.live_vmids.add(vmid)
+
+    real_call = fake.__call__
+
+    def _with_protection(method, url, *, headers, verify, json_body=None):
+        if "/config" in url and ("/lxc/" in url or "/qemu/" in url):
+            return (200, {"data": {"protection": 1}})
+        return real_call(method, url, headers=headers, verify=verify, json_body=json_body)
+
+    monkeypatch.setattr(proxmox, "_http_request", _with_protection)
+
+    resp = client.request(
+        "DELETE",
+        f"/api/users/{member['user']['id']}?server_disposition=delete",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 409, resp.text
+    assert "protection" in resp.json()["detail"].lower()
+    usernames = {u["username"] for u in client.get("/api/users").json()}
+    assert member["user"]["username"] in usernames
+
+
+def test_delete_user_delete_destroys_unprotected_verified_guest(
+    admin, monkeypatch
+) -> None:
+    client, csrf, _ = admin
+    fake = _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    member = _create_member(client, csrf)
+    created = _create_server_for(client, csrf, member["user"]["id"], template["id"])
+    fake.live_vmids.add(created["vmid"])
+
+    resp = client.request(
+        "DELETE",
+        f"/api/users/{member['user']['id']}?server_disposition=delete",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 200, resp.text
+    usernames = {u["username"] for u in client.get("/api/users").json()}
+    assert member["user"]["username"] not in usernames
+
+
+def test_delete_user_delete_blocked_by_protected_guest(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    fake = _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    member = _create_member(client, csrf)
+    created = _create_server_for(client, csrf, member["user"]["id"], template["id"])
+    fake.live_vmids.add(created["vmid"])
+
+    real_call = fake.__call__
+
+    def _with_protection(method, url, *, headers, verify, json_body=None):
+        if "/config" in url and ("/lxc/" in url or "/qemu/" in url):
+            return (200, {"data": {"protection": 1}})
+        return real_call(method, url, headers=headers, verify=verify, json_body=json_body)
+
+    monkeypatch.setattr(proxmox, "_http_request", _with_protection)
+
+    resp = client.request(
+        "DELETE",
+        f"/api/users/{member['user']['id']}?server_disposition=delete",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 409, resp.text
+    assert "protection" in resp.json()["detail"].lower()
+    # Account and server both untouched.
+    usernames = {u["username"] for u in client.get("/api/users").json()}
+    assert member["user"]["username"] in usernames
+    servers_after = client.get(f"/api/users/{member['user']['id']}/servers").json()
+    assert any(s["id"] == created["id"] for s in servers_after)
+
+
+def test_delete_user_delete_blocked_when_inventory_unverified(
+    admin, monkeypatch
+) -> None:
+    client, csrf, _ = admin
+    fake = _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    member = _create_member(client, csrf)
+    _create_server_for(client, csrf, member["user"]["id"], template["id"])
+
+    real_call = fake.__call__
+
+    def _fail_resources(method, url, *, headers, verify, json_body=None):
+        if "/cluster/resources" in url:
+            return (403, "Forbidden")
+        return real_call(method, url, headers=headers, verify=verify, json_body=json_body)
+
+    monkeypatch.setattr(proxmox, "_http_request", _fail_resources)
+
+    resp = client.request(
+        "DELETE",
+        f"/api/users/{member['user']['id']}?server_disposition=delete",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 409, resp.text
+    usernames = {u["username"] for u in client.get("/api/users").json()}
+    assert member["user"]["username"] in usernames
+
+
+def test_delete_user_delete_removes_confirmed_absent_guest_record(
+    admin, monkeypatch
+) -> None:
+    """A guest already confirmed gone from Proxmox has nothing to protect;
+    the account deletion proceeds and the stale record is simply removed."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)  # live_vmids empty: guest is confirmed absent.
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    member = _create_member(client, csrf)
+    _create_server_for(client, csrf, member["user"]["id"], template["id"])
+
+    resp = client.request(
+        "DELETE",
+        f"/api/users/{member['user']['id']}?server_disposition=delete",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 200, resp.text

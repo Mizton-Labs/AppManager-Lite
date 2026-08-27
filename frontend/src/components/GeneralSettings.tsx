@@ -9,12 +9,14 @@ import { resolveIconSrc } from "../lib/links";
 import { PlusIcon, XIcon } from "./icons";
 
 const AUTH_PROXY_SNIPPET = `location ^~ /api/auth/proxy-check/ {
+    internal;
     proxy_pass http://APPMANAGER_HOST:APPMANAGER_PORT;
     proxy_set_header Host $host;
     proxy_set_header Cookie $http_cookie;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Sec-Fetch-Dest $http_sec_fetch_dest;
     proxy_pass_request_body off;
     proxy_set_header Content-Length "";
 }

@@ -353,6 +353,26 @@ Analytics store daily aggregate launch counts and do not expose named-user
 activity in the dashboard. Per-user daily rows are retained for 90 days to
 calculate unique-user trends, then purged during launch recording.
 
+The dashboard also shows **authorized alias visits** as a separate metric from
+launches: nginx's app-aware `auth_request` (see [Protecting direct alias
+links](#protecting-direct-alias-links)) classifies the *original* browser
+request using its `Sec-Fetch-Dest` header, and counts one authorized visit for
+each `document` or `iframe` navigation to an active, approved alias —
+including direct navigation and deep links that never touch a portal card, and
+embedded-app iframes. Subresources (scripts, styles, images, API calls),
+denied/unauthorized requests, and requests missing that header are never
+counted, and a count only proves the request was *authorized*, not that the
+upstream application responded successfully. A protected alias attributes its
+visits to the signed-in account; a public alias, or any alias reached while
+authentication is disabled deployment-wide, always counts as **anonymous** —
+anonymous visits add to the total but never to the unique-alias-user count.
+This is stored in its own table (`application_alias_usage_daily`, 90-day
+retention, swept at most once per day) and is never mixed with the
+card-launch metric above, since the two measure different things. Existing
+deployments must re-push the shared reverse-proxy auth block (see
+[Protecting direct alias links](#protecting-direct-alias-links)) after
+upgrading for this to start counting.
+
 The **User
 management** tab likewise collapses **Create user** behind an **Add user**
 button and offers a filter over username, user ID, role, and teams; user cards
@@ -365,12 +385,40 @@ and SSH bundle, and managing servers, with clearly labeled administrator
 sections and simple flow diagrams.
 
 When an administrator creates a user, the username must be an **email address**;
-it is the user's sign-in name. Each user also gets a derived **user ID** — the
+it is the user's sign-in name. Usernames are trimmed and lowercased on
+save and matched **case-insensitively** everywhere (local login and SSO), so
+`User@Example.com` and `user@example.com` are the same account — this avoids
+sign-in failures when an identity provider (e.g. Microsoft Entra) reports a
+different case than what was originally stored. Each user also gets a derived
+**user ID** — the
 email's local part, lowercased, with dots and underscores replaced by dashes
 (restricted to letters, digits, and dashes; e.g. `john.doe@example.com` →
 `john-doe`) — shown beneath the email in User Management and on the Account
 page. Because the user ID names per-user resources, creating a user whose
-derived ID collides with an existing user's is rejected.
+derived ID collides with an existing user's is rejected. Unlike the sign-in
+email, the **user ID is immutable**: it is computed once when the account is
+created and stored separately, so an administrator can later edit a user's
+**sign-in email** (User Management → Edit) without changing their user ID,
+server names, SSH/OS accounts, Proxmox pool, or jump-server account — only how
+the account signs in and matches SSO claims changes. Creating a user also
+offers a **"Create servers for this user"** toggle (on by default, preserving
+prior behavior); turning it off skips server provisioning entirely regardless
+of which templates exist, for an account-only user.
+
+Deleting a user who owns one or more servers requires an explicit
+**server disposition**, shown as a checkbox in the delete confirmation:
+unchecked (default) **transfers** the servers' ownership to the deleting
+administrator, leaving every guest, provisioning record, and deferred-deletion
+state completely untouched; checked **destroys** them, but only after every
+server is confirmed safe to destroy against a live Proxmox read — the whole
+deletion is blocked (the account and its servers are left untouched) if any
+server's Proxmox **protection** flag is enabled, or if its live state cannot
+be verified at all (provider unconfigured/unreachable, or the check fails).
+Deletion is never attempted with unverifiable or protected servers as a
+silent fallback; a server already confirmed absent from Proxmox has nothing
+to protect and its stale record is simply removed. This mirrors the existing
+**"Also delete this user's apps"** checkbox, which likewise defaults to
+transferring ownership to the deleting administrator.
 
 Every user account carries its own **Ed25519 SSH keypair**, generated at user
 creation (existing accounts are backfilled automatically on startup). From the
@@ -411,8 +459,10 @@ contains the private key the download is audited and never cached. The
 downloaded filename carries a UTC timestamp suffix
 (`<bundle>-YYYYMMDD-HHMMSS.zip`) so repeated downloads never collide in a
 browser's downloads folder; only the zip's own filename is suffixed, not the
-files inside it. Templates with
-field mappings are rendered from account details;
+files inside it. Every custom (non-built-in) template downloads its own saved
+**content** unchanged, byte-for-byte; **field mappings are optional** and only
+substitute additional values into that content when present — a template with
+no mappings is a valid, fully static definition. Available
 mapping sources include the username, the derived **user ID**, apps server
 host/IP, role, and **per-template variables** (`server_<slug>_name`,
 `server_<slug>_ip`, `server_<slug>_user`, where `<slug>` is the server
@@ -427,8 +477,13 @@ template variable after a rename. The predefined, read-only **"SSH Config Defaul
 **built-in** template that renders a full SSH config dynamically: a `Host *`
 keepalive stanza, a `Host jumpserver` block (with the configured port) when the
 jump server is enabled, and one `Host` block per server with `ProxyJump
-jumpserver` when the jump server is enabled. Built-in templates can be
-**cloned** into editable copies and **disabled** (hidden from downloads) but
+jumpserver` when the jump server is enabled. Because its stored content is only
+an internal marker, its card has a **View definition** control showing a
+generic, read-only placeholder of that structure (no real usernames, hosts, or
+key material). Built-in templates can be
+**cloned** into editable copies (the clone starts from that same generic
+placeholder, so it is immediately useful and editable) and **disabled** (hidden
+from downloads) but
 not edited or deleted. Administrators can also set the user's **apps server**
 (host/IP) — the host where that user runs their applications, used as the
 upstream for that user's reverse-proxy aliases. When one or more server
@@ -646,12 +701,14 @@ shared auth block and pushes it if it is missing. The injected block is:
 ```nginx
 # >>> appmanager-lite-proxy-auth >>>
 location ^~ /api/auth/proxy-check/ {
+    internal;
     proxy_pass http://<appmanager-backend-host>:<port>;
     proxy_set_header Host $host;
     proxy_set_header Cookie $http_cookie;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Sec-Fetch-Dest $http_sec_fetch_dest;
     proxy_pass_request_body off;
     proxy_set_header Content-Length "";
 }
@@ -661,6 +718,12 @@ location @appmanager_login {
 }
 # <<< appmanager-lite-proxy-auth <<<
 ```
+
+`internal;` means this location can only be reached via nginx's own
+`auth_request` subrequest, never called directly by a client — this is what
+makes the forwarded `Sec-Fetch-Dest` header trustworthy for the authorized-alias-visit
+statistics described above (auth_request subrequests inherit the original
+request's headers, only its own method is always reported as `GET`).
 
 The setup result and log are shown immediately in General Settings. If the marked
 block already exists, AppManager leaves it in place and reports that protected
@@ -948,6 +1011,16 @@ provider is unconfigured or unreachable, or the guest is in no pool, no badge
 is shown). This reflects the guest's *actual* current pool membership, so
 pools assigned directly in Proxmox appear too; it is a response-only hint and
 is never stored in AppManager's database.
+
+The list also checks each server against a **live Proxmox inventory** (one
+additional cluster-wide read per list, alongside the pool lookup). A server
+confirmed absent from a successful, authoritative read (e.g. deleted directly
+in Proxmox) is never silently removed from AppManager's own records; instead
+its card shows a **"needs attention: missing from Proxmox"** badge so an
+administrator can investigate and reconcile it manually. When the provider is
+unconfigured, unreachable, or the read fails for any reason, existing records
+are left exactly as they are — absence is only ever inferred from a
+successful inventory read, never from an outage or a permission error.
 
 Deleting a server is **deferred and reversible for 24 hours**. After an
 explicit "this is permanent" confirmation, the server enters a **deletion

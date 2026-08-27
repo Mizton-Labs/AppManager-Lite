@@ -353,6 +353,39 @@ def find_guest(
     return None
 
 
+def list_cluster_guest_inventory(
+    config: dict[str, Any], *, result: ProxmoxResult
+) -> dict[int, dict[str, Any]]:
+    """A cluster-wide ``{vmid: {name, kind, node, status}}`` live inventory.
+
+    Used to distinguish a server record confirmed absent from the provider
+    (an authoritative, successful read that does not list the VMID) from one
+    that could merely not be verified (provider unconfigured/unreachable, or
+    an unauthorized/malformed response). Callers must check ``result.status``
+    -- a non-``"ok"`` result means the returned (empty) mapping is *not*
+    proof of absence and existing records must not be treated as deleted.
+    """
+    data = _call(config, "GET", "/cluster/resources?type=vm", result=result)
+    if result.status != "ok":
+        return {}
+    inventory: dict[int, dict[str, Any]] = {}
+    for item in data or []:
+        if not isinstance(item, dict):
+            continue
+        vmid = item.get("vmid")
+        if not isinstance(vmid, int):
+            continue
+        inventory[vmid] = {
+            "vmid": vmid,
+            "name": str(item.get("name", "")),
+            "kind": "lxc" if item.get("type") == "lxc" else "vm",
+            "node": str(item.get("node", "")),
+            "status": str(item.get("status", "")),
+        }
+    result.log(f"Resolved live inventory for {len(inventory)} guest(s)")
+    return inventory
+
+
 def get_guest_pools(
     config: dict[str, Any], *, result: ProxmoxResult
 ) -> dict[int, str]:
@@ -377,6 +410,32 @@ def get_guest_pools(
             pools[vmid] = poolid
     result.log(f"Resolved pool membership for {len(pools)} guest(s)")
     return pools
+
+
+def get_guest_protection(
+    config: dict[str, Any],
+    *,
+    node: str,
+    kind: str,
+    vmid: int,
+    result: ProxmoxResult,
+) -> bool | None:
+    """Whether a guest's Proxmox "protection" flag is enabled.
+
+    Returns ``None`` (never raises) when this cannot be determined -- no
+    node, an unreadable config, or any provider error -- so a caller about to
+    perform a destructive operation can treat "unknown" the same as
+    "protected" (fail closed) rather than silently assuming it is safe.
+    """
+    if not node:
+        return None
+    kind_path = "lxc" if kind == "lxc" else "qemu"
+    data = _call(
+        config, "GET", f"/nodes/{node}/{kind_path}/{vmid}/config", result=result
+    )
+    if result.status != "ok" or not isinstance(data, dict):
+        return None
+    return bool(data.get("protection"))
 
 
 def next_vmid(config: dict[str, Any], *, result: ProxmoxResult) -> int | None:

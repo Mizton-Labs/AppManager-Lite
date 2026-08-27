@@ -64,6 +64,19 @@ function stubUsers() {
     if (method === "DELETE" && url.includes("/api/users/")) {
       return json({ detail: "User deleted" });
     }
+    if (method === "PATCH" && /\/api\/users\/\d+$/.test(url)) {
+      const id = Number(url.match(/\/api\/users\/(\d+)$/)![1]);
+      const body = JSON.parse((init?.body as string) ?? "{}");
+      return json(
+        makeUser({
+          id,
+          username: "analyst.one@example.com",
+          role: "user",
+          user_id: "analyst-one",
+          ...body,
+        }),
+      );
+    }
     return { ok: false, status: 500, json: async () => ({}) } as Response;
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -406,3 +419,161 @@ describe("UserManagement provisioning progress (issue_018)", () => {
     );
   });
 });
+
+describe("UserManagement username edit", () => {
+  it("shows an editable sign-in email alongside the immutable user ID", async () => {
+    stubUsers();
+    render(<UserManagement currentUser={makeUser({ id: 1, role: "admin" })} />);
+    const row = (
+      await screen.findByText("analyst.one@example.com", { selector: ".user-name" })
+    ).closest("article") as HTMLElement;
+    await userEvent.click(within(row).getByRole("button", { name: /^edit$/i }));
+    const usernameField = within(row).getByLabelText(/sign-in email/i);
+    expect(usernameField).toHaveValue("analyst.one@example.com");
+    expect(
+      within(row).getAllByText("analyst-one").length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("submits a renamed sign-in email and keeps the account's other fields", async () => {
+    const fetchMock = stubUsers();
+    render(<UserManagement currentUser={makeUser({ id: 1, role: "admin" })} />);
+    const row = (
+      await screen.findByText("analyst.one@example.com", { selector: ".user-name" })
+    ).closest("article") as HTMLElement;
+    await userEvent.click(within(row).getByRole("button", { name: /^edit$/i }));
+    const usernameField = within(row).getByLabelText(/sign-in email/i);
+    await userEvent.clear(usernameField);
+    await userEvent.type(usernameField, "renamed@example.com");
+    await userEvent.click(
+      within(row).getByRole("button", { name: /save changes/i }),
+    );
+    const patchCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).endsWith("/api/users/3") &&
+        (init?.method ?? "GET").toUpperCase() === "PATCH",
+    );
+    expect(patchCall).toBeDefined();
+    const body = JSON.parse((patchCall![1] as RequestInit).body as string);
+    expect(body.username).toBe("renamed@example.com");
+  });
+
+  it("allows saving a username-only change without an apps server set", async () => {
+    stubUsers();
+    render(<UserManagement currentUser={makeUser({ id: 1, role: "admin" })} />);
+    // "analyst" (id 2) has no apps server configured.
+    const row = (
+      await screen.findByText("analyst", { selector: ".user-name" })
+    ).closest("article") as HTMLElement;
+    await userEvent.click(within(row).getByRole("button", { name: /^edit$/i }));
+    const usernameField = within(row).getByLabelText(/sign-in email/i);
+    await userEvent.clear(usernameField);
+    await userEvent.type(usernameField, "analyst2@example.com");
+    expect(
+      within(row).getByRole("button", { name: /save changes/i }),
+    ).not.toBeDisabled();
+  });
+});
+
+describe("UserManagement create-servers toggle", () => {
+  it("defaults to creating servers with every template preselected", async () => {
+    stubUsers();
+    render(<UserManagement currentUser={makeUser({ id: 1, role: "admin" })} />);
+    await openCreate();
+    const toggle = await screen.findByRole("checkbox", {
+      name: /create servers for this user/i,
+    });
+    expect(toggle).toBeChecked();
+    expect(
+      screen.getByRole("checkbox", { name: /debian coder/i }),
+    ).toBeChecked();
+  });
+
+  it("clears template selection and hides the list when disabled", async () => {
+    const fetchMock = stubUsers();
+    render(<UserManagement currentUser={makeUser({ id: 1, role: "admin" })} />);
+    await openCreate();
+    await userEvent.click(
+      await screen.findByRole("checkbox", { name: /create servers for this user/i }),
+    );
+    expect(
+      screen.queryByRole("checkbox", { name: /debian coder/i }),
+    ).not.toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText(/username/i), "noservers@example.com");
+    await userEvent.type(
+      screen.getByLabelText(/apps server hostname/i),
+      "apps.example.com",
+    );
+    await userEvent.click(screen.getByRole("button", { name: /^create user$/i }));
+
+    const postCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).endsWith("/api/users") &&
+        (init?.method ?? "GET").toUpperCase() === "POST",
+    );
+    expect(postCall).toBeDefined();
+    const body = JSON.parse((postCall![1] as RequestInit).body as string);
+    expect(body.provision_templates).toEqual([]);
+  });
+});
+
+describe("UserManagement delete confirmation", () => {
+  it("defaults to transferring owned servers to the acting admin", async () => {
+    const fetchMock = stubUsers();
+    render(
+      <UserManagement
+        currentUser={makeUser({ id: 1, role: "admin", username: "admin" })}
+      />,
+    );
+    const row = (
+      await screen.findByText("analyst.one@example.com", { selector: ".user-name" })
+    ).closest("article") as HTMLElement;
+    await userEvent.click(within(row).getByRole("button", { name: /^edit$/i }));
+    await userEvent.click(within(row).getByRole("button", { name: /^delete$/i }));
+    await userEvent.click(
+      within(row).getByRole("button", { name: /confirm delete/i }),
+    );
+
+    const deleteCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).includes("/api/users/3") &&
+        (init?.method ?? "GET").toUpperCase() === "DELETE",
+    );
+    expect(deleteCall).toBeDefined();
+    const url = String(deleteCall![0]);
+    expect(url).toContain("server_disposition=transfer");
+    expect(url).toContain("transfer_servers_to_user_id=1");
+  });
+
+  it("sends server_disposition=delete when the checkbox is checked", async () => {
+    const fetchMock = stubUsers();
+    render(
+      <UserManagement
+        currentUser={makeUser({ id: 1, role: "admin", username: "admin" })}
+      />,
+    );
+    const row = (
+      await screen.findByText("analyst.one@example.com", { selector: ".user-name" })
+    ).closest("article") as HTMLElement;
+    await userEvent.click(within(row).getByRole("button", { name: /^edit$/i }));
+    await userEvent.click(within(row).getByRole("button", { name: /^delete$/i }));
+    await userEvent.click(
+      within(row).getByRole("checkbox", {
+        name: /also delete this user's server/i,
+      }),
+    );
+    await userEvent.click(
+      within(row).getByRole("button", { name: /confirm delete/i }),
+    );
+
+    const deleteCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).includes("/api/users/3") &&
+        (init?.method ?? "GET").toUpperCase() === "DELETE",
+    );
+    expect(deleteCall).toBeDefined();
+    expect(String(deleteCall![0])).toContain("server_disposition=delete");
+  });
+});
+

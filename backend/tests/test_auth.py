@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -248,3 +249,136 @@ def test_logout_clears_session(admin) -> None:
     client, csrf, _pw = admin
     assert client.post("/api/auth/logout", headers={"X-CSRF-Token": csrf}).status_code == 200
     assert client.get("/api/session").json()["authenticated"] is False
+
+
+# ---------------------------------------------------------------------------
+# issue_local_031: authorized alias visits, counted from the app-aware
+# auth_request classification of the original browser navigation.
+# ---------------------------------------------------------------------------
+
+
+def _alias_visit_totals(app_id: int) -> dict:
+    from app.db import get_connection
+
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(request_count),0) total, "
+            "GROUP_CONCAT(DISTINCT visitor_key) keys "
+            "FROM application_alias_usage_daily WHERE application_id = ?",
+            (app_id,),
+        ).fetchone()
+        return {"total": row["total"], "keys": row["keys"] or ""}
+
+
+def test_proxy_check_counts_document_navigation(client: TestClient) -> None:
+    app_id = _proxy_app()
+    client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": client.admin_password},  # type: ignore[attr-defined]
+    )
+    resp = client.get(
+        f"/api/auth/proxy-check/{app_id}/proxy-app",
+        headers={"Sec-Fetch-Dest": "document"},
+    )
+    assert resp.status_code == 204
+    totals = _alias_visit_totals(app_id)
+    assert totals["total"] == 1
+    assert "user:" in totals["keys"]
+
+
+def test_proxy_check_counts_iframe_navigation(client: TestClient) -> None:
+    app_id = _proxy_app()
+    client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": client.admin_password},  # type: ignore[attr-defined]
+    )
+    resp = client.get(
+        f"/api/auth/proxy-check/{app_id}/proxy-app",
+        headers={"Sec-Fetch-Dest": "iframe"},
+    )
+    assert resp.status_code == 204
+    assert _alias_visit_totals(app_id)["total"] == 1
+
+
+def test_proxy_check_does_not_count_subresources(client: TestClient) -> None:
+    app_id = _proxy_app()
+    client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": client.admin_password},  # type: ignore[attr-defined]
+    )
+    for dest in ("script", "style", "image", "empty"):
+        resp = client.get(
+            f"/api/auth/proxy-check/{app_id}/proxy-app",
+            headers={"Sec-Fetch-Dest": dest},
+        )
+        assert resp.status_code == 204
+    assert _alias_visit_totals(app_id)["total"] == 0
+
+
+def test_proxy_check_does_not_count_without_fetch_dest_header(client: TestClient) -> None:
+    app_id = _proxy_app()
+    client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": client.admin_password},  # type: ignore[attr-defined]
+    )
+    resp = client.get(f"/api/auth/proxy-check/{app_id}/proxy-app")
+    assert resp.status_code == 204
+    assert _alias_visit_totals(app_id)["total"] == 0
+
+
+def test_proxy_check_does_not_count_denied_requests(client: TestClient) -> None:
+    app_id = _proxy_app()
+    # Not logged in: denied (401), never counted.
+    resp = client.get(
+        f"/api/auth/proxy-check/{app_id}/proxy-app",
+        headers={"Sec-Fetch-Dest": "document"},
+    )
+    assert resp.status_code == 401
+    assert _alias_visit_totals(app_id)["total"] == 0
+
+
+def test_proxy_check_counts_public_alias_anonymously(client: TestClient) -> None:
+    app_id = _proxy_app(auth_required=False)
+    resp = client.get(
+        f"/api/auth/proxy-check/{app_id}/proxy-app",
+        headers={"Sec-Fetch-Dest": "document"},
+    )
+    assert resp.status_code == 204
+    totals = _alias_visit_totals(app_id)
+    assert totals["total"] == 1
+    assert totals["keys"] == "anonymous"
+
+
+def test_proxy_check_counts_auth_disabled_visit_anonymously(
+    client_no_auth: TestClient,
+) -> None:
+    app_id = _proxy_app(auth_required=True)
+    resp = client_no_auth.get(
+        f"/api/auth/proxy-check/{app_id}/proxy-app",
+        headers={"Sec-Fetch-Dest": "document"},
+    )
+    assert resp.status_code == 204
+    totals = _alias_visit_totals(app_id)
+    assert totals["total"] == 1
+    assert totals["keys"] == "anonymous"
+
+
+def test_proxy_check_recording_failure_never_denies_authorized_request(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app_id = _proxy_app()
+    client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": client.admin_password},  # type: ignore[attr-defined]
+    )
+    from app import repository
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated write failure")
+
+    monkeypatch.setattr(repository, "record_application_alias_visit", _boom)
+    resp = client.get(
+        f"/api/auth/proxy-check/{app_id}/proxy-app",
+        headers={"Sec-Fetch-Dest": "document"},
+    )
+    assert resp.status_code == 204

@@ -11,6 +11,8 @@ import re
 import secrets
 import shlex
 import sqlite3
+import threading
+import time
 from typing import Any
 
 from . import keystore, security, sshkeys
@@ -67,15 +69,12 @@ def derive_user_id(username: str) -> str:
 def user_id_conflict(
     conn: sqlite3.Connection, user_id: str, *, exclude_id: int | None = None
 ) -> bool:
-    """True when another user's derived identifier equals ``user_id``.
-
-    Derived identifiers are not stored, so this scans usernames; user counts
-    are small (an admin-managed portal), which keeps this trivial.
-    """
-    rows = conn.execute(
-        "SELECT username FROM users WHERE id IS NOT ?", (exclude_id,)
-    ).fetchall()
-    return any(derive_user_id(r["username"]) == user_id for r in rows)
+    """True when another user's immutable resource identity equals ``user_id``."""
+    row = conn.execute(
+        "SELECT 1 FROM users WHERE derived_user_id = ? AND id IS NOT ?",
+        (user_id, exclude_id),
+    ).fetchone()
+    return row is not None
 
 
 def _row_to_user(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
@@ -83,7 +82,10 @@ def _row_to_user(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
     return {
         "id": row["id"],
         "username": row["username"],
-        "user_id": derive_user_id(row["username"]),
+        # Fall back to live derivation only for a row somehow missing the
+        # persisted value (e.g. an in-memory/test row built without it); every
+        # row read after migration has a stored, immutable value.
+        "user_id": row["derived_user_id"] or derive_user_id(row["username"]),
         "role": row["role"],
         "is_active": bool(row["is_active"]),
         "must_change_password": bool(row["must_change_password"]),
@@ -272,8 +274,11 @@ def get_user_by_id(
 def get_user_by_username(
     conn: sqlite3.Connection, username: str
 ) -> sqlite3.Row | None:
+    """Case-insensitive lookup: sign-in emails are treated as the same
+    account regardless of case (local login, SSO, and admin lookups all use
+    this), matching ``idx_users_username_ci``."""
     return conn.execute(
-        "SELECT * FROM users WHERE username = ?", (username,)
+        "SELECT * FROM users WHERE lower(username) = lower(?)", (username,)
     ).fetchone()
 
 
@@ -312,6 +317,7 @@ def create_user(
     apps_server_ip: str = "",
     apps_port: str = "",
 ) -> dict[str, Any]:
+    username = username.strip().lower()
     existing = get_user_by_username(conn, username)
     if existing is not None:
         raise ValueError("A user with that username already exists.")
@@ -330,13 +336,14 @@ def create_user(
     cur = conn.execute(
         """
         INSERT INTO users
-            (username, password_hash, role, must_change_password, self_service,
-             apps_server, apps_server_ip, apps_port,
+            (username, derived_user_id, password_hash, role, must_change_password,
+             self_service, apps_server, apps_server_ip, apps_port,
              ssh_private_key, ssh_public_key, ssh_key_generated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         """,
         (
             username,
+            user_id,
             security.hash_password(password),
             role,
             int(must_change_password),
@@ -389,6 +396,7 @@ def update_user(
     conn: sqlite3.Connection,
     user_id: int,
     *,
+    username: str | None = None,
     role: str | None = None,
     teams: list[str] | None = None,
     is_active: bool | None = None,
@@ -399,6 +407,19 @@ def update_user(
 ) -> dict[str, Any] | None:
     if get_user_by_id(conn, user_id) is None:
         return None
+    if username is not None:
+        username = username.strip().lower()
+        existing = get_user_by_username(conn, username)
+        if existing is not None and existing["id"] != user_id:
+            raise ValueError("A user with that username already exists.")
+        # The sign-in email may change; the immutable resource identity
+        # (derived_user_id -- server names, OS/jump accounts, pools, SSH
+        # bundle values) intentionally never changes here.
+        conn.execute(
+            "UPDATE users SET username = ?, updated_at = datetime('now') "
+            "WHERE id = ?",
+            (username, user_id),
+        )
     if role is not None:
         conn.execute(
             "UPDATE users SET role = ?, updated_at = datetime('now') WHERE id = ?",
@@ -783,6 +804,34 @@ def _server_host_alias(server: dict[str, Any]) -> str:
     return re.sub(r"[^a-z0-9-]+", "-", raw.lower()).strip("-") or "server"
 
 
+# A canonical, read-only, generic preview of the shape of the built-in
+# default SSH bundle. The built-in template's stored ``content`` is only a
+# marker comment ("Generated dynamically..."); this constant is a placeholder
+# structure only, containing no real usernames, hosts, or key material, so it
+# can be safely displayed to any administrator and used as the starting point
+# for a clone of the built-in.
+BUILTIN_SSH_CONFIG_DEFINITION = (
+    "Host *\n"
+    "    ServerAliveInterval 60\n"
+    "    ServerAliveCountMax 3\n"
+    "    TCPKeepAlive yes\n"
+    "\n"
+    "# Present only when a jump server is enabled in Settings:\n"
+    "Host jumpserver\n"
+    "    Hostname <configured jump/bundle host>\n"
+    "    User <configured jump account>\n"
+    "    Port <configured jump/bundle port>\n"
+    "    IdentityFile ~/.ssh/<application key name>\n"
+    "\n"
+    "# Repeated for each of your servers that has an IP address:\n"
+    "Host <server hostname or name, slugified>\n"
+    "    Hostname <server IP address>\n"
+    "    User <template main OS user, or your derived user ID>\n"
+    "    ProxyJump jumpserver  # only when a jump server is enabled\n"
+    "    IdentityFile ~/.ssh/<application key name>\n"
+)
+
+
 def render_generic_ssh_config(
     user: dict[str, Any],
     user_servers: list[dict[str, Any]],
@@ -991,14 +1040,22 @@ def set_bundle_template_enabled(
 def clone_bundle_template(
     conn: sqlite3.Connection, template_id: int, *, new_name: str
 ) -> dict[str, Any] | None:
-    """Clone a template into a new editable (non-builtin) template."""
+    """Clone a template into a new editable (non-builtin) template.
+
+    Cloning the built-in copies the canonical, generic placeholder definition
+    (never real user/server topology) so the clone starts as a useful, static
+    editable template rather than the built-in's internal marker comment.
+    """
     source = get_bundle_template(conn, template_id)
     if source is None:
         return None
+    content = (
+        BUILTIN_SSH_CONFIG_DEFINITION if source.get("is_builtin") else source["content"]
+    )
     return create_bundle_template(
         conn,
         name=new_name,
-        content=source["content"],
+        content=content,
         description=source.get("description", ""),
         mappings=[
             {"field_name": m["field_name"], "source": m["source"]}
@@ -1168,6 +1225,58 @@ def record_application_launch(conn: sqlite3.Connection, application_id: int, vis
     conn.execute(
         "DELETE FROM application_usage_daily WHERE usage_date < date('now', '-90 days')"
     )
+
+
+# In-process throttle for the alias-visit retention sweep below: unlike the
+# card-click launch above (already rate-limited to one request per user per
+# app per few seconds at the API layer), an authorized alias visit is
+# recorded on every matching nginx auth_request, which can be every page
+# load's document navigation. Running a DELETE on every single one would be
+# needless write amplification on a hot path that must never fail the
+# caller's authorization; retention is swept at most once per process per day
+# instead. Best-effort and non-blocking: never raises, and a missed sweep
+# (e.g. multiple worker processes, each with their own timer) is harmless --
+# it just runs again the next call in that process after the interval.
+_alias_usage_retention_lock = threading.Lock()
+_alias_usage_last_swept: float = 0.0
+_ALIAS_USAGE_RETENTION_INTERVAL_SECONDS = 24 * 60 * 60
+
+
+def record_application_alias_visit(
+    conn: sqlite3.Connection, application_id: int, visitor_key: str
+) -> None:
+    """Record one authorized alias visit (issue_local_031).
+
+    Best-effort by contract of its only caller (``proxy_check``): any
+    exception here must never turn an already-authorized request into a
+    denial, so callers should wrap this in their own try/except and merely
+    log a failure rather than propagate it.
+    """
+    conn.execute(
+        "INSERT INTO application_alias_usage_daily "
+        "(application_id, usage_date, visitor_key, request_count) "
+        "VALUES (?, date('now'), ?, 1) "
+        "ON CONFLICT(application_id, usage_date, visitor_key) "
+        "DO UPDATE SET request_count = request_count + 1",
+        (application_id, visitor_key),
+    )
+    global _alias_usage_last_swept
+    now = time.monotonic()
+    if now - _alias_usage_last_swept < _ALIAS_USAGE_RETENTION_INTERVAL_SECONDS:
+        return
+    if not _alias_usage_retention_lock.acquire(blocking=False):
+        return
+    try:
+        if now - _alias_usage_last_swept < _ALIAS_USAGE_RETENTION_INTERVAL_SECONDS:
+            return
+        conn.execute(
+            "DELETE FROM application_alias_usage_daily "
+            "WHERE usage_date < date('now', '-90 days')"
+        )
+        _alias_usage_last_swept = now
+    finally:
+        _alias_usage_retention_lock.release()
+
 
 
 def application_card_statistics(
@@ -2184,6 +2293,24 @@ def list_user_servers(
     return [_row_to_user_server(r) for r in rows]
 
 
+def transfer_user_servers(
+    conn: sqlite3.Connection, from_user_id: int, to_user_id: int
+) -> int:
+    """Reassign ownership of every server from one user to another.
+
+    Used when deleting a user who chose to keep (not destroy) their servers:
+    the guests, records, provisioning history, and deferred-deletion state are
+    left completely untouched -- only ``user_id`` changes. Returns the number
+    of rows reassigned.
+    """
+    cur = conn.execute(
+        "UPDATE user_servers SET user_id = ?, updated_at = datetime('now') "
+        "WHERE user_id = ?",
+        (to_user_id, from_user_id),
+    )
+    return cur.rowcount
+
+
 def server_name_exists(conn: sqlite3.Connection, name: str) -> bool:
     """True when any server (any owner) already has this name, case-insensitive.
 
@@ -2198,13 +2325,14 @@ def server_name_exists(conn: sqlite3.Connection, name: str) -> bool:
 
 
 def list_all_servers(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    """Every server across all users, each annotated with its owner's username.
+    """Every server across all users, each annotated with its owner's username
+    and immutable derived user ID.
 
-    Used by the admin server overview; the caller derives the owner id from the
-    username as needed.
+    Used by the admin server overview.
     """
     rows = conn.execute(
         "SELECT s.*, u.username AS owner_username, "
+        "u.derived_user_id AS owner_user_id, "
         "st.is_apps_server AS tpl_is_apps_server "
         "FROM user_servers s JOIN users u ON u.id = s.user_id "
         "LEFT JOIN server_templates st ON st.id = s.template_id "
@@ -2214,6 +2342,9 @@ def list_all_servers(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     for r in rows:
         server = _row_to_user_server(r)
         server["owner_username"] = r["owner_username"]
+        server["owner_user_id"] = r["owner_user_id"] or derive_user_id(
+            r["owner_username"]
+        )
         out.append(server)
     return out
 

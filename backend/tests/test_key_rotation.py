@@ -510,9 +510,10 @@ def test_admin_key_path_never_in_server_responses(admin, monkeypatch) -> None:
     assert "/keys/admin" not in listed.text
 
 
-def test_any_mappingless_template_serves_generic_config(admin) -> None:
-    """Intentional per issue_015: mapping-less templates always render the
-    dynamically generated SSH config, not their stored content."""
+def test_mappingless_custom_template_serves_its_saved_content(admin) -> None:
+    """issue_local_031: a non-builtin template with zero mappings is a valid,
+    fully static definition and must be downloaded unchanged -- it must not be
+    silently replaced by a generic per-server fallback."""
     client, csrf, _ = admin
     template = client.post(
         "/api/settings/bundle-templates",
@@ -524,8 +525,7 @@ def test_any_mappingless_template_serves_generic_config(admin) -> None:
     member, _ = _login(client.app, "rotuser@example.com", created["password"])
     download = member.get(f"/api/account/bundles/{template['id']}/download")
     assert download.status_code == 200
-    assert "literal text" not in _config_text(download)
-    assert "No servers" in _config_text(download)
+    assert _config_text(download) == "literal text"
 
 
 def test_default_ssh_config_without_servers(admin) -> None:

@@ -180,10 +180,16 @@ export function UserManagement(props: { currentUser: ApiUser | null }) {
                               });
                             })
                           }
-                          onDelete={(deleteApps) =>
+                          onDelete={(deleteApps, deleteServers) =>
                             runAction(async () => {
                               await api.deleteUser(user.id, {
                                 delete_apps: deleteApps,
+                                server_disposition: deleteServers
+                                  ? "delete"
+                                  : "transfer",
+                                transfer_servers_to_user_id: deleteServers
+                                  ? undefined
+                                  : props.currentUser?.id,
                               });
                             })
                           }
@@ -340,6 +346,11 @@ function CreateUserCard(props: {
   // Server template IDs to auto-provision on creation; every template is
   // enabled by default so a new user gets one server per template.
   const [provisionIds, setProvisionIds] = useState<Set<number>>(new Set());
+  // Master toggle for server provisioning (default on, preserving prior
+  // behavior). Turning it off clears the template selection so the account is
+  // created without any servers, without requiring the admin to individually
+  // uncheck every template.
+  const [createServers, setCreateServers] = useState(true);
   const [busy, setBusy] = useState(false);
   // issue_017: apps-server templates offered as the default apps server. When
   // any exist, a selection (a template name, or "Custom") is required. When
@@ -380,6 +391,15 @@ function CreateUserCard(props: {
     });
   }
 
+  function toggleCreateServers(checked: boolean) {
+    setCreateServers(checked);
+    if (checked) {
+      setProvisionIds(new Set(serverTemplates.map((t) => t.id)));
+    } else {
+      setProvisionIds(new Set());
+    }
+  }
+
   async function onSubmit(event: React.FormEvent) {
     event.preventDefault();
     props.onError("");
@@ -417,6 +437,7 @@ function CreateUserCard(props: {
       setAppsServerIp("");
       setAppsServerChoice("");
       setProvisionIds(new Set(serverTemplates.map((t) => t.id)));
+      setCreateServers(true);
     } catch (err) {
       props.onError(
         err instanceof ApiError ? err.message : "Unable to create the user.",
@@ -545,25 +566,37 @@ function CreateUserCard(props: {
         {serverTemplates.length > 0 && (
           <fieldset className="team-picker">
             <legend>Provision servers</legend>
-            <p className="muted logo-hint">
-              A server is created from each selected template
-              (named <code>TEMPLATE-USERID</code>). Failures don't block user
-              creation.
-            </p>
-            <div className="team-grid">
-              {serverTemplates.map((template) => (
-                <label key={template.id} className="checkbox">
-                  <input
-                    type="checkbox"
-                    checked={provisionIds.has(template.id)}
-                    onChange={() => toggleProvision(template.id)}
-                  />
-                  <span>
-                    {template.name} ({template.kind.toUpperCase()})
-                  </span>
-                </label>
-              ))}
-            </div>
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                checked={createServers}
+                onChange={(e) => toggleCreateServers(e.target.checked)}
+              />
+              <span>Create servers for this user</span>
+            </label>
+            {createServers && (
+              <>
+                <p className="muted logo-hint">
+                  A server is created from each selected template
+                  (named <code>TEMPLATE-USERID</code>). Failures don't block user
+                  creation.
+                </p>
+                <div className="team-grid">
+                  {serverTemplates.map((template) => (
+                    <label key={template.id} className="checkbox">
+                      <input
+                        type="checkbox"
+                        checked={provisionIds.has(template.id)}
+                        onChange={() => toggleProvision(template.id)}
+                      />
+                      <span>
+                        {template.name} ({template.kind.toUpperCase()})
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </>
+            )}
           </fieldset>
         )}
 
@@ -585,7 +618,7 @@ function UserRow(props: {
   isSelf: boolean;
   onSave: (input: UpdateUserInput) => void;
   onResetPassword: () => void;
-  onDelete: (deleteApps: boolean) => void;
+  onDelete: (deleteApps: boolean, deleteServers: boolean) => void;
 }) {
   const { user } = props;
   const [editing, setEditing] = useState(false);
@@ -594,11 +627,13 @@ function UserRow(props: {
   const [expanded, setExpanded] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleteApps, setDeleteApps] = useState(false);
+  const [deleteServers, setDeleteServers] = useState(false);
   const [role, setRole] = useState<Role>(user.role);
   const [teams, setTeams] = useState<string[]>(user.teams);
   const [selfService, setSelfService] = useState(user.self_service);
   const [appsServer, setAppsServer] = useState(user.apps_server);
   const [appsServerIp, setAppsServerIp] = useState(user.apps_server_ip);
+  const [username, setUsername] = useState(user.username);
 
   useEffect(() => {
     setRole(user.role);
@@ -606,7 +641,15 @@ function UserRow(props: {
     setSelfService(user.self_service);
     setAppsServer(user.apps_server);
     setAppsServerIp(user.apps_server_ip);
-  }, [user.role, user.teams, user.self_service, user.apps_server, user.apps_server_ip]);
+    setUsername(user.username);
+  }, [
+    user.role,
+    user.teams,
+    user.self_service,
+    user.apps_server,
+    user.apps_server_ip,
+    user.username,
+  ]);
 
   const dirty = useMemo(
     () =>
@@ -614,6 +657,7 @@ function UserRow(props: {
       selfService !== user.self_service ||
       appsServer !== user.apps_server ||
       appsServerIp !== user.apps_server_ip ||
+      username.trim().toLowerCase() !== user.username.toLowerCase() ||
       teams.length !== user.teams.length ||
       teams.some((t) => !user.teams.includes(t)),
     [
@@ -621,16 +665,16 @@ function UserRow(props: {
       selfService,
       appsServer,
       appsServerIp,
+      username,
       teams,
       user.role,
       user.self_service,
       user.apps_server,
       user.apps_server_ip,
+      user.username,
       user.teams,
     ],
   );
-  const hasServerLocation = Boolean(appsServer.trim() || appsServerIp.trim());
-
   function toggleTeam(team: string) {
     setTeams((current) =>
       current.includes(team)
@@ -721,6 +765,21 @@ function UserRow(props: {
 
       {editing && (
         <div className="user-edit">
+          <label className="field">
+            <span>Sign-in email</span>
+            <input
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="user@example.com"
+            />
+            <span className="muted logo-hint">
+              Changes only how this account signs in (local login and SSO
+              matching). The immutable <code>{user.user_id}</code> user ID,
+              server names, SSH accounts, and pool/jump ownership never change.
+            </span>
+          </label>
+
           <label className="field inline">
             <span>Role</span>
             <select value={role} onChange={(e) => setRole(e.target.value as Role)}>
@@ -773,9 +832,10 @@ function UserRow(props: {
             <button
               type="button"
               className="btn primary"
-              disabled={!dirty || !hasServerLocation}
+              disabled={!dirty || username.trim().length === 0}
               onClick={() => {
                 props.onSave({
+                  username: username.trim(),
                   role,
                   teams,
                   self_service: selfService,
@@ -798,13 +858,27 @@ function UserRow(props: {
                   />
                   <span>Also delete this user's apps</span>
                 </label>
+                <label className="checkbox inline-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={deleteServers}
+                    onChange={(e) => setDeleteServers(e.target.checked)}
+                  />
+                  <span>
+                    Also delete this user's server(s) (destroys only
+                    verified, unprotected guests; blocked if any is protected
+                    or cannot be verified). Unchecked transfers any owned
+                    servers to you instead.
+                  </span>
+                </label>
                 <button
                   type="button"
                   className="btn danger"
                   onClick={() => {
-                    props.onDelete(deleteApps);
+                    props.onDelete(deleteApps, deleteServers);
                     setConfirmingDelete(false);
                     setDeleteApps(false);
+                    setDeleteServers(false);
                   }}
                 >
                   Confirm delete
@@ -815,6 +889,7 @@ function UserRow(props: {
                   onClick={() => {
                     setConfirmingDelete(false);
                     setDeleteApps(false);
+                    setDeleteServers(false);
                   }}
                 >
                   Cancel

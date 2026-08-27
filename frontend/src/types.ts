@@ -92,6 +92,9 @@ export interface BundleTemplate {
   mappings: BundleTemplateMapping[];
   is_builtin: boolean;
   enabled: boolean;
+  /** Read-only generic preview of the built-in's actual download; empty for
+   * custom templates (whose `content` is already the real definition). */
+  definition: string;
 }
 
 export interface BundleOption {
@@ -306,6 +309,13 @@ export interface UserServer {
   is_apps_server?: boolean;
   /** Live Proxmox pool membership, resolved on list; transient, never persisted. */
   poolid?: string;
+  /** Live Proxmox presence classification, resolved on list; transient, never
+   * persisted, and never used to auto-delete a record: "live" (confirmed
+   * present), "missing" (an authoritative inventory read completed and the
+   * guest was not found), or "unverified" (the provider is unconfigured,
+   * unreachable, or the read failed -- absence is never inferred). Empty for
+   * a server with no vmid yet, or a failed provisioning record. */
+  presence?: "live" | "missing" | "unverified" | "";
   access_reset?: AccessResetOutcome[];
 }
 
@@ -462,6 +472,9 @@ export interface CreateUserInput {
 }
 
 export interface UpdateUserInput {
+  /** Sign-in email. Mutable; the immutable `user_id` (server names, SSH
+   * users, pools, jump accounts) never changes when this changes. */
+  username?: string;
   role?: Role;
   teams?: string[];
   is_active?: boolean;
@@ -567,8 +580,23 @@ export interface Application {
 export interface ApplicationShareUser { id: number; username: string; user_id: string; }
 
 export interface ApplicationTrendPoint { date: string; launches: number; unique_users: number; }
-export interface ApplicationStatisticsRow { application_id: number; name: string; launches: number; unique_users: number; favorites: number; visits_7d: number; }
-export interface ApplicationStatistics { days: number; launches: number; unique_users: number; favorites: number; trend: ApplicationTrendPoint[]; applications: ApplicationStatisticsRow[]; app_trends: ApplicationTrendSeries[]; user_activity: UserActivityRow[]; }
+export interface ApplicationStatisticsRow {
+  application_id: number; name: string; launches: number; unique_users: number;
+  favorites: number; visits_7d: number;
+  /** Authorized alias visits (direct/deep-link/iframe navigation via nginx,
+   * separate from the portal card-click "launches" above). */
+  alias_visits: number;
+  unique_alias_users: number;
+  anonymous_alias_visits: number;
+}
+export interface ApplicationStatistics {
+  days: number; launches: number; unique_users: number; favorites: number;
+  trend: ApplicationTrendPoint[]; applications: ApplicationStatisticsRow[];
+  app_trends: ApplicationTrendSeries[]; user_activity: UserActivityRow[];
+  alias_visits: number;
+  unique_alias_users: number;
+  anonymous_alias_visits: number;
+}
 export interface ApplicationTrendSeries { application_id: number; name: string; launches: number; points: ApplicationTrendPoint[]; }
 export interface UserActivityRow { user_id: string; launches: number; applications_used: number; }
 export interface ApplicationUserActivity { user_id: string; launches: number; active_days: number; last_activity: string; }

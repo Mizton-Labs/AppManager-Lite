@@ -72,6 +72,22 @@ _SSH_USER_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
+def _clean_email_username(value: str) -> str:
+    """Validate and canonicalize a sign-in username (must be an email).
+
+    Trims whitespace and lowercases: sign-in usernames are matched
+    case-insensitively everywhere (local login, SSO, and this normalization),
+    so storing a canonical lowercase form keeps display and comparisons
+    consistent.
+    """
+    value = value.strip()
+    if not value:
+        raise ValueError("Username must not be empty.")
+    if not _EMAIL_RE.match(value):
+        raise ValueError("Username must be an email address.")
+    return value.lower()
+
+
 def _validate_apps_server(value: str) -> str:
     """An optional bare hostname where a user runs their applications."""
     value = value.strip()
@@ -292,12 +308,7 @@ class CreateUserRequest(BaseModel):
     @field_validator("username")
     @classmethod
     def _clean_username(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            raise ValueError("Username must not be empty.")
-        if not _EMAIL_RE.match(value):
-            raise ValueError("Username must be an email address.")
-        return value
+        return _clean_email_username(value)
 
     @field_validator("role")
     @classmethod
@@ -322,12 +333,18 @@ class CreateUserRequest(BaseModel):
 
 
 class UpdateUserRequest(BaseModel):
+    username: str | None = Field(default=None, min_length=1, max_length=128)
     role: str | None = None
     teams: list[str] | None = None
     is_active: bool | None = None
     self_service: bool | None = None
     apps_server: str | None = Field(default=None, max_length=253)
     apps_server_ip: str | None = Field(default=None, max_length=45)
+
+    @field_validator("username")
+    @classmethod
+    def _clean_username(cls, value: str | None) -> str | None:
+        return None if value is None else _clean_email_username(value)
 
     @field_validator("role")
     @classmethod
@@ -454,6 +471,11 @@ class BundleTemplateOut(BaseModel):
     mappings: list[BundleTemplateMapping] = Field(default_factory=list)
     is_builtin: bool = False
     enabled: bool = True
+    # Response-only: a read-only, generic (no real topology/secrets) preview of
+    # what the built-in template actually downloads, since its stored
+    # ``content`` above is only a marker comment. Empty for custom templates,
+    # whose ``content`` is already the real definition.
+    definition: str = ""
 
 
 class CloneBundleTemplateRequest(BaseModel):
@@ -587,6 +609,15 @@ class ApplicationStatisticsRow(BaseModel):
     unique_users: int
     favorites: int
     visits_7d: int
+    # Authorized alias visits (issue_local_031): counted from nginx's
+    # app-aware auth_request for the *original* alias request (direct
+    # navigation, deep links, and embedded iframes included), separately from
+    # the "launches" above (which only count a card click in the portal).
+    # Anonymous visits (public aliases, or auth-disabled deployments) count
+    # toward this total but never toward unique_alias_users.
+    alias_visits: int = 0
+    unique_alias_users: int = 0
+    anonymous_alias_visits: int = 0
 
 
 class ApplicationTrendSeries(BaseModel):
@@ -629,6 +660,12 @@ class ApplicationStatisticsOut(BaseModel):
     applications: list[ApplicationStatisticsRow]
     app_trends: list[ApplicationTrendSeries]
     user_activity: list[UserActivityRow]
+    # Overall authorized-alias-visit totals over the same date range; see
+    # ApplicationStatisticsRow for the metric's exact meaning and privacy
+    # notes. Zero for a deployment with no alias traffic yet.
+    alias_visits: int = 0
+    unique_alias_users: int = 0
+    anonymous_alias_visits: int = 0
 
 
 class AliasConfigOut(BaseModel):
@@ -1480,6 +1517,16 @@ class UserServerOut(BaseModel):
     # provider on list (empty when the provider is unconfigured/unreachable or
     # the guest is not in a pool). Never persisted.
     poolid: str = ""
+    # Transient, response-only live-presence classification, resolved from a
+    # single cluster-wide Proxmox inventory read per list (never persisted):
+    # "live" (the guest exists there), "missing" (an authoritative inventory
+    # read completed and the guest was not found -- the DB record is *not*
+    # deleted; it is surfaced for the admin/owner to investigate), or
+    # "unverified" (the provider is unconfigured, unreachable, or the read
+    # failed -- the last-known record is shown as-is; absence is never
+    # inferred from a failed or partial read). Empty for a server with no
+    # vmid yet (e.g. a still-pending create) or a failed provisioning record.
+    presence: str = ""
     # Transient result returned by Reset access on servers. It contains only
     # target/account/status metadata, never SSH key material or admin paths.
     access_reset: list[AccessResetOut] = Field(default_factory=list)
