@@ -1558,6 +1558,37 @@ def create_application(
     return _row_to_application(conn, row)
 
 
+def get_applications_by_ids(
+    conn: sqlite3.Connection, application_ids: list[int]
+) -> list[dict[str, Any]]:
+    """Fetch applications by id, in no particular order. Used by the bulk
+    reorder endpoint to validate a caller-submitted id set."""
+    if not application_ids:
+        return []
+    placeholders = ",".join("?" for _ in application_ids)
+    rows = conn.execute(
+        f"SELECT * FROM applications WHERE id IN ({placeholders})",
+        application_ids,
+    ).fetchall()
+    return [_row_to_application(conn, row) for row in rows]
+
+
+def reorder_applications(
+    conn: sqlite3.Connection, application_ids: list[int], sort_orders: list[int]
+) -> None:
+    """Assign each application in ``application_ids`` the corresponding
+    ``sort_orders`` value (same length, positionally paired). The caller
+    computes distinct values scoped to just the reordered group, so this
+    never disturbs any other application's ``sort_order``; ties against
+    applications outside the group are broken by name, then id, elsewhere."""
+    for application_id, sort_order in zip(application_ids, sort_orders):
+        conn.execute(
+            "UPDATE applications SET sort_order = ?, updated_at = datetime('now') "
+            "WHERE id = ?",
+            (sort_order, application_id),
+        )
+
+
 def get_application(
     conn: sqlite3.Connection,
     application_id: int,

@@ -870,6 +870,111 @@ def create_application(
     return _app_out(result, include_creator=True)
 
 
+@router.post("/applications/reorder", response_model=list[ApplicationOut])
+def reorder_applications(
+    payload: schemas.ReorderApplicationsRequest,
+    actor: dict[str, Any] = Depends(get_current_user),
+    __: None = Depends(verify_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> list[ApplicationOut]:
+    """Atomically persist a staged drag/keyboard reorder (issue_local_032).
+
+    Each group is a set of applications the caller reordered together in the
+    UI -- always sharing the same visible ownership scope and approval
+    status, since reordering across those boundaries is not offered. Every
+    group is independently validated and applied; the whole request is
+    rejected (nothing is changed) if any group fails validation or is stale.
+    """
+    is_admin = actor.get("role") == "admin"
+    touched_ids: list[int] = []
+    # Hold the write lock for the whole request (all groups): the earlier
+    # per-group read of the current order must not be followed by a window in
+    # which a concurrent request could commit a conflicting change before this
+    # request's own write -- that would let the 409 staleness check above pass
+    # for two racing requests when only one should logically succeed. A plain
+    # SELECT does not open a transaction, so without this, the read and this
+    # request's own UPDATE could straddle another connection's entire
+    # read-modify-write cycle. BEGIN IMMEDIATE takes the lock immediately.
+    conn.execute("BEGIN IMMEDIATE")
+    for group in payload.groups:
+        rows = repository.get_applications_by_ids(conn, group.application_ids)
+        if not is_admin:
+            # Deliberately identical response for "doesn't exist" and "exists
+            # but isn't yours": a non-admin must not be able to learn whether
+            # an arbitrary application id exists (e.g. a private application
+            # they cannot otherwise see) by comparing status codes/messages.
+            if len(rows) != len(group.application_ids) or any(
+                row.get("created_by") != actor.get("id") for row in rows
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You may only reorder your own applications.",
+                )
+        elif len(rows) != len(group.application_ids):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="One or more applications in the request no longer exist.",
+            )
+        # Defense in depth: the client only ever groups applications that share
+        # an approval status, but never trust that without re-checking, since a
+        # cross-status swap would otherwise appear to save and then silently
+        # snap back (management lists sort by approval status first).
+        if len({row["approval_status"] for row in rows}) > 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="All applications in a reorder group must share the same "
+                "approval status.",
+            )
+        # Conflict check: the group's current DB order (by sort_order) must
+        # exactly match what the client believed it was reordering.
+        current_order = [
+            row["id"] for row in sorted(rows, key=lambda r: r["sort_order"])
+        ]
+        if current_order != group.expected_application_ids:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This application list changed elsewhere; reload and "
+                "try again.",
+            )
+        # Assign fresh, strictly increasing sort_order values anchored at the
+        # group's current minimum. Newly created applications commonly all
+        # share the same default sort_order (0), so simply permuting the
+        # existing values would be a no-op when they are not already
+        # distinct; this always produces a distinct order for the group while
+        # keeping it anchored near its previous position (ties against
+        # applications outside the group are broken by name, then id, so
+        # exact numeric adjacency across groups/owners is not required).
+        base = min(row["sort_order"] for row in rows)
+        new_sort_orders = [base + i for i in range(len(group.application_ids))]
+        repository.reorder_applications(conn, group.application_ids, new_sort_orders)
+        touched_ids.extend(group.application_ids)
+    # Cap the logged id list: up to 20 groups of 500 ids each could otherwise
+    # produce an oversized audit row for a single request.
+    _AUDIT_ID_PREVIEW_LIMIT = 50
+    ids_preview = touched_ids[:_AUDIT_ID_PREVIEW_LIMIT]
+    ids_suffix = (
+        f" (+{len(touched_ids) - _AUDIT_ID_PREVIEW_LIMIT} more)"
+        if len(touched_ids) > _AUDIT_ID_PREVIEW_LIMIT
+        else ""
+    )
+    audit.record(
+        conn,
+        category=audit.CATEGORY_APPLICATION,
+        action="reorder",
+        actor=actor,
+        target_type="application",
+        target_id=touched_ids[0] if touched_ids else 0,
+        target_name=f"{len(touched_ids)} application(s)",
+        detail=f"application_ids={ids_preview}{ids_suffix}",
+    )
+    out = []
+    for application_id in touched_ids:
+        updated = repository.get_application(conn, application_id, include_creator=True)
+        assert updated is not None
+        out.append(_app_out(updated, include_creator=True))
+    return out
+
+
 @router.patch("/applications/{application_id}", response_model=ApplicationOut)
 def update_application(
     application_id: int,

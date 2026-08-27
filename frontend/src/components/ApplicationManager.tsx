@@ -13,6 +13,25 @@ import { fileToLogoDataUrl } from "../lib/image";
 import { defaultLogoFor } from "../logos";
 import { CheckIcon, PlusIcon, XIcon } from "./icons";
 
+/** issue_local_032: the bucket an application's reordering is confined to --
+ * the same visible ownership group (an admin's own apps vs. everyone else's)
+ * AND the same approval status, since both are used to group/sort the
+ * management list and crossing either boundary would appear to save and then
+ * silently "snap back" (management lists sort by approval status first). */
+function appBucketKey(
+  app: Application,
+  isAdmin: boolean,
+  currentUserId: number | null,
+): string {
+  const ownerBucket =
+    isAdmin && currentUserId != null
+      ? app.created_by_id === currentUserId
+        ? "mine"
+        : "other"
+      : "all";
+  return `${ownerBucket}:${app.approval_status}`;
+}
+
 /** Case-insensitive substring match of an application against a query. */
 function appMatches(app: Application, query: string): boolean {
   const q = query.trim().toLowerCase();
@@ -59,6 +78,13 @@ export function ApplicationManager(props: {
   const [ownerOptions, setOwnerOptions] = useState<ApiUser[]>([]);
   // issue_024: client-side filter over the loaded applications.
   const [filter, setFilter] = useState("");
+  // issue_local_032: staged reordering. `apps` is the draft (displayed) order;
+  // `savedOrderIds` is the last-known-persisted order, refreshed by every
+  // `reload()` (including after a successful Save). Any other action that
+  // reloads (create/edit/delete/etc.) intentionally discards an unsaved
+  // reorder draft the same way, since the refreshed data may no longer match it.
+  const [savedOrderIds, setSavedOrderIds] = useState<number[]>([]);
+  const [savingOrder, setSavingOrder] = useState(false);
 
   const onAppsChanged = props.onAppsChanged;
   const reload = useCallback(async () => {
@@ -67,6 +93,7 @@ export function ApplicationManager(props: {
       isAdmin ? api.listUsers() : Promise.resolve([]),
     ]);
     setApps(nextApps);
+    setSavedOrderIds(nextApps.map((a) => a.id));
     setOwnerOptions(nextUsers.filter((user) => user.is_active));
     // Let the shell refresh embedded-app navigation after any change.
     void onAppsChanged?.();
@@ -102,49 +129,126 @@ export function ApplicationManager(props: {
 
   const currentUserId = props.currentUser?.id ?? null;
 
+  /** issue_local_032: reorder is staged locally only -- no network call here.
+   * The move/drag target is constrained to the same bucket (see
+   * appBucketKey); reaching outside it is a no-op. */
   const moveApp = useCallback(
-    async (appId: number, direction: -1 | 1) => {
-      const index = apps.findIndex((app) => app.id === appId);
-      if (index < 0) return;
-      // issue_024: reorder only within the same ownership group (an admin's own
-      // apps vs. other users' apps), so the two subsections stay disjoint. The
-      // target is the nearest neighbor in the chosen direction that belongs to
-      // the same group; for a non-admin every app is in one group.
-      const groupOf = (app: Application) =>
-        isAdmin && currentUserId != null
-          ? app.created_by_id === currentUserId
-          : true;
-      const myGroup = groupOf(apps[index]);
-      let targetIndex = index + direction;
-      while (
-        targetIndex >= 0 &&
-        targetIndex < apps.length &&
-        groupOf(apps[targetIndex]) !== myGroup
-      ) {
-        targetIndex += direction;
-      }
-      if (targetIndex < 0 || targetIndex >= apps.length) return;
-      if (groupOf(apps[targetIndex]) !== myGroup) return;
-      const next = [...apps];
-      [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
-      setApps(next);
-      setError(null);
-      try {
-        await Promise.all(
-          next.map((app, sortOrder) =>
-            app.sort_order === sortOrder
-              ? Promise.resolve()
-              : api.updateApplication(app.id, { sort_order: sortOrder }),
-          ),
-        );
-        await reload();
-      } catch (err) {
-        setError(err instanceof ApiError ? err.message : "Unable to reorder applications.");
-        await reload();
-      }
+    (appId: number, direction: -1 | 1) => {
+      setApps((current) => {
+        const index = current.findIndex((app) => app.id === appId);
+        if (index < 0) return current;
+        const bucketOf = (app: Application) =>
+          appBucketKey(app, isAdmin, currentUserId);
+        const myBucket = bucketOf(current[index]);
+        let targetIndex = index + direction;
+        while (
+          targetIndex >= 0 &&
+          targetIndex < current.length &&
+          bucketOf(current[targetIndex]) !== myBucket
+        ) {
+          targetIndex += direction;
+        }
+        if (targetIndex < 0 || targetIndex >= current.length) return current;
+        if (bucketOf(current[targetIndex]) !== myBucket) return current;
+        const next = [...current];
+        [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
+        return next;
+      });
     },
-    [apps, reload, isAdmin, currentUserId],
+    [isAdmin, currentUserId],
   );
+
+  /** Drag-and-drop equivalent of moveApp: move `draggedAppId` to sit at
+   * `targetAppId`'s position, only when both are in the same bucket. */
+  const reorderWithinBucket = useCallback(
+    (draggedAppId: number, targetAppId: number) => {
+      if (draggedAppId === targetAppId) return;
+      setApps((current) => {
+        const sourceIndex = current.findIndex((a) => a.id === draggedAppId);
+        const targetIndex = current.findIndex((a) => a.id === targetAppId);
+        if (sourceIndex < 0 || targetIndex < 0) return current;
+        const bucketOf = (app: Application) =>
+          appBucketKey(app, isAdmin, currentUserId);
+        if (bucketOf(current[sourceIndex]) !== bucketOf(current[targetIndex])) {
+          return current;
+        }
+        const next = [...current];
+        const [moved] = next.splice(sourceIndex, 1);
+        const newTargetIndex = next.findIndex((a) => a.id === targetAppId);
+        next.splice(newTargetIndex, 0, moved);
+        return next;
+      });
+    },
+    [isAdmin, currentUserId],
+  );
+
+  const orderDirty = useMemo(
+    () =>
+      apps.length === savedOrderIds.length &&
+      apps.some((app, index) => app.id !== savedOrderIds[index]),
+    [apps, savedOrderIds],
+  );
+
+  /** Revert the draft order back to the last-saved order (object data is
+   * unchanged; only position is restored). */
+  const discardOrder = useCallback(() => {
+    setApps((current) => {
+      const byId = new Map(current.map((a) => [a.id, a]));
+      const restored = savedOrderIds
+        .map((id) => byId.get(id))
+        .filter((a): a is Application => a != null);
+      // Safety net: if the id sets diverged (shouldn't happen since a reload
+      // always resets both together), fall back to the current draft as-is.
+      return restored.length === current.length ? restored : current;
+    });
+  }, [savedOrderIds]);
+
+  const saveOrder = useCallback(async () => {
+    setSavingOrder(true);
+    setError(null);
+    try {
+      const byId = new Map(apps.map((a) => [a.id, a]));
+      const currentBuckets = new Map<string, number[]>();
+      for (const app of apps) {
+        const key = appBucketKey(app, isAdmin, currentUserId);
+        const list = currentBuckets.get(key);
+        if (list) list.push(app.id);
+        else currentBuckets.set(key, [app.id]);
+      }
+      const savedBuckets = new Map<string, number[]>();
+      for (const id of savedOrderIds) {
+        const app = byId.get(id);
+        if (!app) continue;
+        const key = appBucketKey(app, isAdmin, currentUserId);
+        const list = savedBuckets.get(key);
+        if (list) list.push(id);
+        else savedBuckets.set(key, [id]);
+      }
+      const groups: {
+        application_ids: number[];
+        expected_application_ids: number[];
+      }[] = [];
+      for (const [key, ids] of currentBuckets) {
+        const expected = savedBuckets.get(key) ?? [];
+        if (ids.length !== expected.length) continue;
+        const changed = ids.some((id, index) => id !== expected[index]);
+        if (changed) {
+          groups.push({ application_ids: ids, expected_application_ids: expected });
+        }
+      }
+      if (groups.length === 0) return;
+      await api.reorderApplications(groups);
+      await reload();
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : "Unable to save the new application order.",
+      );
+    } finally {
+      setSavingOrder(false);
+    }
+  }, [apps, savedOrderIds, isAdmin, currentUserId, reload]);
 
   // Run an action that returns the affected application, then surface its push
   // status as a transient notice next to that application's name.
@@ -261,6 +365,26 @@ export function ApplicationManager(props: {
             <PlusIcon />
             <span className="btn-label">New application</span>
           </button>
+          {orderDirty && (
+            <>
+              <button
+                type="button"
+                className="btn accent"
+                onClick={() => void saveOrder()}
+                disabled={savingOrder}
+              >
+                {savingOrder ? "Saving…" : "Save changes"}
+              </button>
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={discardOrder}
+                disabled={savingOrder}
+              >
+                Discard changes
+              </button>
+            </>
+          )}
         </div>
       )}
 
@@ -294,6 +418,9 @@ export function ApplicationManager(props: {
             canMoveDown={index < group.length - 1}
             onMoveUp={() => void moveApp(app.id, -1)}
             onMoveDown={() => void moveApp(app.id, 1)}
+            onDropReorder={(draggedAppId) =>
+              reorderWithinBucket(draggedAppId, app.id)
+            }
             teamOptions={teamOptions}
             aliasOptions={ownerAliasOptions(apps, app.created_by_id)}
             onSave={(input) =>
@@ -1361,6 +1488,9 @@ function ApplicationRow(props: {
   showReorder?: boolean;
   onMoveUp: () => void;
   onMoveDown: () => void;
+  /** issue_local_032: drag-and-drop equivalent of the move buttons -- called
+   * on the row a dragged card is dropped onto, with the dragged card's id. */
+  onDropReorder?: (draggedAppId: number) => void;
   teamOptions: readonly string[];
   /** The (resulting) owner's existing aliases, offered as the embedded frame
    * target in the edit form. */
@@ -1606,6 +1736,21 @@ function ApplicationRow(props: {
   return (
     <article
       className={`user-card${app.is_active ? "" : " inactive"}${editing ? " editing" : ""}`}
+      draggable={props.showReorder !== false && !editing}
+      onDragStart={(e) => {
+        e.dataTransfer.setData("text/plain", String(app.id));
+        e.dataTransfer.effectAllowed = "move";
+      }}
+      onDragOver={(e) => {
+        if (props.showReorder !== false) e.preventDefault();
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        const draggedId = Number(e.dataTransfer.getData("text/plain"));
+        if (draggedId && draggedId !== app.id) {
+          props.onDropReorder?.(draggedId);
+        }
+      }}
     >
       <div className="user-card-head app-card-head">
         <div className="user-identity">
@@ -1687,6 +1832,13 @@ function ApplicationRow(props: {
         <div className="row-actions">
           {props.showReorder !== false && (
             <>
+              <span
+                className="team-drag-handle"
+                aria-hidden="true"
+                title="Drag to reorder"
+              >
+                ⠿
+              </span>
               <button
                 type="button"
                 className="btn ghost btn-sm"

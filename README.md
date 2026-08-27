@@ -328,8 +328,16 @@ Creating an application is collapsed behind a **New application** button. The
 list has a **filter** box (case-insensitive match across name, description, URL,
 teams, and owner). For an administrator, their own applications are shown first
 under **"My applications"**, then everyone else's under **"Other users'
-applications"**; the **move up/down** ordering controls act within each group
-and are hidden while a filter is active. When an approved alias application's
+applications"**; **drag-and-drop** (with a drag handle) and the **move up/down**
+keyboard-accessible fallback both act within the same visible group **and**
+approval status (pending/approved/rejected rows never mix, since the
+administrator review list is sorted by status first), and both are hidden
+while a filter is active. Reordering is staged locally — nothing is saved
+until you press the **Save changes** button that appears once the order
+changed, or **Discard changes** to revert; the whole staged reorder is
+persisted atomically in one request, and a stale/conflicting order (e.g.
+someone else changed the list first) is rejected with nothing applied rather
+than partially saved. When an approved alias application's
 reverse-proxy configuration is changed, saving surfaces the push outcome, and a
 highlighted **Push to reverse proxy** button appears next to Save whenever the
 change still needs applying — so it's clear a push is required. Each

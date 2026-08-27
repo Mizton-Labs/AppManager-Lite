@@ -876,6 +876,39 @@ class UpdateApplicationRequest(BaseModel):
         return self
 
 
+class ApplicationReorderGroup(BaseModel):
+    """One reordered bucket (issue_local_032): all applications in a single
+    request must be the caller's own applications (or, for an admin, any
+    applications) that currently share the same approval_status -- reordering
+    is scoped to what is visibly grouped together in the UI (ownership +
+    review state), never crossing those boundaries."""
+
+    application_ids: list[int] = Field(min_length=1, max_length=500)
+    expected_application_ids: list[int] = Field(min_length=1, max_length=500)
+
+    @field_validator("application_ids", "expected_application_ids")
+    @classmethod
+    def _check_unique_positive(cls, value: list[int]) -> list[int]:
+        if len(value) != len(set(value)):
+            raise ValueError("Application IDs must not repeat within a group.")
+        if any(v <= 0 for v in value):
+            raise ValueError("Application IDs must be positive.")
+        return value
+
+    @model_validator(mode="after")
+    def _check_same_set(self) -> "ApplicationReorderGroup":
+        if set(self.application_ids) != set(self.expected_application_ids):
+            raise ValueError(
+                "application_ids and expected_application_ids must contain the "
+                "same set of IDs (only their order may differ)."
+            )
+        return self
+
+
+class ReorderApplicationsRequest(BaseModel):
+    groups: list[ApplicationReorderGroup] = Field(min_length=1, max_length=20)
+
+
 class ProvisionResultOut(BaseModel):
     """Per-template outcome of create-user auto-provisioning."""
 

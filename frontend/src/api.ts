@@ -237,6 +237,21 @@ export const api = {
   deleteApplication: (id: number) =>
     request<{ detail: string }>(`applications/${id}`, { method: "DELETE" }),
 
+  /** Atomically persist a staged drag/keyboard reorder (issue_local_032).
+   * Each group is a set of application IDs that were reordered together in
+   * the UI (always sharing the same visible ownership scope and approval
+   * status). Returns the updated applications. */
+  reorderApplications: (
+    groups: {
+      application_ids: number[];
+      expected_application_ids: number[];
+    }[],
+  ) =>
+    request<Application[]>("applications/reorder", {
+      method: "POST",
+      body: { groups },
+    }),
+
   /** Re-run the reverse-proxy alias push for an approved application (admin). */
   retryApplicationPush: (id: number) =>
     request<Application>(`applications/${id}/push-retry`, { method: "POST" }),
