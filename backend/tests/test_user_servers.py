@@ -2521,6 +2521,46 @@ def test_servers_overview_admin_sees_all_grouped_by_owner(admin, monkeypatch) ->
     assert len(owners["nadia@example.com"]["servers"]) == 1
 
 
+def test_servers_overview_admin_totals_include_zero_server_users(
+    admin, monkeypatch
+) -> None:
+    """issue_local_032: total_users counts every active account (including
+    users with zero servers), not merely owners with a server record."""
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    u1 = _create_member(client, csrf, username="hasserver@example.com")
+    _create_member(client, csrf, username="noserver@example.com")
+    _create_server_for(client, csrf, u1["user"]["id"], template["id"], name="a")
+
+    resp = client.get("/api/servers/overview")
+    body = resp.json()
+    # admin + hasserver + noserver = 3 active accounts.
+    assert body["total_users"] == 3
+    assert body["total_servers"] == 1
+
+
+def test_servers_overview_nonadmin_gets_zero_totals(admin, monkeypatch) -> None:
+    client, csrf, _ = admin
+    _FakeProxmox(monkeypatch)
+    _FakeSsh(monkeypatch)
+    _setup_provider(client, csrf)
+    template = _add_template(client, csrf)
+    created = _create_member(client, csrf, "totalsmember@example.com")
+    member_id = created["user"]["id"]
+    _create_server_for(client, csrf, member_id, template["id"], name="a")
+
+    member, _ = _login(client.app, "totalsmember@example.com", created["password"])
+    resp = member.get("/api/servers/overview")
+    body = resp.json()
+    assert body["is_admin"] is False
+    assert body["total_users"] == 0
+    # total_servers still reflects the caller's own visible server count.
+    assert body["total_servers"] == 1
+
+
 def test_servers_overview_derived_user_id_survives_rename(admin, monkeypatch) -> None:
     """issue_local_031: the overview's derived_user_id must reflect the
     immutable resource identity, not be re-derived from the (now renamed)

@@ -304,6 +304,16 @@ def list_users(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return [_row_to_user(conn, r) for r in rows]
 
 
+def count_active_users(conn: sqlite3.Connection) -> int:
+    """Every active application account, regardless of whether it owns any
+    servers. Used for the admin-only Servers view "Total users" summary
+    (issue_local_032), which counts every account -- not just server owners."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS c FROM users WHERE is_active = 1"
+    ).fetchone()
+    return int(row["c"])
+
+
 def create_user(
     conn: sqlite3.Connection,
     *,

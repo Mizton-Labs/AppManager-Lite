@@ -103,6 +103,13 @@ const SELF = makeUser({ id: 7, role: "user", self_service: true, user_id: "morri
 
 afterEach(() => vi.unstubAllGlobals());
 
+/** issue_local_032: owner cards are collapsed by default; expand one by
+ * clicking its toggle button (matched by the owner's username substring). */
+async function expandOwner(username: string) {
+  const toggle = await screen.findByRole("button", { name: new RegExp(username) });
+  await userEvent.click(toggle);
+}
+
 describe("ServersView", () => {
   it("groups servers by owner and shows resources + sparklines", async () => {
     stubServersView({
@@ -127,6 +134,12 @@ describe("ServersView", () => {
     // Owner group headers.
     expect(await screen.findByText(/morris@example.com/)).toBeInTheDocument();
     expect(screen.getByText(/nadia@example.com/)).toBeInTheDocument();
+    // Collapsed by default: no stats requests, no server content yet.
+    expect(screen.queryByRole("group", { name: "CPU" })).toBeNull();
+
+    await expandOwner("morris@example.com");
+    await expandOwner("nadia@example.com");
+
     // Server card resources (both servers share the same footprint).
     expect(
       screen.getAllByText(/2 CPU · 4 GB RAM · 20 GB disk/).length,
@@ -150,6 +163,7 @@ describe("ServersView", () => {
       ],
     });
     render(<ServersView currentUser={SELF} isAdmin={false} />);
+    await expandOwner("morris@example.com");
     expect(await screen.findByText("Pool: team-morris")).toBeInTheDocument();
   });
 
@@ -166,6 +180,7 @@ describe("ServersView", () => {
       ],
     });
     render(<ServersView currentUser={SELF} isAdmin={false} />);
+    await expandOwner("morris@example.com");
     await screen.findByRole("group", { name: "CPU" });
 
     const statCallsBefore = fetchMock.mock.calls.filter(([u]) =>
@@ -201,6 +216,7 @@ describe("ServersView", () => {
       { available: false, detail: "This server has no running guest to report stats for.", timeframe: "hour", points: [] },
     );
     render(<ServersView currentUser={SELF} isAdmin={false} />);
+    await expandOwner("morris@example.com");
     expect(
       await screen.findByText(/no running guest to report stats/i),
     ).toBeInTheDocument();
@@ -257,6 +273,7 @@ describe("ServersView", () => {
       { available: true, detail: "", timeframe: "hour", points: [] },
     );
     render(<ServersView currentUser={SELF} isAdmin={false} />);
+    await expandOwner("morris@example.com");
     expect(
       await screen.findByText(/no usage data for this timeframe yet/i),
     ).toBeInTheDocument();
@@ -307,7 +324,7 @@ describe("ServersView", () => {
       { can_create: true, reason: "", allow_resource_edit: true },
     );
     render(<ServersView currentUser={SELF} isAdmin={false} />);
-    await screen.findByText(/morris@example.com/);
+    await expandOwner("morris@example.com");
 
     // Change resources -> PATCH.
     await userEvent.click(
@@ -382,7 +399,7 @@ describe("ServersView", () => {
         isAdmin={false}
       />,
     );
-    await screen.findByText(/morris@example.com/);
+    await expandOwner("morris@example.com");
     // No resource-edit (not allowed) and no delete (not self-service).
     expect(
       screen.queryByRole("button", { name: /^Change resources$/ }),
@@ -407,7 +424,7 @@ describe("ServersView", () => {
       { can_create: false, reason: "", allow_resource_edit: false },
     );
     render(<ServersView currentUser={SELF} isAdmin={false} />);
-    await screen.findByText(/nadia@example.com/);
+    await expandOwner("nadia@example.com");
     expect(
       screen.queryByRole("button", { name: /^Change resources$/ }),
     ).toBeNull();
@@ -431,6 +448,7 @@ describe("ServersView", () => {
       { can_create: true, reason: "", allow_resource_edit: true },
     );
     render(<ServersView currentUser={ADMIN} isAdmin />);
+    await expandOwner("nadia@example.com");
     expect(
       await screen.findByRole("button", { name: /^Change resources$/ }),
     ).toBeInTheDocument();
@@ -454,7 +472,7 @@ describe("ServersView", () => {
       { can_create: false, reason: "", allow_resource_edit: true },
     );
     render(<ServersView currentUser={SELF} isAdmin={false} />);
-    await screen.findByText(/morris@example.com/);
+    await expandOwner("morris@example.com");
     // A single .server-card holds the name/specs, the inline charts row, and
     // the action buttons together (no separate wrapper card, charts inline).
     const card = document.querySelector(".server-card");
@@ -507,7 +525,7 @@ describe("ServersView", () => {
     expect(nadiaOwnerIdx).toBeGreaterThan(usersIdx);
   });
 
-  it("filters servers by the search box and hides non-matching owner groups (issue_024)", async () => {
+  it("filters servers by the search box and hides non-matching owner groups; auto-expands matches (issue_024, issue_local_032)", async () => {
     stubServersView(
       {
         is_admin: true,
@@ -530,11 +548,13 @@ describe("ServersView", () => {
       { can_create: false, reason: "", allow_resource_edit: true },
     );
     render(<ServersView currentUser={ADMIN} isAdmin />);
-    await screen.findByText("alpha-server - 10.0.7.42");
-    expect(screen.getByText("beta-server - 10.0.7.42")).toBeInTheDocument();
+    await screen.findByText(/admin@example.com/);
 
+    // A matching filter auto-expands the matching owner card.
     await userEvent.type(screen.getByLabelText(/filter servers/i), "alpha");
-    expect(screen.getByText("alpha-server - 10.0.7.42")).toBeInTheDocument();
+    expect(
+      await screen.findByText("alpha-server - 10.0.7.42"),
+    ).toBeInTheDocument();
     expect(screen.queryByText("beta-server - 10.0.7.42")).toBeNull();
     // nadia's group has no match and is hidden entirely.
     expect(screen.queryByText(/nadia@example.com/)).toBeNull();
@@ -544,4 +564,94 @@ describe("ServersView", () => {
     await userEvent.type(screen.getByLabelText(/filter servers/i), "zzzznope");
     expect(await screen.findByText(/no servers match the filter/i)).toBeInTheDocument();
   });
+
+  it("collapses owner cards by default and shows identity + count without any stats request", async () => {
+    const fetchMock = stubServersView({
+      is_admin: true,
+      owners: [
+        {
+          user_id: 7,
+          username: "morris@example.com",
+          derived_user_id: "morris",
+          servers: [server(), server({ id: 2, name: "second-server" })],
+        },
+      ],
+    });
+    render(<ServersView currentUser={ADMIN} isAdmin />);
+    const toggle = await screen.findByRole("button", {
+      name: /morris@example.com/,
+    });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle.textContent).toContain("2 servers");
+    expect(
+      fetchMock.mock.calls.some(([u]) => /\/stats(\?|$)/.test(String(u))),
+    ).toBe(false);
+
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await screen.findAllByRole("group", { name: "CPU" });
+  });
+
+  it("shows admin-only Total users alongside Total servers summary cards", async () => {
+    stubServersView({
+      is_admin: true,
+      owners: [
+        {
+          user_id: 7,
+          username: "morris@example.com",
+          derived_user_id: "morris",
+          servers: [server()],
+        },
+      ],
+      total_users: 5,
+      total_servers: 1,
+    });
+    render(<ServersView currentUser={ADMIN} isAdmin />);
+    await screen.findByText(/morris@example.com/);
+    expect(screen.getByText("Total users")).toBeInTheDocument();
+    expect(screen.getByText("5")).toBeInTheDocument();
+    expect(screen.getByText("Total servers")).toBeInTheDocument();
+    expect(screen.getByText("1")).toBeInTheDocument();
+  });
+
+  it("hides Total users for a non-admin caller", async () => {
+    stubServersView({
+      is_admin: false,
+      owners: [
+        {
+          user_id: 7,
+          username: "morris@example.com",
+          derived_user_id: "morris",
+          servers: [server()],
+        },
+      ],
+      total_users: 0,
+      total_servers: 1,
+    });
+    render(<ServersView currentUser={SELF} isAdmin={false} />);
+    await screen.findByText(/morris@example.com/);
+    expect(screen.queryByText("Total users")).toBeNull();
+    expect(screen.getByText("Total servers")).toBeInTheDocument();
+  });
+
+  it("paginates owner cards at 10 per page", async () => {
+    const owners = Array.from({ length: 12 }, (_, i) => ({
+      user_id: 100 + i,
+      username: `user${i}@example.com`,
+      derived_user_id: `user${i}`,
+      servers: [server({ id: 1000 + i, user_id: 100 + i, name: `server-${i}` })],
+    }));
+    stubServersView({ is_admin: true, owners });
+    render(<ServersView currentUser={ADMIN} isAdmin />);
+    await screen.findByText(/user0@example.com/);
+
+    expect(screen.getByText("Page 1 of 2")).toBeInTheDocument();
+    expect(screen.queryByText(/user11@example.com/)).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
+    expect(await screen.findByText(/user11@example.com/)).toBeInTheDocument();
+    expect(screen.queryByText(/user0@example.com/)).toBeNull();
+    expect(screen.getByText("Page 2 of 2")).toBeInTheDocument();
+  });
 });
+

@@ -1594,6 +1594,15 @@ class ServersOverviewOut(BaseModel):
 
     is_admin: bool = False
     owners: list[OwnerServersOut] = Field(default_factory=list)
+    # issue_local_032: admin-only summary counters for the Servers view's top
+    # summary cards. total_users is every active application account
+    # (including users with zero servers) -- not merely the owners with a
+    # server record in ``owners`` below. total_servers is every server record
+    # visible in this response (== sum of len(owner.servers) for owners)).
+    # Both are 0 for a non-admin caller; the UI shows only a servers count for
+    # a non-admin, derived client-side from their own single group instead.
+    total_users: int = 0
+    total_servers: int = 0
 
 
 class ServerStatsPointOut(BaseModel):

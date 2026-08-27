@@ -1488,7 +1488,14 @@ def servers_overview(
         for srv in rows:
             grp.servers.append(_server_out(srv))
     owners = sorted(groups.values(), key=lambda g: g.username.lower())
-    return ServersOverviewOut(is_admin=is_admin, owners=owners)
+    total_servers = sum(len(g.servers) for g in owners)
+    total_users = repository.count_active_users(conn) if is_admin else 0
+    return ServersOverviewOut(
+        is_admin=is_admin,
+        owners=owners,
+        total_users=total_users,
+        total_servers=total_servers,
+    )
 
 
 @router.get(

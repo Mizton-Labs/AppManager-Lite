@@ -345,6 +345,12 @@ export interface OwnerServers {
 export interface ServersOverview {
   is_admin: boolean;
   owners: OwnerServers[];
+  /** Admin-only: every active account, including users with zero servers.
+   * 0 for a non-admin caller. Optional for backward-compatible test fixtures;
+   * always present in real API responses. */
+  total_users?: number;
+  /** Every visible server record (== sum of owners[].servers.length). */
+  total_servers?: number;
 }
 
 /** One historical usage sample for a server's sparklines. */

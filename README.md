@@ -1049,19 +1049,30 @@ The **Servers** entry in the sidebar (below Account) is where a user creates and
 manages their servers. Creation is collapsed behind an **Add server** button
 (when the user may provision) that opens the create card; the card stays open
 after a create so its confirmation/warnings remain visible, and Cancel/Close
-collapses it. Servers are grouped by owner. Administrators see and manage every
+collapses it. Administrators additionally see top summary cards for **Total
+users** (every active account, including users with no servers yet) and
+**Total servers** (every server visible in the list); a regular user sees only
+**Total servers**, for their own visible records. Servers are grouped by
+owner, and **each owner's card is collapsed by default** — showing only their
+identity and server count — so opening the section never fetches every
+server's usage charts at once; expanding a card is what loads its servers and
+their charts for the first time. Administrators see and manage every
 user's servers, with **their own servers shown first under "My servers"** and
 everyone else's under **"Users' servers"** for quick access; a regular user sees
-and manages only their own. A **filter** box narrows the list by a
-case-insensitive match across server name, hostname, IP, template, kind, status,
-and owner; owner groups with no matches are hidden.
+and manages only their own. Owner cards are **paginated at up to 10 per page**
+(the "My servers"/"Users' servers" split only applies when everything fits on
+one page; a larger result shows one flat, paginated list instead). A
+**filter** box narrows the list by a case-insensitive match across server
+name, hostname, IP, template, kind, status, and owner; owner groups with no
+matches are hidden, and a group with a match while filtering is **automatically
+expanded** so the result is immediately visible.
 Each server card shows its assigned resources next to four compact usage charts
 — **CPU, memory, disk, and network** — drawn as small sparklines from Proxmox's
 historical `rrddata`, with a **timeframe** selector (last hour, day, or week).
-Charts are loaded per server as the list renders, so a long list stays
-responsive and one unreachable server never blocks the rest; a server with no
-running guest (or when the provider is unconfigured) simply shows a short "no
-stats" note.
+Charts are loaded per server as its owner card is expanded, so a long list
+stays responsive and one unreachable server never blocks the rest; a server
+with no running guest (or when the provider is unconfigured) simply shows a
+short "no stats" note.
 
 Each card also carries its management actions, subject to the same rules
 enforced by the API: **Change resources** and **Reboot** on eligible servers
