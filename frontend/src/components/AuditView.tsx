@@ -1,12 +1,25 @@
 import { useEffect, useState } from "react";
 import { api, ApiError } from "../api";
-import type { AuditCategory, AuditEntry } from "../types";
+import type { AuditCategory, AuditEntry, NavigationActivityEntry } from "../types";
 
-const TABS: { id: AuditCategory; label: string }[] = [
+type ViewTab = AuditCategory | "navigation";
+
+const TABS: { id: ViewTab; label: string }[] = [
   { id: "application", label: "Application Management" },
   { id: "user", label: "User activity" },
   { id: "system", label: "System" },
+  { id: "navigation", label: "Navigation activity" },
 ];
+
+/** issue_local_032: allowlisted navigation-activity destination per tab. */
+const TAB_DESTINATION: Record<ViewTab, string> = {
+  application: "audit.application",
+  user: "audit.users",
+  system: "audit.system",
+  // The navigation-activity tab itself is not tracked as a destination (it
+  // would be circular), so it is intentionally omitted from tracking below.
+  navigation: "",
+};
 
 /** Render an ISO timestamp as a readable local string. */
 function formatTime(iso: string): string {
@@ -15,13 +28,16 @@ function formatTime(iso: string): string {
 }
 
 /**
- * Administrator audit log. Shows recorded actions grouped into three tabs:
- * Application Management, User activity, and System. Each tab loads the matching
- * category from the API on selection.
+ * Administrator audit log. Shows recorded actions grouped into three
+ * security/administrative categories (Application Management, User activity,
+ * System), plus a fourth "Navigation activity" tab showing bounded,
+ * privacy-conscious browsing activity (issue_local_032) -- which sections
+ * users visit, never raw URLs/query strings.
  */
 export function AuditView() {
-  const [tab, setTab] = useState<AuditCategory>("application");
+  const [tab, setTab] = useState<ViewTab>("application");
   const [entries, setEntries] = useState<AuditEntry[]>([]);
+  const [navEntries, setNavEntries] = useState<NavigationActivityEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -29,11 +45,15 @@ export function AuditView() {
     let active = true;
     setLoading(true);
     setError(null);
-    api
-      .listAuditLog(tab)
-      .then((result) => {
-        if (active) setEntries(result);
-      })
+    const request =
+      tab === "navigation"
+        ? api.listNavigationActivity().then((result) => {
+            if (active) setNavEntries(result);
+          })
+        : api.listAuditLog(tab).then((result) => {
+            if (active) setEntries(result);
+          });
+    request
       .catch((err) => {
         if (active) {
           setError(
@@ -49,12 +69,21 @@ export function AuditView() {
     };
   }, [tab]);
 
+  function selectTab(next: ViewTab) {
+    setTab(next);
+    if (TAB_DESTINATION[next]) {
+      void api.recordNavigation(TAB_DESTINATION[next]).catch(() => undefined);
+    }
+  }
+
   return (
     <div className="stack wide">
       <header className="view-head">
         <h1>Audit log</h1>
         <p className="muted">
-          Recent actions performed in the portal, grouped by category.
+          Recent actions performed in the portal, grouped by category, plus
+          bounded navigation activity (which sections users visit -- never
+          raw URLs or query strings).
         </p>
       </header>
 
@@ -65,7 +94,7 @@ export function AuditView() {
             type="button"
             className={tab === t.id ? "tab active" : "tab"}
             aria-current={tab === t.id}
-            onClick={() => setTab(t.id)}
+            onClick={() => selectTab(t.id)}
           >
             {t.label}
           </button>
@@ -79,6 +108,33 @@ export function AuditView() {
           <p className="alert error" role="alert">
             {error}
           </p>
+        ) : tab === "navigation" ? (
+          navEntries.length === 0 ? (
+            <p className="muted">No navigation activity recorded yet.</p>
+          ) : (
+            <table className="audit-table">
+              <thead>
+                <tr>
+                  <th>Last seen</th>
+                  <th>User</th>
+                  <th>Section</th>
+                  <th>Visits</th>
+                </tr>
+              </thead>
+              <tbody>
+                {navEntries.map((entry) => (
+                  <tr key={entry.id}>
+                    <td className="audit-time">{formatTime(entry.last_seen_at)}</td>
+                    <td>{entry.actor_username}</td>
+                    <td>
+                      <span className="tag">{entry.destination}</span>
+                    </td>
+                    <td>{entry.visit_count}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )
         ) : entries.length === 0 ? (
           <p className="muted">No activity recorded in this category yet.</p>
         ) : (

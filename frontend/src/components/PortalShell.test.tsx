@@ -240,4 +240,42 @@ describe("PortalShell", () => {
       screen.queryByText(/finish setup by setting your application name/i),
     ).not.toBeInTheDocument();
   });
+
+  it("records navigation to the home section after a debounce (issue_local_032)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      renderShell(makeSession({ id: 5, role: "user" }));
+      await vi.advanceTimersByTimeAsync(800);
+      const fetchMock = vi.mocked(fetch);
+      const navCall = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          String(url).endsWith("/api/audit/navigation") &&
+          (init?.method ?? "GET").toUpperCase() === "POST",
+      );
+      expect(navCall).toBeDefined();
+      const body = JSON.parse((navCall![1] as RequestInit).body as string);
+      expect(body.destination).toBe("home");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never records navigation for the synthetic auth-disabled identity", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      renderShell(
+        makeSession({ id: 0, role: "admin", username: "local" }, {
+          enable_auth: false,
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(800);
+      const fetchMock = vi.mocked(fetch);
+      const navCall = fetchMock.mock.calls.find(([url]) =>
+        String(url).endsWith("/api/audit/navigation"),
+      );
+      expect(navCall).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

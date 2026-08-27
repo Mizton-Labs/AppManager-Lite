@@ -1149,16 +1149,32 @@ development team. They are stored server-side and update immediately on save.
 ## Audit log
 
 Administrators get an **Audit log** in the sidebar (after Settings)
-that records actions performed in the portal, grouped into three tabs:
+that records actions performed in the portal, grouped into four tabs:
 
 - **Application Management** — application create/request, approve, reject,
-  update, delete, alias-change request/approval, and reverse-proxy push/remove.
+  update, delete, alias-change request/approval, reorder, and reverse-proxy
+  push/remove.
 - **User activity** — sign-in (success and failure), sign-out, password changes,
   user create/update/delete/password-reset, and SSH-key regeneration and
   private-key downloads (metadata only; never key material).
 - **System** — backend lifecycle (startup, shutdown, first-run administrator
   creation, authentication disabled), settings updates (branding and
   reverse-proxy), and team management (create, update, delete, reorder).
+- **Navigation activity** — which top-level sections and administrative
+  sub-tabs (Settings' five tabs, Audit's own category tabs) a signed-in user
+  visits, so activity across the app is visible without recording every
+  click. This is deliberately bounded and privacy-conscious: only an
+  allowlisted semantic destination (e.g. `servers`, `settings.general`) is
+  ever recorded — never a raw URL, query string, fragment, referrer, IP
+  address, or user agent. Events within the same 5-minute window for the
+  same user and destination collapse into one row with a running visit
+  count, rather than one row per navigation. Stored separately from the
+  security/administrative `audit_log` above, in its own `navigation_activity`
+  table (90-day retention, swept at most once per day); the auth-disabled
+  synthetic identity is never recorded. Recording is best-effort and
+  debounced client-side (~750ms after a route settles), so it never affects
+  the page the user is actually navigating to, and a quick sequence of
+  redirects (e.g. first-run) only records the final destination.
 
 Events are stored in the `audit_log` table (created automatically on startup),
 so they survive restarts; the view shows the most recent entries per category.

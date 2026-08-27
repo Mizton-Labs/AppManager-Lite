@@ -157,3 +157,113 @@ def test_password_events_do_not_leak_secrets(admin) -> None:
     assert member_pw not in blob
     assert reset_pw not in blob
     assert password not in blob
+
+
+# ---------------------------------------------------------------------------
+# issue_local_032: navigation activity, kept separate from the security/admin
+# audit log above.
+# ---------------------------------------------------------------------------
+
+
+def test_record_navigation_accepts_allowlisted_destination(admin) -> None:
+    client, csrf, _ = admin
+    resp = client.post(
+        "/api/audit/navigation",
+        json={"destination": "servers"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 204
+
+    events = client.get("/api/audit/navigation").json()
+    assert any(e["destination"] == "servers" for e in events)
+
+
+def test_record_navigation_rejects_unknown_destination(admin) -> None:
+    client, csrf, _ = admin
+    resp = client.post(
+        "/api/audit/navigation",
+        json={"destination": "not-a-real-section"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 422
+
+
+def test_record_navigation_rejects_raw_url_as_destination(admin) -> None:
+    client, csrf, _ = admin
+    resp = client.post(
+        "/api/audit/navigation",
+        json={"destination": "/app-manager?editApp=42&secret=1"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 422
+
+
+def test_record_navigation_requires_csrf(admin) -> None:
+    client, _csrf, _ = admin
+    resp = client.post("/api/audit/navigation", json={"destination": "servers"})
+    assert resp.status_code == 403
+
+
+def test_navigation_listing_is_admin_only(admin) -> None:
+    client, csrf, _ = admin
+    password = _create_member(client, csrf, "navviewer", ["Red Team"])
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login",
+            json={"username": "navviewer", "password": password},
+        )
+        mcsrf = login.json()["csrf_token"]
+        member.post(
+            "/api/audit/navigation",
+            json={"destination": "home"},
+            headers={"X-CSRF-Token": mcsrf},
+        )
+        resp = member.get("/api/audit/navigation")
+    assert resp.status_code == 403
+
+
+def test_navigation_events_within_five_minutes_are_deduplicated(admin) -> None:
+    client, csrf, _ = admin
+    for _ in range(3):
+        resp = client.post(
+            "/api/audit/navigation",
+            json={"destination": "app_manager"},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert resp.status_code == 204
+
+    events = client.get("/api/audit/navigation").json()
+    matching = [e for e in events if e["destination"] == "app_manager"]
+    # All three calls land in the same 5-minute bucket for the same actor and
+    # destination, so they collapse into a single row with visit_count=3.
+    assert len(matching) == 1
+    assert matching[0]["visit_count"] == 3
+
+
+def test_navigation_activity_never_contains_raw_url_or_query_string(admin) -> None:
+    client, csrf, _ = admin
+    client.post(
+        "/api/audit/navigation",
+        json={"destination": "settings.general"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    events = client.get("/api/audit/navigation").json()
+    for event in events:
+        assert set(event.keys()) == {
+            "id", "actor_username", "destination",
+            "first_seen_at", "last_seen_at", "visit_count",
+        }
+        assert "?" not in event["destination"]
+        assert "/" not in event["destination"]
+
+
+def test_navigation_activity_does_not_appear_in_security_audit_log(admin) -> None:
+    client, csrf, _ = admin
+    client.post(
+        "/api/audit/navigation",
+        json={"destination": "about"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    events = client.get("/api/audit").json()
+    assert not any(e.get("action") == "about" for e in events)
+    assert not any("navigation" in e.get("action", "") for e in events)

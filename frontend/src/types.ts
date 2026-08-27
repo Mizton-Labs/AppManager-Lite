@@ -695,3 +695,14 @@ export interface AuditEntry {
   target_name: string | null;
   detail: string;
 }
+
+/** issue_local_032: one row of navigation activity (never a raw URL/query
+ * string -- only an allowlisted semantic destination key). */
+export interface NavigationActivityEntry {
+  id: number;
+  actor_username: string;
+  destination: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  visit_count: number;
+}

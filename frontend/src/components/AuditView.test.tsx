@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AuditView } from "./AuditView";
-import type { AuditEntry } from "../types";
+import type { AuditEntry, NavigationActivityEntry } from "../types";
 
 function entry(overrides: Partial<AuditEntry> = {}): AuditEntry {
   return {
@@ -79,5 +79,31 @@ describe("AuditView", () => {
     expect(
       await screen.findByText(/No activity recorded in this category yet/i),
     ).toBeInTheDocument();
+  });
+
+  it("shows the Navigation activity tab with section/visit-count data", async () => {
+    const navEntry: NavigationActivityEntry = {
+      id: 1,
+      actor_username: "admin",
+      destination: "servers",
+      first_seen_at: "2026-06-05T10:00:00Z",
+      last_seen_at: "2026-06-05T10:05:00Z",
+      visit_count: 3,
+    };
+    const fetchMock = vi.fn(async (input: string) => {
+      const url = String(input);
+      if (url.includes("/api/audit/navigation")) {
+        return { ok: true, status: 200, json: async () => [navEntry] } as Response;
+      }
+      return { ok: true, status: 200, json: async () => [] } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<AuditView />);
+    await userEvent.click(
+      screen.getByRole("button", { name: /navigation activity/i }),
+    );
+    expect(await screen.findByText("servers")).toBeInTheDocument();
+    expect(screen.getByText("3")).toBeInTheDocument();
+    expect(screen.getByText("admin")).toBeInTheDocument();
   });
 });

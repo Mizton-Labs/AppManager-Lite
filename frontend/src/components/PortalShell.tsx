@@ -26,6 +26,28 @@ import { LogOutIcon, MenuIcon } from "./icons";
 
 const SIDEBAR_KEY = "appmanager-lite.sidebar.collapsed";
 
+/** issue_local_032: map a route path to its allowlisted navigation-activity
+ * destination key (see backend repository.NAVIGATION_DESTINATIONS). Returns
+ * null for a path that should not be recorded (e.g. an unmatched/wildcard
+ * redirect intermediate). */
+function destinationForPath(pathname: string): string | null {
+  const exact: Record<string, string> = {
+    "/": "home",
+    "/account": "account",
+    "/app-manager": "app_manager",
+    "/settings": "settings",
+    "/about": "about",
+    "/user-guide": "user_guide",
+    "/servers": "servers",
+    "/audit": "audit",
+    "/app-statistics": "app_statistics",
+  };
+  if (exact[pathname]) return exact[pathname];
+  if (pathname.startsWith("/teams/")) return "team";
+  if (pathname.startsWith("/embedded/")) return "embedded_application";
+  return null;
+}
+
 function readCollapsed(): boolean {
   try {
     return localStorage.getItem(SIDEBAR_KEY) === "1";
@@ -128,6 +150,21 @@ export function PortalShell(props: {
   // default centered, padded layout.
   const location = useLocation();
   const fullBleed = location.pathname.startsWith("/embedded/");
+
+  // issue_local_032: record navigation to an allowlisted top-level section,
+  // debounced so a quick sequence of redirects (e.g. the first-run bounce
+  // into /settings) only records the final settled destination. Never
+  // records for the synthetic auth-disabled identity (id 0), which has no
+  // real account to attribute activity to.
+  useEffect(() => {
+    if (!user || user.id === 0) return;
+    const destination = destinationForPath(location.pathname);
+    if (!destination) return;
+    const timer = window.setTimeout(() => {
+      void api.recordNavigation(destination).catch(() => undefined);
+    }, 750);
+    return () => window.clearTimeout(timer);
+  }, [location.pathname, user]);
 
   return (
     <div className={collapsed ? "app-shell collapsed" : "app-shell"}>

@@ -225,6 +225,16 @@ export const api = {
       category ? `audit?category=${encodeURIComponent(category)}` : "audit",
     ),
 
+  /** Record one navigation event for the signed-in user. Best-effort on the
+   * caller's side too: a rejected/failed call should never disrupt the page
+   * the user is actually navigating to. */
+  recordNavigation: (destination: string) =>
+    request<void>("audit/navigation", { method: "POST", body: { destination } }),
+
+  /** Recent navigation activity (administrators only). */
+  listNavigationActivity: () =>
+    request<import("./types").NavigationActivityEntry[]>("audit/navigation"),
+
   createApplication: (input: CreateApplicationInput) =>
     request<Application>("applications", { method: "POST", body: input }),
 

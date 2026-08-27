@@ -976,6 +976,32 @@ class AuditEntryOut(BaseModel):
     detail: str = ""
 
 
+class RecordNavigationRequest(BaseModel):
+    """issue_local_032: only a semantic destination key is ever accepted --
+    never a raw path, query string, or fragment. See
+    repository.NAVIGATION_DESTINATIONS for the exact allowlist."""
+
+    destination: str = Field(min_length=1, max_length=64)
+
+    @field_validator("destination")
+    @classmethod
+    def _check_destination(cls, value: str) -> str:
+        from . import repository  # local import: avoid any import-time cycle
+
+        if value not in repository.NAVIGATION_DESTINATIONS:
+            raise ValueError("destination must be one of the known navigation sections.")
+        return value
+
+
+class NavigationActivityOut(BaseModel):
+    id: int
+    actor_username: str
+    destination: str
+    first_seen_at: str
+    last_seen_at: str
+    visit_count: int
+
+
 # Reject shell metacharacters / whitespace tricks in path-like settings so a
 # value can never be abused when later passed (as an argv element) to ssh/scp.
 _UNSAFE_PATH_CHARS = set(";|&`$<>\n\r\"'\\ ")

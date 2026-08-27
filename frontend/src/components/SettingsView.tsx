@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { ApiUser } from "../types";
+import { api } from "../api";
 import { UserManagement } from "./UserManagement";
 import { TeamManagement } from "./TeamManagement";
 import { GeneralSettings } from "./GeneralSettings";
@@ -7,6 +8,15 @@ import { ServerProvisioning } from "./ServerProvisioning";
 import { RemoteAccessConfig } from "./RemoteAccessConfig";
 
 type Tab = "users" | "teams" | "servers" | "remote" | "general";
+
+/** issue_local_032: allowlisted navigation-activity destination per tab. */
+const TAB_DESTINATION: Record<Tab, string> = {
+  general: "settings.general",
+  users: "settings.users",
+  teams: "settings.teams",
+  servers: "settings.server_provisioning",
+  remote: "settings.remote_access",
+};
 
 /**
  * Administrator settings area (route-guarded to admins): user management, teams,
@@ -37,6 +47,11 @@ export function SettingsView(props: {
   const showServers = tab === "servers";
   const showRemote = tab === "remote";
 
+  function selectTab(next: Tab) {
+    setTab(next);
+    void api.recordNavigation(TAB_DESTINATION[next]).catch(() => undefined);
+  }
+
   return (
     <div className="stack wide">
       <header className="view-head">
@@ -58,7 +73,7 @@ export function SettingsView(props: {
           type="button"
           className={tab === "general" ? "tab active" : "tab"}
           aria-current={tab === "general"}
-          onClick={() => setTab("general")}
+          onClick={() => selectTab("general")}
         >
           General Settings
         </button>
@@ -66,7 +81,7 @@ export function SettingsView(props: {
           type="button"
           className={tab === "users" ? "tab active" : "tab"}
           aria-current={tab === "users"}
-          onClick={() => setTab("users")}
+          onClick={() => selectTab("users")}
         >
           User Management
         </button>
@@ -74,7 +89,7 @@ export function SettingsView(props: {
           type="button"
           className={tab === "teams" ? "tab active" : "tab"}
           aria-current={tab === "teams"}
-          onClick={() => setTab("teams")}
+          onClick={() => selectTab("teams")}
         >
           Teams
         </button>
@@ -82,7 +97,7 @@ export function SettingsView(props: {
           type="button"
           className={tab === "servers" ? "tab active" : "tab"}
           aria-current={tab === "servers"}
-          onClick={() => setTab("servers")}
+          onClick={() => selectTab("servers")}
         >
           Server Provisioning
         </button>
@@ -90,7 +105,7 @@ export function SettingsView(props: {
           type="button"
           className={tab === "remote" ? "tab active" : "tab"}
           aria-current={tab === "remote"}
-          onClick={() => setTab("remote")}
+          onClick={() => selectTab("remote")}
         >
           Remote Access
         </button>

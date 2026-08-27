@@ -78,7 +78,7 @@
         { "path": "frontend/src/components/UserManagement.tsx", "role": "Admin user management and team assignment. Create is collapsed behind an Add user button; a filter searches username/user_id/role/teams." },
         { "path": "frontend/src/components/TeamManagement.tsx", "role": "Admin team management: create, rename, icon, reorder, delete." },
         { "path": "frontend/src/components/GeneralSettings.tsx", "role": "Branding and reverse-proxy configuration forms." },
-        { "path": "frontend/src/components/AuditView.tsx", "role": "Admin audit-log viewer." },
+        { "path": "frontend/src/components/AuditView.tsx", "role": "Admin audit-log viewer, plus a fourth Navigation activity tab (bounded, allowlisted section visits -- never raw URLs/query strings)." },
         { "path": "frontend/src/components/AboutView.tsx", "role": "Build metadata (version, commit, branch), canonical linked GitHub development-team handles, and runtime collaborators." },
         { "path": "frontend/src/components/ServersView.tsx", "role": "Servers section: create and manage servers grouped by owner with compact usage charts; per-server Change resources / Reboot / Delete (self-service owner within quota, or admin on any server). Create is collapsed behind an Add server button; a filter searches name/hostname/ip/template/kind/status/owner (auto-expanding matching owner cards); admins see their own servers first (My servers) then Users' servers, plus top summary cards (admin-only Total users, and Total servers). Owner cards are collapsed by default (identity + count only, no stats requests) and paginated at 10 per page." },
         { "path": "frontend/src/components/UserGuideView.tsx", "role": "In-app User Guide (route /user-guide, sidebar link below Servers, all users): hand-authored task-oriented walkthrough with labeled administrator sections and inline-SVG flow diagrams; no markdown/mermaid dependency." },
@@ -250,6 +250,8 @@
       { "method": "PATCH", "path": "/api/applications/{application_id}", "auth": "user", "csrf": true, "summary": "Update an application; admins also approve/reject here." },
       { "method": "DELETE", "path": "/api/applications/{application_id}", "auth": "user", "csrf": true, "summary": "Delete an application (removes its nginx alias when applicable)." },
       { "method": "GET", "path": "/api/audit", "auth": "admin", "csrf": false, "summary": "Query audit-log entries (optional category filter)." },
+      { "method": "POST", "path": "/api/audit/navigation", "auth": "user", "csrf": true, "summary": "Record one navigation-activity event for the calling (session-derived) user; destination must be one of a fixed allowlisted semantic key (422 otherwise). Best-effort: any recording failure is logged and never surfaced as an error." },
+      { "method": "GET", "path": "/api/audit/navigation", "auth": "admin", "csrf": false, "summary": "Most recent navigation-activity rows, newest first." },
       { "method": "GET", "path": "/api/settings/reverse-proxy", "auth": "admin", "csrf": false, "summary": "Read reverse-proxy configuration." },
       { "method": "PATCH", "path": "/api/settings/reverse-proxy", "auth": "admin", "csrf": true, "summary": "Update reverse-proxy configuration." },
       { "method": "GET", "path": "/api/settings/branding", "auth": "admin", "csrf": false, "summary": "Read branding settings." },
@@ -364,6 +366,13 @@
         "description": "Audit trail of actions, grouped by category (application, user, system). User-category server actions include server_create, server_update, server_reboot, server_delete/cancel, server_mesh (trusted SSH mesh outcome), and server_pool_add (Proxmox user-pool assignment outcome: ok/failed with the pool id).",
         "columns": ["id", "created_at", "category", "action", "actor_id", "actor_username", "target_type", "target_id", "target_name", "detail"],
         "primaryKey": ["id"]
+      },
+      {
+        "name": "navigation_activity",
+        "description": "issue_local_032: bounded, privacy-conscious navigation activity, separate from audit_log (which is security/administrative, not routine browsing). Only an allowlisted semantic destination key is ever stored (see repository.NAVIGATION_DESTINATIONS: top-level sections plus a handful of explicit Settings/Audit sub-tabs) -- never a raw URL, query string, fragment, referrer, IP address, or user agent. A (actor_id, destination, bucket_started_at) triple is deduplicated into one row with a running visit_count; bucket_started_at is the request time truncated to a 5-minute boundary. 90-day retention, swept at most once per process per day (same pattern as application_alias_usage_daily) rather than on every insert.",
+        "columns": ["id", "actor_id", "actor_username", "destination", "bucket_started_at", "first_seen_at", "last_seen_at", "visit_count"],
+        "primaryKey": ["id"],
+        "foreignKeys": ["actor_id -> users.id (cascade)"]
       },
       {
         "name": "settings",

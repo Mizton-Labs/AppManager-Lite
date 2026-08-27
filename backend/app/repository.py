@@ -13,6 +13,7 @@ import shlex
 import sqlite3
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from . import keystore, security, sshkeys
@@ -1286,6 +1287,99 @@ def record_application_alias_visit(
         _alias_usage_last_swept = now
     finally:
         _alias_usage_retention_lock.release()
+
+
+# issue_local_032: navigation activity. Only these semantic destination keys
+# are ever accepted -- never a raw URL, query string, fragment, or referrer.
+# Kept intentionally coarse (top-level sections plus a few explicit
+# administrative sub-tabs), not a full click/route trace.
+NAVIGATION_DESTINATIONS = frozenset(
+    {
+        "home",
+        "team",
+        "account",
+        "app_manager",
+        "embedded_application",
+        "servers",
+        "settings",
+        "settings.general",
+        "settings.users",
+        "settings.teams",
+        "settings.server_provisioning",
+        "settings.remote_access",
+        "audit",
+        "audit.application",
+        "audit.users",
+        "audit.system",
+        "app_statistics",
+        "about",
+        "user_guide",
+    }
+)
+
+_NAVIGATION_BUCKET_SECONDS = 5 * 60
+_navigation_retention_lock = threading.Lock()
+_navigation_last_swept: float = 0.0
+_NAVIGATION_RETENTION_INTERVAL_SECONDS = 24 * 60 * 60
+_NAVIGATION_RETENTION_DAYS = 90
+
+
+def record_navigation_activity(
+    conn: sqlite3.Connection, *, actor_id: int, actor_username: str, destination: str
+) -> None:
+    """Record one navigation event, deduplicated into 5-minute buckets.
+
+    Best-effort by contract of its only caller (the navigation-activity
+    endpoint): any exception here must never turn an otherwise-successful
+    request into an error for the caller. Silently ignores a destination
+    outside ``NAVIGATION_DESTINATIONS`` rather than raising, since the router
+    validates that already; this is defense in depth against ever writing an
+    arbitrary caller-supplied string into this table.
+    """
+    if destination not in NAVIGATION_DESTINATIONS:
+        return
+    now = time.time()
+    bucket_start = now - (now % _NAVIGATION_BUCKET_SECONDS)
+    bucket_started_at = datetime.fromtimestamp(bucket_start, tz=timezone.utc).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    conn.execute(
+        "INSERT INTO navigation_activity "
+        "(actor_id, actor_username, destination, bucket_started_at) "
+        "VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(actor_id, destination, bucket_started_at) "
+        "DO UPDATE SET visit_count = visit_count + 1, "
+        "last_seen_at = datetime('now'), actor_username = excluded.actor_username",
+        (actor_id, actor_username, destination, bucket_started_at),
+    )
+    global _navigation_last_swept
+    monotonic_now = time.monotonic()
+    if monotonic_now - _navigation_last_swept < _NAVIGATION_RETENTION_INTERVAL_SECONDS:
+        return
+    if not _navigation_retention_lock.acquire(blocking=False):
+        return
+    try:
+        if monotonic_now - _navigation_last_swept < _NAVIGATION_RETENTION_INTERVAL_SECONDS:
+            return
+        conn.execute(
+            "DELETE FROM navigation_activity WHERE last_seen_at < "
+            "datetime('now', ?)",
+            (f"-{_NAVIGATION_RETENTION_DAYS} days",),
+        )
+        _navigation_last_swept = monotonic_now
+    finally:
+        _navigation_retention_lock.release()
+
+
+def list_navigation_activity(
+    conn: sqlite3.Connection, *, limit: int = 200
+) -> list[dict[str, Any]]:
+    """Most recent navigation activity rows, newest first (admin-only read)."""
+    rows = conn.execute(
+        "SELECT * FROM navigation_activity ORDER BY last_seen_at DESC, id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [dict(row) for row in rows]
 
 
 
