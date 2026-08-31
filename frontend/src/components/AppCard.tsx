@@ -61,10 +61,10 @@ export function AppCard({ app, editHref }: { app: Application; editHref?: string
         {(app.publisher_team || app.created_by) && (
           <span className="app-card-teams publisher-row">
             {app.publisher_team && (
-              <span className="tag publisher-team-tag">Team: {app.publisher_team}</span>
+              <span className="app-card-chip publisher-team-tag">Team: {app.publisher_team}</span>
             )}
             {app.created_by && (
-              <span className="tag publisher-tag">
+              <span className="app-card-chip publisher-tag">
                 Published by: {publisherLabel(app.created_by)}
               </span>
             )}
@@ -74,13 +74,19 @@ export function AppCard({ app, editHref }: { app: Application; editHref?: string
       <button type="button" className={favorite ? "app-card-star active" : "app-card-star"} onClick={toggleFavorite} aria-pressed={favorite} title={favorite ? "Remove from favorites" : "Add to favorites"} aria-label={favorite ? `Remove ${app.name} from favorites` : `Add ${app.name} to favorites`}>
         <StarIcon filled={favorite} />
       </button>
-      {app.show_statistics && app.visits_7d !== null && app.visits_7d !== undefined && (
-        <span className="app-card-visits">{app.visits_7d} launches · 7 days</span>
-      )}
-      {editHref && (
-        <a className="app-card-edit" href={editHref}>
-          Edit
-        </a>
+      {(editHref || (app.show_statistics && app.visits_7d !== null && app.visits_7d !== undefined)) && (
+        <div className="app-card-actions">
+          {editHref ? (
+            <a className="app-card-edit" href={editHref}>
+              Edit
+            </a>
+          ) : (
+            <span />
+          )}
+          {app.show_statistics && app.visits_7d !== null && app.visits_7d !== undefined && (
+            <span className="app-card-chip app-card-visits">{app.visits_7d} launches · 7 days</span>
+          )}
+        </div>
       )}
     </div>
   );

@@ -328,8 +328,16 @@ Creating an application is collapsed behind a **New application** button. The
 list has a **filter** box (case-insensitive match across name, description, URL,
 teams, and owner). For an administrator, their own applications are shown first
 under **"My applications"**, then everyone else's under **"Other users'
-applications"**; the **move up/down** ordering controls act within each group
-and are hidden while a filter is active. When an approved alias application's
+applications"**; **drag-and-drop** (with a drag handle) and the **move up/down**
+keyboard-accessible fallback both act within the same visible group **and**
+approval status (pending/approved/rejected rows never mix, since the
+administrator review list is sorted by status first), and both are hidden
+while a filter is active. Reordering is staged locally — nothing is saved
+until you press the **Save changes** button that appears once the order
+changed, or **Discard changes** to revert; the whole staged reorder is
+persisted atomically in one request, and a stale/conflicting order (e.g.
+someone else changed the list first) is rejected with nothing applied rather
+than partially saved. When an approved alias application's
 reverse-proxy configuration is changed, saving surfaces the push outcome, and a
 highlighted **Push to reverse proxy** button appears next to Save whenever the
 change still needs applying — so it's clear a push is required. Each
@@ -340,17 +348,30 @@ restricts deletion to the app's owner or an administrator. The **User
 
 ### Application statistics
 
-Administrators have an **App Statistics** sidebar view with portal-launch,
-unique-user, and favorite summaries plus daily trends and per-application
-rankings. The dashboard plots the top 10 application launch series and the top
-10 active derived account IDs; expanding an application row loads derived-ID
-activity and favorite detail for administrators. A launch records an authenticated application-card activation; it is
-not a destination HTTP-request counter, so it works consistently for external
-URLs and reverse-proxy aliases. The dashboard toggle controls whether Home and
+Administrators have an **App Statistics** sidebar view. Six clickable **KPI
+cards** — Launches, Unique launch users, Current favorites, Authorized alias
+visits, Unique alias users, and Anonymous alias visits — sit in one row above
+the main **launch trend chart** (which plots the top 10 applications' daily
+launches; it is always launch-only, never mixed with alias-visit data). Below
+the chart, a **tab bar** (Applications / Launch users / Favorites / Alias
+visits) shows the complete drill-down list behind the clicked KPI; clicking a
+KPI switches to its tab. Every list is keyed by the user's immutable derived
+user ID, not their (possibly since-renamed) sign-in email. On the **Alias
+visits** tab, each user row is **expandable** — clicking it shows that user's
+per-application breakdown (application name and visit count, only one user
+expanded at a time) — and the user list is **paginated at 10 per page**.
+**Current
+favorites** is always a live snapshot, unaffected by the selected period —
+unlike launches and alias visits, a favorite has no "when it was active"
+concept. Expanding an application row on the Applications tab additionally
+loads per-application activity/favorite detail. A launch records an
+authenticated application-card activation; it is not a destination
+HTTP-request counter, so it works consistently for external URLs and
+reverse-proxy aliases. The dashboard toggle controls whether Home and
 team cards show their seven-day launch count. Users can always star/unstar
 visible applications; stars remain available when card statistics are hidden.
 Analytics store daily aggregate launch counts and do not expose named-user
-activity in the dashboard. Per-user daily rows are retained for 90 days to
+activity outside the admin-only dashboard. Per-user daily rows are retained for 90 days to
 calculate unique-user trends, then purged during launch recording.
 
 The dashboard also shows **authorized alias visits** as a separate metric from
@@ -365,7 +386,9 @@ counted, and a count only proves the request was *authorized*, not that the
 upstream application responded successfully. A protected alias attributes its
 visits to the signed-in account; a public alias, or any alias reached while
 authentication is disabled deployment-wide, always counts as **anonymous** —
-anonymous visits add to the total but never to the unique-alias-user count.
+anonymous visits add to the total (and the "Anonymous alias visits" KPI/note),
+but never to the unique-alias-user count or list, since an anonymous visit is
+never attributable to an individual.
 This is stored in its own table (`application_alias_usage_daily`, 90-day
 retention, swept at most once per day) and is never mixed with the
 card-launch metric above, since the two measure different things. Existing
@@ -1041,19 +1064,34 @@ The **Servers** entry in the sidebar (below Account) is where a user creates and
 manages their servers. Creation is collapsed behind an **Add server** button
 (when the user may provision) that opens the create card; the card stays open
 after a create so its confirmation/warnings remain visible, and Cancel/Close
-collapses it. Servers are grouped by owner. Administrators see and manage every
+collapses it. Administrators additionally see top summary cards for **Total
+users** (every active account, including users with no servers yet) and
+**Total servers** (every server visible in the list); a regular user sees only
+**Total servers**, for their own visible records. Servers are grouped by
+owner, **each owner rendered as its own distinct card** (bordered, with its
+own background), and **each owner's card is collapsed by default** — showing only their
+identity and server count — so opening the section never fetches every
+server's usage charts at once; expanding a card is what loads its servers and
+their charts for the first time. **Every active account gets a card**,
+administrators included, even one with zero servers, so a newly created
+account is visible in Servers immediately rather than only appearing once it
+provisions something. Administrators see and manage every
 user's servers, with **their own servers shown first under "My servers"** and
 everyone else's under **"Users' servers"** for quick access; a regular user sees
-and manages only their own. A **filter** box narrows the list by a
-case-insensitive match across server name, hostname, IP, template, kind, status,
-and owner; owner groups with no matches are hidden.
+and manages only their own. Owner cards are **paginated at up to 10 per page**
+(the "My servers"/"Users' servers" split only applies when everything fits on
+one page; a larger result shows one flat, paginated list instead). A
+**filter** box narrows the list by a case-insensitive match across server
+name, hostname, IP, template, kind, status, and owner; owner groups with no
+matches are hidden, and a group with a match while filtering is **automatically
+expanded** so the result is immediately visible.
 Each server card shows its assigned resources next to four compact usage charts
 — **CPU, memory, disk, and network** — drawn as small sparklines from Proxmox's
 historical `rrddata`, with a **timeframe** selector (last hour, day, or week).
-Charts are loaded per server as the list renders, so a long list stays
-responsive and one unreachable server never blocks the rest; a server with no
-running guest (or when the provider is unconfigured) simply shows a short "no
-stats" note.
+Charts are loaded per server as its owner card is expanded, so a long list
+stays responsive and one unreachable server never blocks the rest; a server
+with no running guest (or when the provider is unconfigured) simply shows a
+short "no stats" note.
 
 Each card also carries its management actions, subject to the same rules
 enforced by the API: **Change resources** and **Reboot** on eligible servers
@@ -1119,16 +1157,37 @@ development team. They are stored server-side and update immediately on save.
 ## Audit log
 
 Administrators get an **Audit log** in the sidebar (after Settings)
-that records actions performed in the portal, grouped into three tabs:
+that records actions performed in the portal, grouped into four tabs:
 
 - **Application Management** — application create/request, approve, reject,
-  update, delete, alias-change request/approval, and reverse-proxy push/remove.
+  update, delete, alias-change request/approval, reorder, and reverse-proxy
+  push/remove.
 - **User activity** — sign-in (success and failure), sign-out, password changes,
   user create/update/delete/password-reset, and SSH-key regeneration and
   private-key downloads (metadata only; never key material).
 - **System** — backend lifecycle (startup, shutdown, first-run administrator
   creation, authentication disabled), settings updates (branding and
   reverse-proxy), and team management (create, update, delete, reorder).
+- **Navigation activity** — which top-level sections and administrative
+  sub-tabs (Settings' five tabs, Audit's own category tabs) a signed-in user
+  visits, so activity across the app is visible without recording every
+  click. This is deliberately bounded and privacy-conscious: only an
+  allowlisted semantic destination (e.g. `servers`, `settings.general`) is
+  ever recorded — never a raw URL, query string, fragment, referrer, IP
+  address, or user agent. Events within the same 5-minute window for the
+  same user and destination collapse into one row with a running visit
+count, rather than one row per navigation. Stored separately from the
+security/administrative `audit_log` above, in its own `navigation_activity`
+table (90-day retention, swept at most once per day); the auth-disabled
+synthetic identity is never recorded. Recording is best-effort and
+debounced client-side (~750ms after a route settles), so it never affects
+the page the user is actually navigating to, and a quick sequence of
+redirects (e.g. first-run) only records the final destination. The
+Navigation activity tab is **paginated at 50 events per page**, over only the
+newest **500** stored events (each "event" is one deduplicated 5-minute
+bucket, not a raw visit count) — older activity beyond that window is not
+retrievable through the API even before the 90-day retention sweep runs.
+
 
 Events are stored in the `audit_log` table (created automatically on startup),
 so they survive restarts; the view shows the most recent entries per category.

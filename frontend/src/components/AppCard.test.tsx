@@ -77,4 +77,48 @@ describe("AppCard", () => {
       "_blank",
     );
   });
+
+  it("puts Edit and the launch-count in a normal-flow footer, not absolutely positioned (issue_local_032)", () => {
+    const { container } = render(
+      <AppCard
+        app={makeApp({ show_statistics: true, visits_7d: 12 })}
+        editHref="/app-manager?editApp=1"
+      />,
+    );
+    const footer = container.querySelector(".app-card-actions");
+    expect(footer).not.toBeNull();
+    expect(footer!.querySelector(".app-card-edit")).not.toBeNull();
+    expect(footer!.querySelector(".app-card-visits")).not.toBeNull();
+  });
+
+  it("omits the footer entirely when there is nothing to show in it", () => {
+    const { container } = render(<AppCard app={makeApp({ show_statistics: false })} />);
+    expect(container.querySelector(".app-card-actions")).toBeNull();
+  });
+
+  it("uses compact square chips for Team/Published by/launch-count, leaving Edit and the favorite star untouched", () => {
+    const { container } = render(
+      <AppCard
+        app={makeApp({
+          show_statistics: true,
+          visits_7d: 5,
+          publisher_team: "Red Team",
+          created_by: "morris@example.com",
+        })}
+        editHref="/app-manager?editApp=1"
+      />,
+    );
+    const teamChip = container.querySelector(".publisher-team-tag");
+    const publisherChip = container.querySelector(".publisher-tag");
+    const visitsChip = container.querySelector(".app-card-visits");
+    expect(teamChip).toHaveClass("app-card-chip");
+    expect(publisherChip).toHaveClass("app-card-chip");
+    expect(visitsChip).toHaveClass("app-card-chip");
+    expect(teamChip).not.toHaveClass("tag");
+    expect(publisherChip).not.toHaveClass("tag");
+    // Edit stays its own (unchanged) pill class, not a chip.
+    const edit = container.querySelector(".app-card-edit");
+    expect(edit).not.toHaveClass("app-card-chip");
+    expect(container.querySelector(".app-card-star")).not.toHaveClass("app-card-chip");
+  });
 });

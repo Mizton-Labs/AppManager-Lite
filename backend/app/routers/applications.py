@@ -42,6 +42,10 @@ from ..schemas import (
     ApplicationUserActivityOut,
     ApplicationFavoriteUserOut,
     UserActivityRow,
+    LaunchUserRow,
+    FavoriteEntryRow,
+    AliasUserRow,
+AliasUserApplicationRow,
 )
 
 router = APIRouter(tags=["applications"])
@@ -613,7 +617,8 @@ def application_statistics(
         ) for row in top_apps
     ]
     user_rows = conn.execute(
-        "SELECT u.username, SUM(d.launch_count) launches, COUNT(DISTINCT d.application_id) applications_used "
+        "SELECT u.username, u.derived_user_id, SUM(d.launch_count) launches, "
+        "COUNT(DISTINCT d.application_id) applications_used "
         "FROM application_usage_daily d JOIN users u ON d.visitor_key = ('user:' || u.id) "
         "WHERE d.usage_date >= date('now', ?) GROUP BY u.id ORDER BY launches DESC, u.id LIMIT 10",
         (f"-{days - 1} days",),
@@ -631,6 +636,65 @@ def application_statistics(
         "FROM application_alias_usage_daily WHERE usage_date >= date('now', ?)",
         (f"-{days - 1} days",),
     ).fetchone()
+    # issue_local_032: complete (uncapped) drill-down lists for the clickable
+    # KPI cards. Kept in this same admin-only, date-ranged endpoint rather
+    # than a separate paginated one, matching the current deployment scale
+    # (90-day retention on the underlying daily tables). All three use the
+    # persisted immutable users.derived_user_id, never re-derived from the
+    # mutable username, so a display id stays correct across an email rename.
+    launch_user_rows = conn.execute(
+        "SELECT u.username, u.derived_user_id, SUM(d.launch_count) launches, "
+        "COUNT(DISTINCT d.application_id) applications_used, "
+        "COUNT(DISTINCT d.usage_date) active_days, MAX(d.usage_date) last_activity "
+        "FROM application_usage_daily d JOIN users u ON d.visitor_key = ('user:' || u.id) "
+        "WHERE d.usage_date >= date('now', ?) GROUP BY u.id ORDER BY launches DESC, u.id",
+        (f"-{days - 1} days",),
+    ).fetchall()
+    # Favorites are a current-state snapshot (not bounded by `days`): a
+    # favorite has no "when it was active" concept the way a launch or an
+    # alias visit does.
+    favorite_entry_rows = conn.execute(
+        "SELECT f.application_id, a.name AS application_name, "
+        "u.username, u.derived_user_id, f.created_at "
+        "FROM application_favorites f "
+        "JOIN applications a ON a.id = f.application_id "
+        "JOIN users u ON u.id = f.user_id "
+        "ORDER BY f.created_at DESC",
+    ).fetchall()
+    alias_user_rows = conn.execute(
+        "SELECT u.id AS user_pk, u.username, u.derived_user_id, SUM(d.request_count) alias_visits, "
+        "COUNT(DISTINCT d.application_id) applications_visited, "
+        "COUNT(DISTINCT d.usage_date) active_days, MAX(d.usage_date) last_visit "
+        "FROM application_alias_usage_daily d JOIN users u ON d.visitor_key = ('user:' || u.id) "
+        "WHERE d.usage_date >= date('now', ?) GROUP BY u.id ORDER BY alias_visits DESC, u.id",
+        (f"-{days - 1} days",),
+    ).fetchall()
+    # issue_local_032 (follow-up): per-application breakdown behind each
+    # authenticated alias user's expandable row. One set-based query for every
+    # user/application pair (not one query per user) to avoid N+1 queries.
+    alias_user_app_rows = conn.execute(
+        "SELECT u.id AS user_pk, a.id AS application_id, a.name AS application_name, "
+        "SUM(d.request_count) alias_visits "
+        "FROM application_alias_usage_daily d "
+        "JOIN users u ON d.visitor_key = ('user:' || u.id) "
+        "JOIN applications a ON a.id = d.application_id "
+        "WHERE d.usage_date >= date('now', ?) "
+        "GROUP BY u.id, a.id ORDER BY u.id, alias_visits DESC, a.name, a.id",
+        (f"-{days - 1} days",),
+    ).fetchall()
+    alias_apps_by_user: dict[int, list[AliasUserApplicationRow]] = {}
+    for row in alias_user_app_rows:
+        alias_apps_by_user.setdefault(row["user_pk"], []).append(
+            AliasUserApplicationRow(
+                application_id=row["application_id"],
+                application_name=row["application_name"],
+                alias_visits=row["alias_visits"],
+            )
+        )
+
+    def _uid(row: sqlite3.Row) -> str:
+        return row["derived_user_id"] or repository.derive_user_id(row["username"])
+
     return ApplicationStatisticsOut(
         days=days, launches=total_launches, unique_users=unique_users, favorites=favorites,
         trend=trend,
@@ -645,10 +709,34 @@ def application_statistics(
             for row in apps
         ],
         app_trends=app_trends,
-        user_activity=[UserActivityRow(user_id=repository.derive_user_id(row["username"]), launches=row["launches"], applications_used=row["applications_used"]) for row in user_rows],
+        user_activity=[UserActivityRow(user_id=_uid(row), launches=row["launches"], applications_used=row["applications_used"]) for row in user_rows],
         alias_visits=alias_totals["alias_visits"],
         unique_alias_users=alias_totals["unique_alias_users"],
         anonymous_alias_visits=alias_totals["anonymous_alias_visits"],
+        launch_users=[
+            LaunchUserRow(
+                user_id=_uid(row), launches=row["launches"],
+                applications_used=row["applications_used"],
+                active_days=row["active_days"], last_activity=row["last_activity"],
+            )
+            for row in launch_user_rows
+        ],
+        favorite_entries=[
+            FavoriteEntryRow(
+                application_id=row["application_id"], application_name=row["application_name"],
+                user_id=_uid(row), starred_at=row["created_at"],
+            )
+            for row in favorite_entry_rows
+        ],
+        alias_users=[
+            AliasUserRow(
+                user_id=_uid(row), alias_visits=row["alias_visits"],
+                applications_visited=row["applications_visited"],
+                active_days=row["active_days"], last_visit=row["last_visit"],
+                applications=alias_apps_by_user.get(row["user_pk"], []),
+            )
+            for row in alias_user_rows
+        ],
     )
 
 
@@ -662,21 +750,23 @@ def application_statistics_users(
     if repository.get_application(conn, application_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
     activity = conn.execute(
-        "SELECT u.username, SUM(d.launch_count) launches, COUNT(DISTINCT d.usage_date) active_days, MAX(d.usage_date) last_activity "
+        "SELECT u.username, u.derived_user_id, SUM(d.launch_count) launches, COUNT(DISTINCT d.usage_date) active_days, MAX(d.usage_date) last_activity "
         "FROM application_usage_daily d JOIN users u ON d.visitor_key = ('user:' || u.id) "
         "WHERE d.application_id = ? AND d.usage_date >= date('now', ?) "
         "GROUP BY u.id ORDER BY launches DESC, last_activity DESC",
         (application_id, f"-{days - 1} days"),
     ).fetchall()
     favorites = conn.execute(
-        "SELECT u.username, f.created_at FROM application_favorites f JOIN users u ON u.id = f.user_id "
+        "SELECT u.username, u.derived_user_id, f.created_at FROM application_favorites f JOIN users u ON u.id = f.user_id "
         "WHERE f.application_id = ? ORDER BY f.created_at DESC",
         (application_id,),
     ).fetchall()
+    def _uid(row: sqlite3.Row) -> str:
+        return row["derived_user_id"] or repository.derive_user_id(row["username"])
     return ApplicationStatisticsDetailOut(
         application_id=application_id,
-        activity_users=[ApplicationUserActivityOut(user_id=repository.derive_user_id(row["username"]), launches=row["launches"], active_days=row["active_days"], last_activity=row["last_activity"]) for row in activity],
-        favorite_users=[ApplicationFavoriteUserOut(user_id=repository.derive_user_id(row["username"]), starred_at=row["created_at"]) for row in favorites],
+        activity_users=[ApplicationUserActivityOut(user_id=_uid(row), launches=row["launches"], active_days=row["active_days"], last_activity=row["last_activity"]) for row in activity],
+        favorite_users=[ApplicationFavoriteUserOut(user_id=_uid(row), starred_at=row["created_at"]) for row in favorites],
     )
 
 
@@ -868,6 +958,111 @@ def create_application(
     result = repository.get_application(conn, app["id"], include_creator=True)
     assert result is not None
     return _app_out(result, include_creator=True)
+
+
+@router.post("/applications/reorder", response_model=list[ApplicationOut])
+def reorder_applications(
+    payload: schemas.ReorderApplicationsRequest,
+    actor: dict[str, Any] = Depends(get_current_user),
+    __: None = Depends(verify_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> list[ApplicationOut]:
+    """Atomically persist a staged drag/keyboard reorder (issue_local_032).
+
+    Each group is a set of applications the caller reordered together in the
+    UI -- always sharing the same visible ownership scope and approval
+    status, since reordering across those boundaries is not offered. Every
+    group is independently validated and applied; the whole request is
+    rejected (nothing is changed) if any group fails validation or is stale.
+    """
+    is_admin = actor.get("role") == "admin"
+    touched_ids: list[int] = []
+    # Hold the write lock for the whole request (all groups): the earlier
+    # per-group read of the current order must not be followed by a window in
+    # which a concurrent request could commit a conflicting change before this
+    # request's own write -- that would let the 409 staleness check above pass
+    # for two racing requests when only one should logically succeed. A plain
+    # SELECT does not open a transaction, so without this, the read and this
+    # request's own UPDATE could straddle another connection's entire
+    # read-modify-write cycle. BEGIN IMMEDIATE takes the lock immediately.
+    conn.execute("BEGIN IMMEDIATE")
+    for group in payload.groups:
+        rows = repository.get_applications_by_ids(conn, group.application_ids)
+        if not is_admin:
+            # Deliberately identical response for "doesn't exist" and "exists
+            # but isn't yours": a non-admin must not be able to learn whether
+            # an arbitrary application id exists (e.g. a private application
+            # they cannot otherwise see) by comparing status codes/messages.
+            if len(rows) != len(group.application_ids) or any(
+                row.get("created_by") != actor.get("id") for row in rows
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You may only reorder your own applications.",
+                )
+        elif len(rows) != len(group.application_ids):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="One or more applications in the request no longer exist.",
+            )
+        # Defense in depth: the client only ever groups applications that share
+        # an approval status, but never trust that without re-checking, since a
+        # cross-status swap would otherwise appear to save and then silently
+        # snap back (management lists sort by approval status first).
+        if len({row["approval_status"] for row in rows}) > 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="All applications in a reorder group must share the same "
+                "approval status.",
+            )
+        # Conflict check: the group's current DB order (by sort_order) must
+        # exactly match what the client believed it was reordering.
+        current_order = [
+            row["id"] for row in sorted(rows, key=lambda r: r["sort_order"])
+        ]
+        if current_order != group.expected_application_ids:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This application list changed elsewhere; reload and "
+                "try again.",
+            )
+        # Assign fresh, strictly increasing sort_order values anchored at the
+        # group's current minimum. Newly created applications commonly all
+        # share the same default sort_order (0), so simply permuting the
+        # existing values would be a no-op when they are not already
+        # distinct; this always produces a distinct order for the group while
+        # keeping it anchored near its previous position (ties against
+        # applications outside the group are broken by name, then id, so
+        # exact numeric adjacency across groups/owners is not required).
+        base = min(row["sort_order"] for row in rows)
+        new_sort_orders = [base + i for i in range(len(group.application_ids))]
+        repository.reorder_applications(conn, group.application_ids, new_sort_orders)
+        touched_ids.extend(group.application_ids)
+    # Cap the logged id list: up to 20 groups of 500 ids each could otherwise
+    # produce an oversized audit row for a single request.
+    _AUDIT_ID_PREVIEW_LIMIT = 50
+    ids_preview = touched_ids[:_AUDIT_ID_PREVIEW_LIMIT]
+    ids_suffix = (
+        f" (+{len(touched_ids) - _AUDIT_ID_PREVIEW_LIMIT} more)"
+        if len(touched_ids) > _AUDIT_ID_PREVIEW_LIMIT
+        else ""
+    )
+    audit.record(
+        conn,
+        category=audit.CATEGORY_APPLICATION,
+        action="reorder",
+        actor=actor,
+        target_type="application",
+        target_id=touched_ids[0] if touched_ids else 0,
+        target_name=f"{len(touched_ids)} application(s)",
+        detail=f"application_ids={ids_preview}{ids_suffix}",
+    )
+    out = []
+    for application_id in touched_ids:
+        updated = repository.get_application(conn, application_id, include_creator=True)
+        assert updated is not None
+        out.append(_app_out(updated, include_creator=True))
+    return out
 
 
 @router.patch("/applications/{application_id}", response_model=ApplicationOut)

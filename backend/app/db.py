@@ -161,6 +161,26 @@ CREATE TABLE IF NOT EXISTS audit_log (
     detail         TEXT    NOT NULL DEFAULT ''
 );
 
+-- issue_local_032: bounded, privacy-conscious navigation activity, separate
+-- from audit_log (which records security/administrative actions, not routine
+-- browsing). Only an allowlisted semantic destination key is ever stored --
+-- never a raw URL, query string, fragment, referrer, IP address, or user
+-- agent. `bucket_started_at` is the request's arrival time truncated to a
+-- 5-minute boundary; a (actor_id, destination, bucket_started_at) triple is
+-- deduplicated into one row with a running visit_count, so a user actively
+-- browsing does not produce one row per navigation.
+CREATE TABLE IF NOT EXISTS navigation_activity (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_id           INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    actor_username     TEXT    NOT NULL DEFAULT '',
+    destination        TEXT    NOT NULL,
+    bucket_started_at  TEXT    NOT NULL,
+    first_seen_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+    last_seen_at       TEXT    NOT NULL DEFAULT (datetime('now')),
+    visit_count        INTEGER NOT NULL DEFAULT 1,
+    UNIQUE (actor_id, destination, bucket_started_at)
+);
+
 -- Registry of SSH keys usable across the app (issue_015-r1). A key is either
 -- a reference to a key file on the server (kind='path') or a private key
 -- stored encrypted at rest in the DB (kind='stored'). Secret material
@@ -299,6 +319,10 @@ CREATE INDEX IF NOT EXISTS idx_application_usage_daily_date
 CREATE INDEX IF NOT EXISTS idx_application_alias_usage_daily_date
     ON application_alias_usage_daily(usage_date);
 CREATE INDEX IF NOT EXISTS idx_audit_category_id ON audit_log(category, id);
+CREATE INDEX IF NOT EXISTS idx_navigation_activity_last_seen
+    ON navigation_activity(last_seen_at);
+CREATE INDEX IF NOT EXISTS idx_navigation_activity_actor_last_seen
+    ON navigation_activity(actor_id, last_seen_at);
 CREATE INDEX IF NOT EXISTS idx_bundle_template_mappings_template
     ON bundle_template_mappings(template_id);
 CREATE INDEX IF NOT EXISTS idx_user_servers_user ON user_servers(user_id);

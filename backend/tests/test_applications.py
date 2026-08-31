@@ -125,6 +125,163 @@ def test_statistics_includes_authorized_alias_visits(admin) -> None:
     assert rows["Alias Unvisited"]["unique_alias_users"] == 0
 
 
+def test_alias_users_include_per_application_breakdown(admin) -> None:
+    """issue_local_032 (follow-up): each authenticated alias user's row
+    carries a per-application breakdown for the expandable UI row."""
+    client, csrf, _ = admin
+    app_a = _seed_app(client, csrf, "BreakdownA", "https://example.com/bda", ["Red Team"])
+    app_b = _seed_app(client, csrf, "BreakdownB", "https://example.com/bdb", ["Red Team"])
+    from app.db import get_connection
+
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO application_alias_usage_daily "
+            "(application_id, usage_date, visitor_key, request_count) "
+            "VALUES (?, date('now'), 'user:1', 20)",
+            (app_a["id"],),
+        )
+        conn.execute(
+            "INSERT INTO application_alias_usage_daily "
+            "(application_id, usage_date, visitor_key, request_count) "
+            "VALUES (?, date('now'), 'user:1', 10)",
+            (app_b["id"],),
+        )
+
+    body = client.get("/api/application-statistics", params={"days": 7}).json()
+    admin_row = next(u for u in body["alias_users"] if u["user_id"] == "admin")
+    assert admin_row["alias_visits"] == 30
+    assert admin_row["applications_visited"] == 2
+    apps = admin_row["applications"]
+    assert len(apps) == 2
+    # Ordered by visits descending.
+    assert apps[0]["application_name"] == "BreakdownA"
+    assert apps[0]["alias_visits"] == 20
+    assert apps[1]["application_name"] == "BreakdownB"
+    assert apps[1]["alias_visits"] == 10
+
+
+def test_alias_user_breakdowns_do_not_leak_between_users(admin) -> None:
+    client, csrf, _ = admin
+    app = _seed_app(client, csrf, "IsolatedApp", "https://example.com/iso", ["Red Team"])
+    password = _create_member(client, csrf, "isolateduser@example.com", ["Red Team"])
+    user_id = next(
+        u["id"] for u in client.get("/api/users").json()
+        if u["username"] == "isolateduser@example.com"
+    )
+    from app.db import get_connection
+
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO application_alias_usage_daily "
+            "(application_id, usage_date, visitor_key, request_count) "
+            "VALUES (?, date('now'), ?, 15)",
+            (app["id"], f"user:{user_id}"),
+        )
+        conn.execute(
+            "INSERT INTO application_alias_usage_daily "
+            "(application_id, usage_date, visitor_key, request_count) "
+            "VALUES (?, date('now'), 'user:1', 5)",
+            (app["id"],),
+        )
+
+    body = client.get("/api/application-statistics", params={"days": 7}).json()
+    other_row = next(u for u in body["alias_users"] if u["user_id"] == "isolateduser")
+    admin_row = next(u for u in body["alias_users"] if u["user_id"] == "admin")
+    assert other_row["applications"][0]["alias_visits"] == 15
+    assert admin_row["applications"][0]["alias_visits"] == 5
+    assert other_row["alias_visits"] == 15
+
+
+def test_statistics_drill_down_lists_are_complete_and_use_derived_user_id(
+    admin,
+) -> None:
+    """issue_local_032: launch_users/favorite_entries/alias_users are
+    complete (not top-10-capped) and keyed by the immutable derived_user_id,
+    not re-derived from the (possibly renamed) current username."""
+    client, csrf, _ = admin
+    app = _seed_app(client, csrf, "DrillApp", "https://example.com/drill", ["Red Team"])
+    password = _create_member(client, csrf, "drilluser@example.com", ["Red Team"])
+    user_id = next(
+        u["id"] for u in client.get("/api/users").json()
+        if u["username"] == "drilluser@example.com"
+    )
+
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login",
+            json={"username": "drilluser@example.com", "password": password},
+        )
+        member.post(
+            f"/api/applications/{app['id']}/favorite",
+            headers={"X-CSRF-Token": login.json()["csrf_token"]},
+        )
+
+    # Rename the user; the drill-downs must still show the original derived id.
+    client.patch(
+        f"/api/users/{user_id}",
+        json={"username": "renamed@example.com"},
+        headers={"X-CSRF-Token": csrf},
+    )
+
+    from app.db import get_connection
+
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO application_usage_daily "
+            "(application_id, usage_date, visitor_key, launch_count) "
+            "VALUES (?, date('now'), ?, 3)",
+            (app["id"], f"user:{user_id}"),
+        )
+        conn.execute(
+            "INSERT INTO application_alias_usage_daily "
+            "(application_id, usage_date, visitor_key, request_count) "
+            "VALUES (?, date('now'), ?, 5)",
+            (app["id"], f"user:{user_id}"),
+        )
+
+    body = client.get("/api/application-statistics", params={"days": 7}).json()
+
+    launch_user = next(
+        u for u in body["launch_users"] if u["user_id"] == "drilluser"
+    )
+    assert launch_user["launches"] == 3
+    assert launch_user["applications_used"] == 1
+
+    fav = next(
+        f for f in body["favorite_entries"] if f["application_id"] == app["id"]
+    )
+    assert fav["user_id"] == "drilluser"
+    assert fav["application_name"] == "DrillApp"
+
+    alias_user = next(
+        u for u in body["alias_users"] if u["user_id"] == "drilluser"
+    )
+    assert alias_user["alias_visits"] == 5
+    assert alias_user["applications_visited"] == 1
+
+
+def test_statistics_favorite_entries_are_not_bounded_by_days(admin) -> None:
+    """Favorites are a current-state snapshot, unaffected by the selected
+    date range (unlike launches/alias visits)."""
+    client, csrf, _ = admin
+    app = _seed_app(client, csrf, "OldFavorite", "https://example.com/oldfav", ["Red Team"])
+    password = _create_member(client, csrf, "oldfan@example.com", ["Red Team"])
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login",
+            json={"username": "oldfan@example.com", "password": password},
+        )
+        member.post(
+            f"/api/applications/{app['id']}/favorite",
+            headers={"X-CSRF-Token": login.json()["csrf_token"]},
+        )
+
+    body = client.get("/api/application-statistics", params={"days": 7}).json()
+    assert any(
+        f["application_id"] == app["id"] for f in body["favorite_entries"]
+    )
+
+
 def test_clean_install_has_no_applications(admin) -> None:
     # A fresh database starts with no applications (no placeholder seed).
     client, _csrf, _ = admin
@@ -340,6 +497,267 @@ def test_home_listing_uses_application_sort_order(admin) -> None:
 
     ordered = [app["name"] for app in client.get("/api/applications").json()]
     assert ordered.index("First") < ordered.index("Last")
+
+
+def test_reorder_applications_bulk_saves_atomically(admin) -> None:
+    client, csrf, _ = admin
+    a = _seed_app(client, csrf, "Alpha", "https://example.com/a", ["Red Team"])
+    b = _seed_app(client, csrf, "Bravo", "https://example.com/b", ["Red Team"])
+    c = _seed_app(client, csrf, "Charlie", "https://example.com/c", ["Red Team"])
+    ids_before = [a["id"], b["id"], c["id"]]
+
+    resp = client.post(
+        "/api/applications/reorder",
+        json={
+            "groups": [
+                {
+                    "application_ids": [c["id"], a["id"], b["id"]],
+                    "expected_application_ids": ids_before,
+                }
+            ]
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 200, resp.text
+
+    ordered = [
+        app["name"]
+        for app in client.get("/api/applications").json()
+        if app["name"] in ("Alpha", "Bravo", "Charlie")
+    ]
+    assert ordered == ["Charlie", "Alpha", "Bravo"]
+
+
+def test_reorder_applications_rejects_stale_expected_order(admin) -> None:
+    client, csrf, _ = admin
+    a = _seed_app(client, csrf, "StaleA", "https://example.com/sa", ["Red Team"])
+    b = _seed_app(client, csrf, "StaleB", "https://example.com/sb", ["Red Team"])
+
+    resp = client.post(
+        "/api/applications/reorder",
+        json={
+            "groups": [
+                {
+                    "application_ids": [b["id"], a["id"]],
+                    "expected_application_ids": [b["id"], a["id"]],  # wrong: actual is [a,b]
+                }
+            ]
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 409, resp.text
+    # Nothing changed.
+    ordered = [
+        app["name"]
+        for app in client.get("/api/applications").json()
+        if app["name"] in ("StaleA", "StaleB")
+    ]
+    assert ordered == ["StaleA", "StaleB"]
+
+
+def test_reorder_applications_rejects_duplicate_ids(admin) -> None:
+    client, csrf, _ = admin
+    a = _seed_app(client, csrf, "DupA", "https://example.com/da", ["Red Team"])
+
+    resp = client.post(
+        "/api/applications/reorder",
+        json={
+            "groups": [
+                {
+                    "application_ids": [a["id"], a["id"]],
+                    "expected_application_ids": [a["id"], a["id"]],
+                }
+            ]
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 422, resp.text
+
+
+def test_reorder_applications_rejects_mismatched_id_sets(admin) -> None:
+    client, csrf, _ = admin
+    a = _seed_app(client, csrf, "SetA", "https://example.com/seta", ["Red Team"])
+    b = _seed_app(client, csrf, "SetB", "https://example.com/setb", ["Red Team"])
+
+    resp = client.post(
+        "/api/applications/reorder",
+        json={
+            "groups": [
+                {
+                    "application_ids": [a["id"]],
+                    "expected_application_ids": [b["id"]],
+                }
+            ]
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 422, resp.text
+
+
+def test_reorder_applications_rejects_unknown_id(admin) -> None:
+    client, csrf, _ = admin
+    a = _seed_app(client, csrf, "KnownA", "https://example.com/ka", ["Red Team"])
+
+    resp = client.post(
+        "/api/applications/reorder",
+        json={
+            "groups": [
+                {
+                    "application_ids": [999999],
+                    "expected_application_ids": [999999],
+                }
+            ]
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 400, resp.text
+    _ = a
+
+
+def test_reorder_applications_rejects_mixed_approval_status(admin) -> None:
+    client, csrf, _ = admin
+    approved = _seed_app(client, csrf, "MixApproved", "https://example.com/mixa", ["Red Team"])
+    password = _create_member(client, csrf, "mixreorder", ["Red Team"])
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login", json={"username": "mixreorder", "password": password}
+        )
+        mcsrf = login.json()["csrf_token"]
+        pending = member.post(
+            "/api/applications",
+            json={"name": "MixPending", "url": "https://example.com/mixp", "teams": ["Red Team"]},
+            headers={"X-CSRF-Token": mcsrf},
+        ).json()
+        assert pending["approval_status"] == "pending"
+
+    resp = client.post(
+        "/api/applications/reorder",
+        json={
+            "groups": [
+                {
+                    "application_ids": [pending["id"], approved["id"]],
+                    "expected_application_ids": [pending["id"], approved["id"]],
+                }
+            ]
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "approval status" in resp.json()["detail"].lower()
+
+
+def test_reorder_applications_nonadmin_gets_identical_response_for_missing_and_unowned(
+    admin,
+) -> None:
+    """A non-admin must not be able to learn whether an arbitrary application
+    id exists (e.g. a private application they cannot otherwise see) by
+    comparing the response to a nonexistent id vs. one they simply don't own."""
+    client, csrf, _ = admin
+    admin_app = _seed_app(client, csrf, "EnumAdmin", "https://example.com/enuma", ["Red Team"])
+    password = _create_member(client, csrf, "enumreorder", ["Red Team"])
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login", json={"username": "enumreorder", "password": password}
+        )
+        mcsrf = login.json()["csrf_token"]
+
+        unowned = member.post(
+            "/api/applications/reorder",
+            json={
+                "groups": [
+                    {
+                        "application_ids": [admin_app["id"]],
+                        "expected_application_ids": [admin_app["id"]],
+                    }
+                ]
+            },
+            headers={"X-CSRF-Token": mcsrf},
+        )
+        nonexistent = member.post(
+            "/api/applications/reorder",
+            json={
+                "groups": [
+                    {
+                        "application_ids": [999999],
+                        "expected_application_ids": [999999],
+                    }
+                ]
+            },
+            headers={"X-CSRF-Token": mcsrf},
+        )
+    assert unowned.status_code == nonexistent.status_code == 403
+    assert unowned.json()["detail"] == nonexistent.json()["detail"]
+
+
+def test_reorder_applications_owner_cannot_reorder_others_apps(admin) -> None:
+    client, csrf, _ = admin
+    admin_app = _seed_app(client, csrf, "AdminOwned", "https://example.com/adm", ["Red Team"])
+    password = _create_member(client, csrf, "reorderowner", ["Red Team"])
+    with TestClient(client.app) as member:
+        login = member.post(
+            "/api/auth/login", json={"username": "reorderowner", "password": password}
+        )
+        mcsrf = login.json()["csrf_token"]
+        own_app = member.post(
+            "/api/applications",
+            json={"name": "MemberOwned", "url": "https://example.com/memb", "teams": ["Red Team"]},
+            headers={"X-CSRF-Token": mcsrf},
+        ).json()
+        resp = member.post(
+            "/api/applications/reorder",
+            json={
+                "groups": [
+                    {
+                        "application_ids": [admin_app["id"], own_app["id"]],
+                        "expected_application_ids": [admin_app["id"], own_app["id"]],
+                    }
+                ]
+            },
+            headers={"X-CSRF-Token": mcsrf},
+        )
+    assert resp.status_code == 403, resp.text
+
+
+def test_reorder_applications_requires_csrf(admin) -> None:
+    client, _csrf, _ = admin
+    a = _seed_app(client, _csrf, "NoCsrfA", "https://example.com/ncsa", ["Red Team"])
+    resp = client.post(
+        "/api/applications/reorder",
+        json={
+            "groups": [
+                {
+                    "application_ids": [a["id"]],
+                    "expected_application_ids": [a["id"]],
+                }
+            ]
+        },
+    )
+    assert resp.status_code == 403, resp.text
+
+
+def test_reorder_applications_emits_one_audit_event(admin) -> None:
+    client, csrf, _ = admin
+    a = _seed_app(client, csrf, "AuditA", "https://example.com/auda", ["Red Team"])
+    b = _seed_app(client, csrf, "AuditB", "https://example.com/audb", ["Red Team"])
+    before = client.get("/api/audit?category=application").json()
+
+    client.post(
+        "/api/applications/reorder",
+        json={
+            "groups": [
+                {
+                    "application_ids": [b["id"], a["id"]],
+                    "expected_application_ids": [a["id"], b["id"]],
+                }
+            ]
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    after = client.get("/api/audit?category=application").json()
+    reorder_events = [
+        e for e in after if e["action"] == "reorder" and e not in before
+    ]
+    assert len(reorder_events) == 1
 
 
 def test_publisher_team_section_uses_application_sort_order(admin) -> None:

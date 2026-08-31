@@ -651,6 +651,50 @@ class UserActivityRow(BaseModel):
     applications_used: int
 
 
+class LaunchUserRow(BaseModel):
+    """issue_local_032: one row of the complete (uncapped) "Launch users" drill-down."""
+
+    user_id: str
+    launches: int
+    applications_used: int
+    active_days: int
+    last_activity: str
+
+
+class FavoriteEntryRow(BaseModel):
+    """issue_local_032: one row of the complete "Favorites" drill-down: a
+    single user's favorite of a single application."""
+
+    application_id: int
+    application_name: str
+    user_id: str
+    starred_at: str
+
+
+class AliasUserApplicationRow(BaseModel):
+    """issue_local_032 (follow-up): one application's contribution to an
+    authenticated alias user's total, for the expandable per-user breakdown."""
+
+    application_id: int
+    application_name: str
+    alias_visits: int
+
+
+class AliasUserRow(BaseModel):
+    """issue_local_032: one row of the complete "Alias visits" drill-down for
+    authenticated visitors (anonymous traffic is never attributable to a
+    user, so it never appears here -- see anonymous_alias_visits instead)."""
+
+    user_id: str
+    alias_visits: int
+    applications_visited: int
+    active_days: int
+    last_visit: str
+    # issue_local_032 (follow-up): per-application breakdown behind an
+    # expandable row, ordered by visits descending then name/id.
+    applications: list[AliasUserApplicationRow] = Field(default_factory=list)
+
+
 class ApplicationStatisticsOut(BaseModel):
     days: int
     launches: int
@@ -666,6 +710,13 @@ class ApplicationStatisticsOut(BaseModel):
     alias_visits: int = 0
     unique_alias_users: int = 0
     anonymous_alias_visits: int = 0
+    # issue_local_032: complete (uncapped) drill-down lists for the
+    # corresponding clickable KPI card, over the same date range as the rest
+    # of this response (except favorite_entries, which is always a current
+    # snapshot -- see FavoriteEntryRow).
+    launch_users: list[LaunchUserRow] = Field(default_factory=list)
+    favorite_entries: list[FavoriteEntryRow] = Field(default_factory=list)
+    alias_users: list[AliasUserRow] = Field(default_factory=list)
 
 
 class AliasConfigOut(BaseModel):
@@ -876,6 +927,39 @@ class UpdateApplicationRequest(BaseModel):
         return self
 
 
+class ApplicationReorderGroup(BaseModel):
+    """One reordered bucket (issue_local_032): all applications in a single
+    request must be the caller's own applications (or, for an admin, any
+    applications) that currently share the same approval_status -- reordering
+    is scoped to what is visibly grouped together in the UI (ownership +
+    review state), never crossing those boundaries."""
+
+    application_ids: list[int] = Field(min_length=1, max_length=500)
+    expected_application_ids: list[int] = Field(min_length=1, max_length=500)
+
+    @field_validator("application_ids", "expected_application_ids")
+    @classmethod
+    def _check_unique_positive(cls, value: list[int]) -> list[int]:
+        if len(value) != len(set(value)):
+            raise ValueError("Application IDs must not repeat within a group.")
+        if any(v <= 0 for v in value):
+            raise ValueError("Application IDs must be positive.")
+        return value
+
+    @model_validator(mode="after")
+    def _check_same_set(self) -> "ApplicationReorderGroup":
+        if set(self.application_ids) != set(self.expected_application_ids):
+            raise ValueError(
+                "application_ids and expected_application_ids must contain the "
+                "same set of IDs (only their order may differ)."
+            )
+        return self
+
+
+class ReorderApplicationsRequest(BaseModel):
+    groups: list[ApplicationReorderGroup] = Field(min_length=1, max_length=20)
+
+
 class ProvisionResultOut(BaseModel):
     """Per-template outcome of create-user auto-provisioning."""
 
@@ -902,6 +986,46 @@ class AuditEntryOut(BaseModel):
     target_id: int | None = None
     target_name: str | None = None
     detail: str = ""
+
+
+class RecordNavigationRequest(BaseModel):
+    """issue_local_032: only a semantic destination key is ever accepted --
+    never a raw path, query string, or fragment. See
+    repository.NAVIGATION_DESTINATIONS for the exact allowlist."""
+
+    destination: str = Field(min_length=1, max_length=64)
+
+    @field_validator("destination")
+    @classmethod
+    def _check_destination(cls, value: str) -> str:
+        from . import repository  # local import: avoid any import-time cycle
+
+        if value not in repository.NAVIGATION_DESTINATIONS:
+            raise ValueError("destination must be one of the known navigation sections.")
+        return value
+
+
+class NavigationActivityOut(BaseModel):
+    id: int
+    actor_username: str
+    destination: str
+    first_seen_at: str
+    last_seen_at: str
+    visit_count: int
+
+
+class NavigationActivityPageOut(BaseModel):
+    """issue_local_032 (follow-up): a bounded page of navigation activity.
+
+    ``total`` is capped at the newest ``NAVIGATION_ACTIVITY_MAX_EVENTS`` stored
+    rows (each row is one deduplicated 5-minute bucket, not a raw visit
+    count), even if retention has not yet swept older rows.
+    """
+
+    items: list[NavigationActivityOut]
+    total: int
+    offset: int
+    limit: int
 
 
 # Reject shell metacharacters / whitespace tricks in path-like settings so a
@@ -1561,6 +1685,15 @@ class ServersOverviewOut(BaseModel):
 
     is_admin: bool = False
     owners: list[OwnerServersOut] = Field(default_factory=list)
+    # issue_local_032: admin-only summary counters for the Servers view's top
+    # summary cards. total_users is every active application account
+    # (including users with zero servers) -- not merely the owners with a
+    # server record in ``owners`` below. total_servers is every server record
+    # visible in this response (== sum of len(owner.servers) for owners)).
+    # Both are 0 for a non-admin caller; the UI shows only a servers count for
+    # a non-admin, derived client-side from their own single group instead.
+    total_users: int = 0
+    total_servers: int = 0
 
 
 class ServerStatsPointOut(BaseModel):

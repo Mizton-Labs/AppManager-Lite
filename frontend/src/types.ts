@@ -345,6 +345,12 @@ export interface OwnerServers {
 export interface ServersOverview {
   is_admin: boolean;
   owners: OwnerServers[];
+  /** Admin-only: every active account, including users with zero servers.
+   * 0 for a non-admin caller. Optional for backward-compatible test fixtures;
+   * always present in real API responses. */
+  total_users?: number;
+  /** Every visible server record (== sum of owners[].servers.length). */
+  total_servers?: number;
 }
 
 /** One historical usage sample for a server's sparklines. */
@@ -596,6 +602,26 @@ export interface ApplicationStatistics {
   alias_visits: number;
   unique_alias_users: number;
   anonymous_alias_visits: number;
+  /** issue_local_032: complete (uncapped) drill-down lists for the
+   * corresponding clickable KPI card. */
+  launch_users: LaunchUserRow[];
+  favorite_entries: FavoriteEntryRow[];
+  alias_users: AliasUserRow[];
+}
+export interface LaunchUserRow {
+  user_id: string; launches: number; applications_used: number;
+  active_days: number; last_activity: string;
+}
+export interface FavoriteEntryRow {
+  application_id: number; application_name: string; user_id: string; starred_at: string;
+}
+export interface AliasUserApplicationRow {
+  application_id: number; application_name: string; alias_visits: number;
+}
+export interface AliasUserRow {
+  user_id: string; alias_visits: number; applications_visited: number;
+  active_days: number; last_visit: string;
+  applications: AliasUserApplicationRow[];
 }
 export interface ApplicationTrendSeries { application_id: number; name: string; launches: number; points: ApplicationTrendPoint[]; }
 export interface UserActivityRow { user_id: string; launches: number; applications_used: number; }
@@ -672,4 +698,24 @@ export interface AuditEntry {
   target_id: number | null;
   target_name: string | null;
   detail: string;
+}
+
+/** issue_local_032: one row of navigation activity (never a raw URL/query
+ * string -- only an allowlisted semantic destination key). */
+export interface NavigationActivityEntry {
+  id: number;
+  actor_username: string;
+  destination: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  visit_count: number;
+}
+
+/** issue_local_032 (follow-up): a bounded page of navigation activity;
+ * `total` is capped at the newest 500 stored rows. */
+export interface NavigationActivityPage {
+  items: NavigationActivityEntry[];
+  total: number;
+  offset: number;
+  limit: number;
 }

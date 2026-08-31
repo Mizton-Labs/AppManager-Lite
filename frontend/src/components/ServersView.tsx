@@ -44,6 +44,9 @@ const TIMEFRAMES: { id: StatsTimeframe; label: string }[] = [
   { id: "week", label: "Last week" },
 ];
 
+/** issue_local_032: owner cards are paginated, at most this many per page. */
+const OWNERS_PER_PAGE = 10;
+
 /** Human-readable bytes (base 1024). */
 function fmtBytes(n: number): string {
   if (!n || n < 1) return "0 B";
@@ -64,7 +67,9 @@ function last<T>(arr: T[]): T | undefined {
 /**
  * The 4 compact usage sparklines for one server (CPU, memory, disk, network).
  * Fetches its own stats lazily (per card) so a long list renders progressively
- * and one slow/failed server never blocks the others.
+ * and one slow/failed server never blocks the others. Only ever mounted for
+ * an expanded owner card (see OwnerGroup), so a collapsed card issues no
+ * stats requests at all.
  */
 function ServerStatsCards(props: {
   userId: number;
@@ -190,6 +195,10 @@ function ServerRow(props: {
   );
 }
 
+/** issue_local_032: one owner's card, collapsed by default. The collapsed
+ * card shows only identity + matching server count; expanding it mounts the
+ * server list (and therefore its usage-chart requests) for the first time --
+ * a collapsed card never issues a stats request. */
 function OwnerGroup(props: {
   owner: OwnerServers;
   timeframe: StatsTimeframe;
@@ -200,6 +209,12 @@ function OwnerGroup(props: {
   onChanged: () => void | Promise<void>;
 }) {
   const { owner } = props;
+  const [manuallyCollapsed, setManuallyCollapsed] = useState(true);
+  const isFiltering = props.filter.trim().length > 0;
+  // A group only ever renders (see the early return below) while filtering
+  // if it has a match, so auto-expand it -- that's the point of searching.
+  // Manual collapse state is preserved once the filter is cleared.
+  const collapsed = isFiltering ? false : manuallyCollapsed;
   const isOwnGroup = owner.user_id === props.currentUser.id;
   // Own servers are editable when the account allows resource edits; an admin
   // may act on any owner's servers. Non-owners (non-admin) stay read-only.
@@ -216,35 +231,51 @@ function OwnerGroup(props: {
   );
   // With an active filter, a group with no matching servers is hidden entirely.
   if (props.filter.trim() && visible.length === 0) return null;
+  const contentId = `owner-servers-${owner.user_id}`;
   return (
     <section className="overview-owner">
-      <h3 className="overview-owner-head">
-        {owner.username}
-        {owner.derived_user_id && (
-          <span className="muted"> ({owner.derived_user_id})</span>
-        )}
-        <span className="muted overview-owner-count">
-          {" · "}
-          {visible.length} server{visible.length === 1 ? "" : "s"}
+      <button
+        type="button"
+        className="overview-owner-toggle"
+        aria-expanded={!collapsed}
+        aria-controls={contentId}
+        onClick={() => setManuallyCollapsed((c) => !c)}
+      >
+        <h3 className="overview-owner-head">
+          {owner.username}
+          {owner.derived_user_id && (
+            <span className="muted"> ({owner.derived_user_id})</span>
+          )}
+          <span className="muted overview-owner-count">
+            {" · "}
+            {visible.length} server{visible.length === 1 ? "" : "s"}
+          </span>
+        </h3>
+        <span className="overview-owner-chevron" aria-hidden="true">
+          {collapsed ? "▸" : "▾"}
         </span>
-      </h3>
-      {visible.length === 0 ? (
-        <p className="muted">No servers.</p>
-      ) : (
-        <div className="overview-server-list">
-          {visible.map((s) => (
-            <ServerRow
-              key={s.id}
-              ownerId={owner.user_id}
-              server={s}
-              timeframe={props.timeframe}
-              isAdmin={props.isAdmin}
-              allowResourceEdit={allowResourceEdit}
-              allowAccessReset={allowAccessReset}
-              canDelete={canDelete}
-              onChanged={props.onChanged}
-            />
-          ))}
+      </button>
+      {!collapsed && (
+        <div id={contentId} role="region" aria-label={`${owner.username} servers`}>
+          {visible.length === 0 ? (
+            <p className="muted">No servers.</p>
+          ) : (
+            <div className="overview-server-list">
+              {visible.map((s) => (
+                <ServerRow
+                  key={s.id}
+                  ownerId={owner.user_id}
+                  server={s}
+                  timeframe={props.timeframe}
+                  isAdmin={props.isAdmin}
+                  allowResourceEdit={allowResourceEdit}
+                  allowAccessReset={allowAccessReset}
+                  canDelete={canDelete}
+                  onChanged={props.onChanged}
+                />
+              ))}
+            </div>
+          )}
         </div>
       )}
     </section>
@@ -254,10 +285,12 @@ function OwnerGroup(props: {
 /**
  * The "Servers" section. The single place to create and manage your servers:
  * a create card on top (for the signed-in user), then every server the caller
- * may see, grouped by owner, each with compact historical usage charts and —
- * for servers the caller may act on — Change resources / Reboot / Delete.
- * Administrators see and manage all users' servers; a regular user sees and
- * manages only their own.
+ * may see, grouped by owner (each owner card collapsed by default), each with
+ * compact historical usage charts and — for servers the caller may act on —
+ * Change resources / Reboot / Delete. Administrators see and manage all
+ * users' servers (paginated, 10 owner cards per page) and get top summary
+ * cards for total users/servers; a regular user sees and manages only their
+ * own.
  */
 export function ServersView(props: { currentUser: ApiUser; isAdmin: boolean }) {
   const [overview, setOverview] = useState<ServersOverview | null>(null);
@@ -267,6 +300,7 @@ export function ServersView(props: { currentUser: ApiUser; isAdmin: boolean }) {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("");
   const [creating, setCreating] = useState(false);
+  const [page, setPage] = useState(0);
 
   const loadOverview = useCallback(async () => {
     try {
@@ -300,7 +334,6 @@ export function ServersView(props: { currentUser: ApiUser; isAdmin: boolean }) {
   }, [loadOverview]);
 
   const owners = overview?.owners ?? [];
-  const hasServers = owners.some((o) => o.servers.length > 0);
   const canCreate = access?.can_create ?? false;
   // How many servers survive the active filter (for a no-match message).
   const visibleCount = owners.reduce(
@@ -317,10 +350,27 @@ export function ServersView(props: { currentUser: ApiUser; isAdmin: boolean }) {
   const myGroups = owners.filter((o) => o.user_id === props.currentUser.id);
   const otherGroups = owners.filter((o) => o.user_id !== props.currentUser.id);
   const showSubsectionHeadings = props.isAdmin && otherGroups.length > 0;
-  // With an active filter, only show a subsection heading when that subsection
-  // actually has a matching server.
-  const myVisible = myGroups.some((o) => groupVisibleCount(o) > 0);
-  const othersVisible = otherGroups.some((o) => groupVisibleCount(o) > 0);
+
+  // issue_local_032: paginate the *filtered*, ownership-ordered (mine-first)
+  // owner list at OWNERS_PER_PAGE. When everything fits on one page, keep the
+  // existing "My servers" / "Users' servers" subsection headings; a
+  // multi-page result renders as one flat, paginated list instead (mixing
+  // independent per-page pagination with two disjoint subsections would be
+  // needlessly confusing).
+  const orderedOwners = [...myGroups, ...otherGroups];
+  const filteredOwners = orderedOwners.filter(
+    (o) => !filtering || groupVisibleCount(o) > 0,
+  );
+  const pageCount = Math.max(1, Math.ceil(filteredOwners.length / OWNERS_PER_PAGE));
+  const clampedPage = Math.min(page, pageCount - 1);
+  useEffect(() => {
+    if (page !== clampedPage) setPage(clampedPage);
+  }, [page, clampedPage]);
+  const pageOwners = filteredOwners.slice(
+    clampedPage * OWNERS_PER_PAGE,
+    clampedPage * OWNERS_PER_PAGE + OWNERS_PER_PAGE,
+  );
+  const singlePage = pageCount <= 1;
 
   const renderGroups = (groups: OwnerServers[]) =>
     groups.map((o) => (
@@ -347,7 +397,10 @@ export function ServersView(props: { currentUser: ApiUser; isAdmin: boolean }) {
             placeholder="Filter servers…"
             aria-label="Filter servers"
             value={filter}
-            onChange={(e) => setFilter(e.target.value)}
+            onChange={(e) => {
+              setFilter(e.target.value);
+              setPage(0);
+            }}
           />
           <label className="timeframe-select">
             <span className="muted">Timeframe</span>
@@ -366,25 +419,42 @@ export function ServersView(props: { currentUser: ApiUser; isAdmin: boolean }) {
         </div>
       </div>
 
+      {!loading && overview && (
+        <div className="stats-kpis servers-summary-kpis">
+          {props.isAdmin && (
+            <section className="card stats-kpi">
+              <span>Total users</span>
+              <strong>{overview.total_users ?? 0}</strong>
+            </section>
+          )}
+          <section className="card stats-kpi">
+            <span>Total servers</span>
+            <strong>{overview.total_servers ?? 0}</strong>
+          </section>
+        </div>
+      )}
+
       {access && !canCreate && access.reason && (
         <p className="muted">{access.reason}</p>
       )}
       {canCreate &&
         (creating ? (
-          <CreateServerCard
-            userId={props.currentUser.id}
-            isAdmin={props.isAdmin}
-            userDerivedId={props.currentUser.user_id}
-            defaultPubkeyUser={props.currentUser.user_id}
-            /* Keep the card open after a create so its success/warning notice
-               (incl. VM "enter its IP" guidance) stays readable; the refreshed
-               server appears in the list below. The user collapses via Cancel
-               (labeled Close once something has been created). */
-            onCreated={loadOverview}
-            onCancel={() => setCreating(false)}
-          />
+          <div className="servers-create-toolbar">
+            <CreateServerCard
+              userId={props.currentUser.id}
+              isAdmin={props.isAdmin}
+              userDerivedId={props.currentUser.user_id}
+              defaultPubkeyUser={props.currentUser.user_id}
+              /* Keep the card open after a create so its success/warning notice
+                 (incl. VM "enter its IP" guidance) stays readable; the refreshed
+                 server appears in the list below. The user collapses via Cancel
+                 (labeled Close once something has been created). */
+              onCreated={loadOverview}
+              onCancel={() => setCreating(false)}
+            />
+          </div>
         ) : (
-          <div className="manager-toolbar">
+          <div className="manager-toolbar servers-create-toolbar">
             <button
               type="button"
               className="btn accent"
@@ -403,35 +473,64 @@ export function ServersView(props: { currentUser: ApiUser; isAdmin: boolean }) {
       )}
       {loading ? (
         <p role="status">Loading servers...</p>
-      ) : !hasServers ? (
+      ) : owners.length === 0 ? (
         <p className="muted">No servers to show.</p>
       ) : filtering && visibleCount === 0 ? (
         <p className="muted">No servers match the filter.</p>
       ) : (
-        <div className="overview-owners">
-          {showSubsectionHeadings ? (
-            <>
-              {(!filtering || myVisible) && (
-                <>
-                  <h3 className="servers-subhead">My servers</h3>
-                  {myGroups.length ? (
-                    renderGroups(myGroups)
-                  ) : (
-                    <p className="muted">You have no servers.</p>
-                  )}
-                </>
-              )}
-              {(!filtering || othersVisible) && (
-                <>
-                  <h3 className="servers-subhead">Users' servers</h3>
-                  {renderGroups(otherGroups)}
-                </>
-              )}
-            </>
-          ) : (
-            renderGroups([...myGroups, ...otherGroups])
+        <>
+          <div className="overview-owners">
+            {singlePage && showSubsectionHeadings ? (
+              <>
+                {(!filtering || myGroups.some((o) => groupVisibleCount(o) > 0)) && (
+                  <>
+                    <h3 className="servers-subhead">My servers</h3>
+                    {myGroups.length ? (
+                      renderGroups(myGroups)
+                    ) : (
+                      <p className="muted">You have no servers.</p>
+                    )}
+                  </>
+                )}
+                {(!filtering ||
+                  otherGroups.some((o) => groupVisibleCount(o) > 0)) && (
+                  <>
+                    <h3 className="servers-subhead">Users' servers</h3>
+                    {renderGroups(otherGroups)}
+                  </>
+                )}
+              </>
+            ) : (
+              renderGroups(pageOwners)
+            )}
+          </div>
+          {pageCount > 1 && (
+            <nav
+              className="pagination"
+              aria-label="Server owners pagination"
+            >
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                disabled={clampedPage === 0}
+              >
+                Previous
+              </button>
+              <span className="muted">
+                Page {clampedPage + 1} of {pageCount}
+              </span>
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+                disabled={clampedPage >= pageCount - 1}
+              >
+                Next
+              </button>
+            </nav>
           )}
-        </div>
+        </>
       )}
     </div>
   );

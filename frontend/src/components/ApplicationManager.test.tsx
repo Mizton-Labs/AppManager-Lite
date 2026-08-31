@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ApplicationManager } from "./ApplicationManager";
 import type { Application, UserServer } from "../types";
@@ -159,6 +159,22 @@ function stubBackend(
       });
       store = [...store, created];
       return jsonResponse(created);
+    }
+    if (method === "POST" && url.endsWith("/api/applications/reorder")) {
+      const groups: { application_ids: number[]; expected_application_ids: number[] }[] =
+        body.groups;
+      for (const group of groups) {
+        const rows = group.application_ids.map(
+          (id) => store.find((a) => a.id === id)!,
+        );
+        const base = Math.min(...rows.map((r) => r.sort_order));
+        store = store.map((app) => {
+          const idx = group.application_ids.indexOf(app.id);
+          return idx === -1 ? app : { ...app, sort_order: base + idx };
+        });
+      }
+      store = [...store].sort((a, b) => a.sort_order - b.sort_order);
+      return jsonResponse(store);
     }
     if (method === "PATCH" && byId) {
       const id = Number(byId[1]);
@@ -1338,7 +1354,7 @@ describe("ApplicationManager", () => {
     });
   });
 
-  it("reorders applications with move buttons and persists sort_order", async () => {
+  it("stages a move-button reorder locally, then persists it atomically on Save changes", async () => {
     const fetchMock = stubBackend([
       makeApp({ id: 1, name: "First App", sort_order: 0 }),
       makeApp({ id: 2, name: "Second App", sort_order: 1 }),
@@ -1348,22 +1364,35 @@ describe("ApplicationManager", () => {
     await screen.findByText("First App");
     await userEvent.click(screen.getByRole("button", { name: /move second app up/i }));
 
-    const orderUpdates = fetchMock.mock.calls
-      .filter(
-        ([url, init]) =>
-          String(url).includes("/api/applications/") &&
-          (init?.method ?? "GET") === "PATCH" &&
-          JSON.parse((init?.body ?? "{}") as string).sort_order !== undefined,
-      )
-      .map(([url, init]) => ({
-        url: String(url),
-        body: JSON.parse((init!.body ?? "{}") as string),
-      }));
-    expect(orderUpdates).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ url: expect.stringContaining("/api/applications/2"), body: { sort_order: 0 } }),
-        expect.objectContaining({ url: expect.stringContaining("/api/applications/1"), body: { sort_order: 1 } }),
-      ]),
+    // No network write happens just from moving -- it's staged locally.
+    expect(
+      fetchMock.mock.calls.some(
+        ([, init]) => (init?.method ?? "GET").toUpperCase() === "PATCH" ||
+          String(init?.method ?? "GET").toUpperCase() === "POST" &&
+            String((init as RequestInit | undefined)?.body ?? "").includes("reorder"),
+      ),
+    ).toBe(false);
+
+    const saveButton = await screen.findByRole("button", { name: /save changes/i });
+    await userEvent.click(saveButton);
+
+    const reorderCall = fetchMock.mock.calls.find(([url, init]) =>
+      String(url).endsWith("/api/applications/reorder") &&
+      (init?.method ?? "GET").toUpperCase() === "POST",
+    );
+    expect(reorderCall).toBeDefined();
+    const payload = JSON.parse((reorderCall![1] as RequestInit).body as string);
+    expect(payload.groups).toEqual([
+      {
+        application_ids: [2, 1],
+        expected_application_ids: [1, 2],
+      },
+    ]);
+    // Save changes disappears once persisted (no longer dirty).
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: /save changes/i }),
+      ).toBeNull(),
     );
   });
 
@@ -1384,28 +1413,37 @@ describe("ApplicationManager", () => {
     await screen.findByText("Mine A");
     // Move "Mine A" down: it should swap with "Mine C" (skipping "Other B").
     await userEvent.click(screen.getByRole("button", { name: /move mine a down/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /save changes/i }));
 
-    const orderUpdates = fetchMock.mock.calls
-      .filter(
-        ([url, init]) =>
-          String(url).includes("/api/applications/") &&
-          (init?.method ?? "GET") === "PATCH" &&
-          JSON.parse((init?.body ?? "{}") as string).sort_order !== undefined,
-      )
-      .map(([url, init]) => ({
-        url: String(url),
-        body: JSON.parse((init!.body ?? "{}") as string),
-      }));
-    // Mine C -> 0, Mine A -> 2; Other B (id 2) stays at 1 (untouched).
-    expect(orderUpdates).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ url: expect.stringContaining("/api/applications/3"), body: { sort_order: 0 } }),
-        expect.objectContaining({ url: expect.stringContaining("/api/applications/1"), body: { sort_order: 2 } }),
-      ]),
+    const reorderCall = fetchMock.mock.calls.find(([url, init]) =>
+      String(url).endsWith("/api/applications/reorder") &&
+      (init?.method ?? "GET").toUpperCase() === "POST",
     );
+    expect(reorderCall).toBeDefined();
+    const payload = JSON.parse((reorderCall![1] as RequestInit).body as string);
+    // Only the "mine" bucket (ids 1 and 3) is included; "Other B" (id 2) is
+    // in a different bucket and must not appear in any group.
+    expect(payload.groups).toHaveLength(1);
+    expect(payload.groups[0].application_ids.sort()).toEqual([1, 3]);
     expect(
-      orderUpdates.some((u) => u.url.includes("/api/applications/2")),
+      payload.groups.some((g: { application_ids: number[] }) =>
+        g.application_ids.includes(2),
+      ),
     ).toBe(false);
+  });
+
+  it("discards a staged reorder without any network write", async () => {
+    stubBackend([
+      makeApp({ id: 1, name: "First App", sort_order: 0 }),
+      makeApp({ id: 2, name: "Second App", sort_order: 1 }),
+    ]);
+    render(<ApplicationManager isAdmin teamOptions={ALL_TEAMS} />);
+    await screen.findByText("First App");
+    await userEvent.click(screen.getByRole("button", { name: /move second app up/i }));
+    await userEvent.click(
+      await screen.findByRole("button", { name: /discard changes/i }),
+    );
+    expect(screen.queryByRole("button", { name: /save changes/i })).toBeNull();
   });
 
   it("shows the admin's own apps first, then other users' (issue_024)", async () => {

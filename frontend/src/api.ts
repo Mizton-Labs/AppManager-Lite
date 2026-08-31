@@ -225,6 +225,19 @@ export const api = {
       category ? `audit?category=${encodeURIComponent(category)}` : "audit",
     ),
 
+  /** Record one navigation event for the signed-in user. Best-effort on the
+   * caller's side too: a rejected/failed call should never disrupt the page
+   * the user is actually navigating to. */
+  recordNavigation: (destination: string) =>
+    request<void>("audit/navigation", { method: "POST", body: { destination } }),
+
+  /** A bounded page of navigation activity (administrators only): at most 50
+   * rows per page, over only the newest 500 stored rows. */
+  listNavigationActivity: (offset = 0, limit = 50) =>
+    request<import("./types").NavigationActivityPage>(
+      `audit/navigation?offset=${offset}&limit=${limit}`,
+    ),
+
   createApplication: (input: CreateApplicationInput) =>
     request<Application>("applications", { method: "POST", body: input }),
 
@@ -236,6 +249,21 @@ export const api = {
 
   deleteApplication: (id: number) =>
     request<{ detail: string }>(`applications/${id}`, { method: "DELETE" }),
+
+  /** Atomically persist a staged drag/keyboard reorder (issue_local_032).
+   * Each group is a set of application IDs that were reordered together in
+   * the UI (always sharing the same visible ownership scope and approval
+   * status). Returns the updated applications. */
+  reorderApplications: (
+    groups: {
+      application_ids: number[];
+      expected_application_ids: number[];
+    }[],
+  ) =>
+    request<Application[]>("applications/reorder", {
+      method: "POST",
+      body: { groups },
+    }),
 
   /** Re-run the reverse-proxy alias push for an approved application (admin). */
   retryApplicationPush: (id: number) =>

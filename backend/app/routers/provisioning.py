@@ -1468,6 +1468,12 @@ def servers_overview(
         return groups[uid]
 
     if is_admin:
+        # issue_local_032 (follow-up): seed a group for every active account
+        # first, so a user with zero servers still gets a (collapsed, empty)
+        # card in the admin overview instead of being invisible.
+        for user in repository.list_users(conn):
+            if user.get("is_active"):
+                _group(user["id"], user["username"], user.get("user_id", ""))
         rows = repository.list_all_servers(conn)
         # Resolve pools once for the whole overview (single provider call).
         _attach_server_pools(conn, rows)
@@ -1488,7 +1494,14 @@ def servers_overview(
         for srv in rows:
             grp.servers.append(_server_out(srv))
     owners = sorted(groups.values(), key=lambda g: g.username.lower())
-    return ServersOverviewOut(is_admin=is_admin, owners=owners)
+    total_servers = sum(len(g.servers) for g in owners)
+    total_users = repository.count_active_users(conn) if is_admin else 0
+    return ServersOverviewOut(
+        is_admin=is_admin,
+        owners=owners,
+        total_users=total_users,
+        total_servers=total_servers,
+    )
 
 
 @router.get(
