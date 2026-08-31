@@ -60,7 +60,7 @@
       "framework": "React 18 + react-router",
       "entrypoint": "frontend/src/main.tsx",
       "keyModules": [
-        { "path": "frontend/src/App.tsx", "role": "Top-level auth/session bootstrap and routing shell selection." },
+        { "path": "frontend/src/App.tsx", "role": "Top-level auth/session bootstrap and routing shell selection. issue_local_033: after an authenticated session is confirmed, resumes a validated `?next=` destination (e.g. a protected alias reached from a cross-site request that omitted the SameSite=Strict cookie) via window.location.replace, gated on auth-enabled, authenticated, the portal landing page, and no pending mandatory local password change." },
         { "path": "frontend/src/theme.tsx", "role": "Browser-local theme preference, root application, and shared React theme provider; Dark-modern is the fallback." },
         { "path": "frontend/src/components/ThemePicker.tsx", "role": "Shared accessible four-theme selector; users pick their own in the Account Appearance card, admins set the deployment default in General Settings." },
         { "path": "frontend/src/api.ts", "role": "Typed API client; attaches CSRF on non-GET requests." },
