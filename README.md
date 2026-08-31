@@ -771,6 +771,22 @@ the follow-up navigation to the alias is a fresh same-origin request that
 reliably carries the cookie. Local username/password login is unaffected — it is
 an in-app request, not a top-level cross-site redirect.
 
+The `SameSite=Strict` cookie can also be omitted from an **already**
+authenticated session's first request to a protected alias, when that request
+is a genuinely cross-site top-level navigation (e.g. a bookmark or a link
+clicked on another site). In that case nginx's `auth_request` sees no cookie,
+returns `401`, and redirects to the portal landing page with `?next=` set —
+but the portal's own same-origin `/api/session` check then succeeds, since the
+cookie is present for same-origin requests. The frontend's authenticated
+bootstrap (`App.tsx`) detects exactly this case — a validated `next` present
+on the portal's own landing page, with an authenticated session that isn't
+blocked by a mandatory password change — and performs one more same-origin
+navigation (`window.location.replace`) to resume the original destination,
+mirroring the SSO completion hop above without needing another server round
+trip. It never fires for an auth-disabled deployment's synthetic session (a
+private/shared alias could still legitimately deny that session), and it
+fails closed if the backend's injected `<base href>` tag is ever missing.
+
 Existing deployments keep the alias template stored in the database. To migrate
 an existing deployment, save the new AppManager backend host/port in General
 Settings so AppManager can push the shared nginx auth block, update the alias

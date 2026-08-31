@@ -2,24 +2,11 @@ import { useEffect, useState } from "react";
 import { api, apiBase, ApiError } from "../api";
 import type { SessionState, SsoConfig } from "../types";
 import { getAppName, getLogoSrc } from "../branding";
-
-function safeNextPath(): string {
-  const next = new URLSearchParams(window.location.search).get("next")?.trim() ?? "";
-  // Mirrors the backend's `sso.safe_return_to`: only a same-origin,
-  // single-segment-rooted relative path is accepted. Backslashes are
-  // rejected too -- some browsers normalize a leading "/\" the same as "//",
-  // which would otherwise let a same-origin-looking value navigate off-site.
-  if (!next.startsWith("/")) return "";
-  if (next.startsWith("//")) return "";
-  if (next.includes("\\")) return "";
-  // eslint-disable-next-line no-control-regex
-  if (/[\x00-\x1f]/.test(next)) return "";
-  return next;
-}
+import { safeNextFromLocation } from "../lib/navigation";
 
 function ssoLoginHref(loginUrl: string): string {
   const url = new URL(loginUrl, apiBase());
-  const next = safeNextPath();
+  const next = safeNextFromLocation();
   if (next) {
     url.searchParams.set("next", next);
   }
@@ -60,11 +47,12 @@ export function Login(props: { onAuthenticated: (session: SessionState) => void 
     setBusy(true);
     try {
       const session = await api.login(username, password);
+      // Delegate to the shared authenticated-bootstrap logic in App.tsx,
+      // which decides whether/where to resume (a `next` destination) only
+      // after checking auth-enabled state and any mandatory local
+      // password-change requirement -- redirecting straight from here could
+      // bypass that forced-change screen.
       props.onAuthenticated(session);
-      const next = safeNextPath();
-      if (next) {
-        window.location.assign(next);
-      }
     } catch (err) {
       setError(
         err instanceof ApiError ? err.message : "Unable to sign in. Try again.",

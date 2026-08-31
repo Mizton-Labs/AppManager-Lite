@@ -68,6 +68,66 @@ describe("Login", () => {
     expect(onAuthenticated).toHaveBeenCalledWith(session);
   });
 
+  it("does not navigate directly after local login (issue_local_033: delegates to App.tsx)", async () => {
+    window.history.pushState({}, "", "/?next=/grafana/");
+    const session = {
+      authenticated: true,
+      enable_auth: true,
+      user: {
+        id: 1,
+        username: "admin",
+        role: "admin",
+        is_active: true,
+        must_change_password: false,
+        self_service: true,
+        apps_server: "",
+        apps_server_ip: "",
+        teams: [],
+      },
+      csrf_token: "csrf-1",
+      auth_method: "local",
+      app_name: "",
+      app_logo: "",
+      collaborators: [],
+      configured: false,
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ enabled: false, local_login_enabled: true, providers: [] }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => session,
+      } as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    const assignSpy = vi.fn();
+    const replaceSpy = vi.fn();
+    const originalLocation = window.location;
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...originalLocation, assign: assignSpy, replace: replaceSpy },
+    });
+
+    const onAuthenticated = vi.fn();
+    renderLogin(onAuthenticated);
+
+    await userEvent.type(screen.getByLabelText("Username"), "admin");
+    await userEvent.type(screen.getByLabelText("Password"), "supersecret1");
+    await userEvent.click(screen.getByRole("button", { name: /sign in/i }));
+
+    expect(onAuthenticated).toHaveBeenCalledWith(session);
+    expect(assignSpy).not.toHaveBeenCalled();
+    expect(replaceSpy).not.toHaveBeenCalled();
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: originalLocation,
+    });
+  });
+
   it("shows the server error message when sign-in fails", async () => {
     const fetchMock = vi
       .fn()
